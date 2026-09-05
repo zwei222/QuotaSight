@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing or new semantic version tag (for example v1.2.3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag }}
+  DOTNET_NOLOGO: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate tag and remote uniqueness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Tag must match ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$" >&2; exit 1 ;;
+          esac
+          python3 - "$TAG" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?", tag):
+              raise SystemExit("invalid release tag")
+          PY
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Remote tag already exists: $TAG" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists: $TAG" >&2
+            exit 1
+          fi
+
+  build:
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Set release version (Linux)
+        if: runner.os == 'Linux'
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - name: Set release version (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "\"VERSION=$($env:TAG.Substring(1))\" >> $env:GITHUB_ENV"
+      - name: Restore for runtime
+        run: dotnet restore QuotaSight.slnx --runtime ${{ matrix.rid }}
+      - name: Test Release
+        run: dotnet test QuotaSight.slnx -c Release --no-restore
+      - name: Publish NativeAOT (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          dotnet publish src/QuotaSight.UI/QuotaSight.UI.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -p:Version=$VERSION --no-restore -o publish
+          chmod +x publish/QuotaSight.UI
+          publish/QuotaSight.UI --smoke-test
+          zip -r "QuotaSight-$VERSION-${{ matrix.rid }}.zip" publish
+      - name: Publish NativeAOT (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet publish src/QuotaSight.UI/QuotaSight.UI.csproj -c Release -r $env:RID --self-contained true -p:PublishAot=true -p:Version=$env:VERSION --no-restore -o publish
+          & .\publish\QuotaSight.UI.exe --smoke-test
+          Compress-Archive -Path publish\* -DestinationPath "QuotaSight-$env:VERSION-$env:RID.zip"
+        env:
+          RID: ${{ matrix.rid }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuotaSight-${{ env.VERSION }}-${{ matrix.rid }}
+          path: QuotaSight-${{ env.VERSION }}-${{ matrix.rid }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: QuotaSight-*
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          gh release create "$TAG" release-assets/QuotaSight-*.zip --title "$TAG" --target "$RELEASE_SHA" --generate-notes

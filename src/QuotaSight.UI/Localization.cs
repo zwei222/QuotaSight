@@ -1,0 +1,61 @@
+namespace QuotaSight.UI;
+
+// Explicit, strongly typed copy keeps localization trim/AOT safe and makes every UI string auditable.
+public sealed class UiCopy
+{
+    private readonly UiLanguage language;
+    public UiCopy(UiLanguage language) => this.language = language;
+    public bool IsJapanese => language == UiLanguage.Japanese;
+    public string Dashboard => IsJapanese ? "ダッシュボード" : "Dashboard";
+    public string History => IsJapanese ? "履歴" : "History";
+    public string Settings => IsJapanese ? "設定" : "Settings";
+    public string Refresh => IsJapanese ? "更新" : "Refresh";
+    public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
+    public string Subtitle => IsJapanese ? "次のリセットまでの残りを、落ち着いて確認できます。" : "A calm view of what is left before your next reset.";
+    public string EmptyTitle => IsJapanese ? "クォータデータはまだありません" : "No quota data yet";
+    public string EmptyDescription => IsJapanese ? "プロバイダーを接続するか、手動クォータを追加して始めましょう。" : "Connect a provider or add a manual quota to get started.";
+    public string LocalFirst => "LOCAL-FIRST";
+    public string NoSecretsLeave => IsJapanese ? "秘密情報はこのアプリの外へ出ません" : "No secrets leave this app";
+    public string DemoBanner => IsJapanese ? "デモモード · サンプル値のみ" : "DEMO MODE · Sample values only";
+    public string ConnectManage => IsJapanese ? "プロバイダーを接続・管理" : "Connect or manage providers";
+    public string ManualDescription => IsJapanese ? "ChatGPT Plus と Claude Pro は手動入力に対応。公式の利用状況ページをブラウザーで開けます。" : "Manual form for ChatGPT Plus and Claude Pro; official usage links open in your browser.";
+    public string Provider => IsJapanese ? "プロバイダー" : "Provider";
+    public string AccountName => IsJapanese ? "アカウント表示名" : "Account display name";
+    public string Window => IsJapanese ? "ウィンドウ" : "Window";
+    public string UsedPercent => IsJapanese ? "使用率 %" : "Used %";
+    public string ResetOptional => IsJapanese ? "リセット（任意）" : "Reset (optional)";
+    public string OpenChatGpt => IsJapanese ? "ChatGPTの利用状況を開く" : "Open ChatGPT usage";
+    public string OpenClaude => IsJapanese ? "Claudeの利用状況を開く" : "Open Claude usage";
+    public string AddAccount => IsJapanese ? "アカウントを追加" : "Add account";
+    public string OpenCodeDescription => IsJapanese ? "APIキーはセッション中のみ使用します。接続テストにだけ渡し、保存・記録しません。" : "API key is session-only; it is passed only to the connect test facade and never persisted or logged.";
+    public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
+    public string CopilotDescription => IsJapanese ? "Copilotはgh status/device flowを使用します。Client IDは不要です。組織クォータを取得できない場合は手動入力に切り替えられます。" : "Copilot uses gh status/device flow; no Client ID is required here. Organization quota may be unavailable, so manual fallback is supported.";
+    public string StartDevice => IsJapanese ? "デバイス認証を開始" : "Start device flow";
+    public string CopyCode => IsJapanese ? "コードをコピー" : "Copy code";
+    public string OpenVerification => IsJapanese ? "認証ページを開く" : "Open verification";
+    public string Poll => IsJapanese ? "確認" : "Poll";
+    public string ProbeGh => IsJapanese ? "ghの状態を確認" : "Probe gh status";
+    public string OpenOfficialUsage => IsJapanese ? "公式の利用状況を開く" : "Open official usage";
+    public string HistoryDescription => IsJapanese ? "ローカル保存した30日分のスナップショット。エクスポートには安全な表示項目のみ含まれます。" : "30 days of local snapshots. Export contains UI-safe fields only.";
+    public string ExportCsv => "Export CSV";
+    public string ExportJson => "Export JSON";
+    public string DeleteAll => IsJapanese ? "すべて削除" : "Delete all";
+    public string UsageTrend => IsJapanese ? "使用状況の推移" : "Usage trend";
+    public string Delete => IsJapanese ? "削除" : "Delete";
+    public string Appearance => IsJapanese ? "表示" : "Appearance";
+    public string Theme => IsJapanese ? "テーマ" : "Theme";
+    public string Language => IsJapanese ? "言語" : "Language";
+    public string ReduceMotion => IsJapanese ? "動きを減らす" : "Reduce motion";
+    public string HighContrast => IsJapanese ? "ハイコントラスト" : "High contrast";
+    public string SupportStatus => IsJapanese ? "対応状況: 動きを減らす · ハイコントラスト" : "Support status: Reduce motion · High contrast";
+    public string RefreshAlerts => IsJapanese ? "更新と通知" : "Refresh and alerts";
+    public string RefreshInterval => IsJapanese ? "更新間隔（5〜15分）" : "Refresh interval (5–15 minutes)";
+    public string EnableNotifications => IsJapanese ? "通知を有効にする" : "Enable notifications";
+    public string OverallThreshold => IsJapanese ? "全体のしきい値（%）" : "Overall threshold (%)";
+    public string ProviderOverrides => IsJapanese ? "プロバイダーごとの上書き値を設定できます。" : "Provider overrides can be configured per account.";
+    public string Integrations => IsJapanese ? "連携" : "Integrations";
+    public string GithubClientId => IsJapanese ? "GitHub OAuth Client ID（秘密情報ではありません）" : "GitHub OAuth Client ID (not a secret)";
+    public string Autostart => IsJapanese ? "自動起動: 未対応 · プラットフォームバックエンド未導入" : "Autostart: Unsupported · platform backend not installed";
+    public string CredentialUnavailable(string availability) => IsJapanese ? $"OpenCode Goの資格情報ストア: {availability}; セッション限定の代替を使用。キーは表示・記録しません。" : $"OpenCode Go credential store: {availability}; session-only fallback; key is never displayed or logged.";
+    public string SecureCredential => IsJapanese ? "資格情報ストア: 安全なストアを利用可能。キーは表示・記録しません。" : "Credential store: secure store available; key is never displayed or logged.";
+}

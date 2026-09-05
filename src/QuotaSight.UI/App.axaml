@@ -1,0 +1,13 @@
+<Application xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:fluent="using:Avalonia.Themes.Fluent" x:Class="QuotaSight.UI.App">
+  <Application.Resources>
+    <SolidColorBrush x:Key="SidebarBrush" Color="#F1F3F6"/>
+    <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="BannerBrush" Color="#E8EEFF"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#D8DEE8"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#172033"/>
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#5E6A7E"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#405DE6"/>
+    <SolidColorBrush x:Key="WarningBrush" Color="#B76B16"/>
+  </Application.Resources>
+  <Application.Styles><fluent:FluentTheme /></Application.Styles>
+</Application>
