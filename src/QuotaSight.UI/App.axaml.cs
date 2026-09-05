@@ -64,9 +64,11 @@ public partial class App : Avalonia.Application
             desktop.MainWindow = window;
             trayViewModel = window.ViewModel;
             trayViewModel.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(MainViewModel.Language)) UpdateTrayCopy(); };
-            refreshScheduler = new RefreshScheduler(TimeSpan.FromMinutes(window.ViewModel.Settings.RefreshMinutes));
-            refreshLifetime = new CancellationTokenSource();
-            refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshAsync(token)), refreshLifetime.Token).AsTask();
+            window.Opened += async (_, _) =>
+            {
+                await window.InitializeAsync();
+                StartRefreshScheduling(window);
+            };
             Tray = new TrayController(() => desktop.MainWindow as MainWindow, () =>
             {
                 ExitRequested = true;
@@ -97,5 +99,13 @@ public partial class App : Avalonia.Application
         if (trayShowItem is not null) trayShowItem.Header = copy.Dashboard;
         if (trayRefreshItem is not null) trayRefreshItem.Header = copy.Refresh;
         if (trayExitItem is not null) trayExitItem.Header = copy.IsJapanese ? "終了" : "Exit";
+    }
+
+    private void StartRefreshScheduling(MainWindow window)
+    {
+        if (refreshScheduler is not null) return;
+        refreshScheduler = new RefreshScheduler(() => TimeSpan.FromMinutes(window.ViewModel.Settings.RefreshMinutes));
+        refreshLifetime = new CancellationTokenSource();
+        refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshAsync(token)), refreshLifetime.Token).AsTask();
     }
 }

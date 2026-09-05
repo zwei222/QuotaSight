@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Xunit;
 using QuotaSight.Application;
 using QuotaSight.Core;
@@ -50,6 +51,130 @@ public sealed class RealFeatureTests
         var cards = DashboardAggregation.ToCards(snapshots, now); Assert.Single(cards); Assert.Equal(2, cards[0].Windows.Count); Assert.Equal("Monthly", cards[0].Windows[0].WindowName);
     }
 
+    [Fact]
+    public async Task History_export_preserves_manual_and_official_source_confidence_with_null_used_percent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var history = new JsonlQuotaHistory(root);
+            await history.AppendAsync([
+                Snapshot(25) with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual },
+                Snapshot(75) with { Source = QuotaSource.Official, Confidence = QuotaConfidence.Official },
+                Snapshot(0) with { Used = null, Limit = null, Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual }
+            ], default);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+            await viewModel.InitializeAsync();
+
+            using var json = JsonDocument.Parse(viewModel.History.ExportJson());
+            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Manual" && entry.GetProperty("confidence").GetString() == "Manual");
+            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Official" && entry.GetProperty("confidence").GetString() == "Official");
+            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("usedPercent").ValueKind == JsonValueKind.Null);
+
+            var csv = viewModel.History.ExportCsv();
+            Assert.StartsWith("Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n", csv, StringComparison.Ordinal);
+            Assert.Contains(",Manual,Manual", csv, StringComparison.Ordinal);
+            Assert.Contains(",Official,Official", csv, StringComparison.Ordinal);
+            Assert.Contains(",,", csv, StringComparison.Ordinal);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task InitializeAsync_loads_each_persisted_history_event_once_and_builds_one_card_window()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            var history = new JsonlQuotaHistory(root);
+            await history.AppendAsync([Snapshot(25)], default);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+
+            await viewModel.InitializeAsync();
+
+            Assert.Single(viewModel.History.Entries);
+            var card = Assert.Single(viewModel.Cards);
+            Assert.Single(card.Windows);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task InitializeAsync_skips_a_corrupt_current_day_and_loads_the_prior_day()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var now = DateTimeOffset.UtcNow;
+        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        try
+        {
+            var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now.AddDays(-1)));
+            await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], default);
+            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
+
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            await viewModel.InitializeAsync();
+            await viewModel.InitializeAsync();
+
+            Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
+            Assert.Single(viewModel.History.Entries, entry => entry.Account == "prior-day");
+            Assert.Contains(viewModel.Cards, card => card.Account == "prior-day");
+            await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(today, default));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task History_csv_export_keeps_comma_quote_and_newline_account_as_one_literal_field()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        const string account = "Personal, \"quoted\"\naccount";
+        try
+        {
+            var history = new JsonlQuotaHistory(root);
+            await history.AppendAsync([Snapshot(25) with { Account = account }], default);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+            await viewModel.InitializeAsync();
+
+            var rows = ParseCsv(viewModel.History.ExportCsv());
+
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(account, rows[1][1]);
+            Assert.Equal(7, rows[1].Count);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    private static List<List<string>> ParseCsv(string csv)
+    {
+        var rows = new List<List<string>>();
+        var row = new List<string>();
+        var field = new StringBuilder();
+        var quoted = false;
+        for (var index = 0; index < csv.Length; index++)
+        {
+            var character = csv[index];
+            if (quoted)
+            {
+                if (character == '"' && index + 1 < csv.Length && csv[index + 1] == '"') { field.Append('"'); index++; }
+                else if (character == '"') quoted = false;
+                else field.Append(character);
+                continue;
+            }
+            if (character == '"') quoted = true;
+            else if (character == ',') { row.Add(field.ToString()); field.Clear(); }
+            else if (character == '\r' || character == '\n')
+            {
+                if (character == '\r' && index + 1 < csv.Length && csv[index + 1] == '\n') index++;
+                row.Add(field.ToString()); field.Clear(); rows.Add(row); row = new List<string>();
+            }
+            else field.Append(character);
+        }
+        if (field.Length > 0 || row.Count > 0) { row.Add(field.ToString()); rows.Add(row); }
+        return rows;
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
     private static QuotaSnapshot Snapshot(decimal percent) => new(ProviderKind.OpenCode, "acct", "usage", new(QuotaWindowKind.Rolling, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)), percent, 100, null, "requests", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official, QuotaConfidence.Official, DateTimeOffset.UtcNow.AddHours(1), "OpenCode Go");
     private sealed class JsonHandler(string json) : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }); }
     private sealed class FixedDashboardSource(QuotaSnapshot snapshot) : IDashboardSource { public bool IsDemo => false; public IReadOnlyList<ProviderCardViewModel> Load() => DashboardAggregation.ToCards([snapshot], DateTimeOffset.UtcNow); }

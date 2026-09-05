@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     public bool TrayAvailable { get; set; }
     private bool isInitializing = true;
     private bool? appliedCompactLayout;
+    private Task? initializationTask;
     public bool IsCompactLayout => Width > 0 && Width < 760;
     public MainWindow() : this(CompositionRoot.CreateMainWindowParts()) { }
     public MainWindow((MainViewModel ViewModel, IProviderUiService Provider) parts) : this(parts.ViewModel, parts.Provider) { }
@@ -34,12 +35,16 @@ public partial class MainWindow : Window
         SizeChanged += (_, _) => ApplyResponsiveLayout();
         ApplyResponsiveLayout();
         Closing += OnClosing;
-        Opened += async (_, _) =>
-        {
-            await ViewModel.InitializeAsync();
-            ConfigureLists();
-            isInitializing = false;
-        };
+        Opened += (_, _) => _ = InitializeAsync();
+    }
+
+    public Task InitializeAsync() => initializationTask ??= InitializeCoreAsync();
+
+    private async Task InitializeCoreAsync()
+    {
+        await ViewModel.InitializeAsync();
+        ConfigureLists();
+        isInitializing = false;
     }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);

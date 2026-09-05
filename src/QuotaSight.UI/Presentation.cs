@@ -147,7 +147,7 @@ public sealed class ManualQuotaEntry
     }
 }
 
-public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, string Window, decimal? UsedPercent, DateTimeOffset Observed);
+public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, string Window, decimal? UsedPercent, DateTimeOffset Observed, QuotaSource Source, QuotaConfidence Confidence);
 public interface IHistoryUiService { IReadOnlyList<HistoryUiEntry> Read(); bool Delete(Guid id); void DeleteAll(); string ExportJson(); string ExportCsv(); }
 public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
 {
@@ -164,11 +164,12 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     public HistoryState(IQuotaHistory? history = null)
     {
         persistentHistory = history;
-        if (history is null) for (var i = 0; i < 30; i++) Entries.Add(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i)));
-        else _ = InitializeAsync();
+        if (history is null) for (var i = 0; i < 30; i++) Entries.Add(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual));
     }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        Entries.Clear();
+        LoadError = null;
         for (var i = 0; i < 30; i++)
         {
             var day = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-i));
@@ -177,10 +178,10 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
                 foreach (var item in await persistentHistory!.ReadEventsAsync(day, cancellationToken))
                 {
                     var snapshot = item.Snapshot;
-                    Entries.Add(new(item.EventId, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed));
+                    Entries.Add(new(item.EventId, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence));
                 }
             }
-            catch (InvalidDataException) { LoadError = "History data is damaged; showing available entries."; break; }
+            catch (InvalidDataException) { LoadError = "History data is damaged; showing available entries."; }
         }
     }
     public IReadOnlyList<HistoryUiEntry> Read() => Entries;
@@ -188,8 +189,8 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     public async Task DeleteAllAsync(CancellationToken cancellationToken = default) { if (persistentHistory is not null) await persistentHistory.DeleteAsync(null, cancellationToken); Entries.Clear(); }
     public bool Delete(Guid id) { var entry = Entries.FirstOrDefault(e => e.Id == id); return entry is not null && Entries.Remove(entry); }
     public void DeleteAll() => Entries.Clear();
-    public string ExportJson() => "[" + string.Join(",", FilteredEntries.Select(e => $"{{\"provider\":\"{EscapeJson(e.Provider)}\",\"account\":\"{EscapeJson(e.Account)}\",\"window\":\"{EscapeJson(e.Window)}\",\"usedPercent\":{(e.UsedPercent is { } p ? p.ToString(CultureInfo.InvariantCulture) : "null")},\"observed\":\"{EscapeJson(e.Observed.ToString("O", CultureInfo.InvariantCulture))}\"}}")) + "]";
-    public string ExportCsv() => "Provider,Account,Window,UsedPercent,Observed\n" + string.Join("\n", FilteredEntries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O}"));
+    public string ExportJson() => "[" + string.Join(",", FilteredEntries.Select(e => $"{{\"provider\":\"{EscapeJson(e.Provider)}\",\"account\":\"{EscapeJson(e.Account)}\",\"window\":\"{EscapeJson(e.Window)}\",\"usedPercent\":{(e.UsedPercent is { } p ? p.ToString(CultureInfo.InvariantCulture) : "null")},\"observed\":\"{EscapeJson(e.Observed.ToString("O", CultureInfo.InvariantCulture))}\",\"source\":\"{e.Source}\",\"confidence\":\"{e.Confidence}\"}}")) + "]";
+    public string ExportCsv() => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", FilteredEntries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     private static string EscapeJson(string value)
     {
@@ -210,7 +211,7 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
         }
         return builder.ToString();
     }
-    private static string EscapeCsv(string value) => value.Contains(',') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
+    private static string EscapeCsv(string value) => value.Any(character => character is ',' or '"' or '\r' or '\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
 }
 
 public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
@@ -364,7 +365,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         for (var dayOffset = 0; dayOffset < 30; dayOffset++)
         {
             try { snapshots.AddRange(await quotaHistory.ReadAsync(today.AddDays(-dayOffset), cancellationToken)); }
-            catch (InvalidDataException) { break; }
+            catch (InvalidDataException) { }
         }
 
         ReplaceCards(snapshots.Count > 0

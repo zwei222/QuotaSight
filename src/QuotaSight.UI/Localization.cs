@@ -27,9 +27,9 @@ public sealed class UiCopy
     public string OpenChatGpt => IsJapanese ? "ChatGPTの利用状況を開く" : "Open ChatGPT usage";
     public string OpenClaude => IsJapanese ? "Claudeの利用状況を開く" : "Open Claude usage";
     public string AddAccount => IsJapanese ? "アカウントを追加" : "Add account";
-    public string OpenCodeDescription => IsJapanese ? "APIキーはセッション中のみ使用します。接続テストにだけ渡し、保存・記録しません。" : "API key is session-only; it is passed only to the connect test facade and never persisted or logged.";
+    public string OpenCodeDescription => IsJapanese ? "APIキーは安全な資格情報ストアを利用できる場合は保存し、利用できない場合はセッション中のみ保持します。キーは表示・記録しません。" : "API key is stored in the secure credential store when available; otherwise it is kept for this session only. It is never displayed or logged.";
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
-    public string CopilotDescription => IsJapanese ? "Copilotはgh status/device flowを使用します。Client IDは不要です。組織クォータを取得できない場合は手動入力に切り替えられます。" : "Copilot uses gh status/device flow; no Client ID is required here. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotDescription => IsJapanese ? "Copilotはgh statusまたはdevice flowを使用します。device flowには実行時に設定したGitHub OAuth Client IDが必要ですが、Client Secretは不要です。gh statusにはClient IDは不要です。組織クォータを取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub OAuth Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
     public string StartDevice => IsJapanese ? "デバイス認証を開始" : "Start device flow";
     public string CopyCode => IsJapanese ? "コードをコピー" : "Copy code";
     public string OpenVerification => IsJapanese ? "認証ページを開く" : "Open verification";

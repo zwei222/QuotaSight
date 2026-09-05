@@ -150,7 +150,9 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
             {
                 var dayText = Path.GetFileNameWithoutExtension(file);
                 if (!DateOnly.TryParseExact(dayText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var fileDay)) continue;
-                var entries = await ReadEventsCoreAsync(fileDay, cancellationToken);
+                IReadOnlyList<QuotaHistoryEntry> entries;
+                try { entries = await ReadEventsCoreAsync(fileDay, cancellationToken); }
+                catch (InvalidDataException) { continue; }
                 var retained = entries.Where(item => DateOnly.FromDateTime(item.Snapshot.Observed.UtcDateTime) >= before).ToList();
                 if (retained.Count == 0)
                 {
@@ -192,7 +194,7 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
         foreach (var snapshot in await ReadAllAsync(cancellationToken))
         {
             var safe = new ExportQuotaDto(snapshot.DisplayName, snapshot.Provider.ToString(), snapshot.Metric,
-                snapshot.EffectivePercent, snapshot.Unit, snapshot.Observed);
+                snapshot.EffectivePercent, snapshot.Unit, snapshot.Observed, snapshot.Source.ToString(), snapshot.Confidence.ToString());
             await writer.WriteLineAsync(JsonSerializer.Serialize(safe, QuotaJsonContext.Default.ExportQuotaDto));
         }
     }
@@ -200,11 +202,11 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
     public async ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken)
     {
         await using var writer = new StreamWriter(output, Encoding.UTF8, leaveOpen: true);
-        await writer.WriteLineAsync("displayName,provider,metric,percent,unit,observed");
+        await writer.WriteLineAsync("displayName,provider,metric,percent,unit,observed,Source,Confidence");
         foreach (var snapshot in await ReadAllAsync(cancellationToken))
         {
             var values = new[] { snapshot.DisplayName, snapshot.Provider.ToString(), snapshot.Metric,
-                snapshot.EffectivePercent?.ToString(CultureInfo.InvariantCulture) ?? "", snapshot.Unit, snapshot.Observed.ToString("O", CultureInfo.InvariantCulture) };
+                snapshot.EffectivePercent?.ToString(CultureInfo.InvariantCulture) ?? "", snapshot.Unit, snapshot.Observed.ToString("O", CultureInfo.InvariantCulture), snapshot.Source.ToString(), snapshot.Confidence.ToString() };
             await writer.WriteLineAsync(string.Join(',', values.Select(EscapeCsv)));
         }
     }
@@ -227,5 +229,5 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
         ? '"' + value.Replace("\"", "\"\"", StringComparison.Ordinal) + '"'
         : value;
 
-    internal sealed record ExportQuotaDto(string DisplayName, string Provider, string Metric, decimal? Percent, string Unit, DateTimeOffset Observed);
+    internal sealed record ExportQuotaDto(string DisplayName, string Provider, string Metric, decimal? Percent, string Unit, DateTimeOffset Observed, [property: JsonPropertyName("source")] string Source, [property: JsonPropertyName("confidence")] string Confidence);
 }

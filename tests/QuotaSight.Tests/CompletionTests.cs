@@ -168,6 +168,33 @@ public sealed class CompletionTests
     }
 
     [Fact]
+    public async Task Startup_keeps_valid_history_available_when_another_day_is_corrupt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        try
+        {
+            var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now));
+            var snapshot = new QuotaSnapshot(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(1)), 40, 100, null, "%", now, now, QuotaSource.Manual, QuotaConfidence.Manual, null);
+            await history.AppendAsync([snapshot], default);
+            await File.WriteAllTextAsync(Path.Combine(root, "2026-09-04.jsonl"), "not-json\n");
+
+            await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(new DateOnly(2026, 9, 4), default));
+
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            await viewModel.InitializeAsync();
+
+            Assert.Contains(viewModel.History.Entries, entry => entry.Account == "acct");
+            Assert.Contains(viewModel.Cards, card => card.Account == "acct");
+            Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
+
+            await viewModel.History.DeleteAllAsync();
+            Assert.False(Directory.Exists(root));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Manual_add_reloads_jsonl_into_dashboard_and_history()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")); var history = new JsonlQuotaHistory(root, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero)));

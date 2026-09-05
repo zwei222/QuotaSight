@@ -64,12 +64,18 @@ public sealed class AccountRefreshCoordinator
 public sealed class RefreshScheduler : IRefreshScheduler, IDisposable
 {
     private readonly TimeProvider timeProvider;
-    private readonly TimeSpan interval;
+    private readonly Func<TimeSpan> interval;
 
     public RefreshScheduler(TimeSpan interval, TimeProvider? timeProvider = null)
     {
-        if (interval < TimeSpan.FromMinutes(5) || interval > TimeSpan.FromMinutes(15)) throw new ArgumentOutOfRangeException(nameof(interval));
-        this.interval = interval;
+        ValidateInterval(interval, nameof(interval));
+        this.interval = () => interval;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    public RefreshScheduler(Func<TimeSpan> interval, TimeProvider? timeProvider = null)
+    {
+        this.interval = interval ?? throw new ArgumentNullException(nameof(interval));
         this.timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -78,8 +84,20 @@ public sealed class RefreshScheduler : IRefreshScheduler, IDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             await refresh(cancellationToken);
-            await Task.Delay(interval, timeProvider, cancellationToken);
+            await Task.Delay(GetInterval(), timeProvider, cancellationToken);
         }
     }
     public void Dispose() { }
+
+    private TimeSpan GetInterval()
+    {
+        var value = interval();
+        ValidateInterval(value, nameof(interval));
+        return value;
+    }
+
+    private static void ValidateInterval(TimeSpan value, string parameterName)
+    {
+        if (value < TimeSpan.FromMinutes(5) || value > TimeSpan.FromMinutes(15)) throw new ArgumentOutOfRangeException(parameterName);
+    }
 }
