@@ -18,7 +18,13 @@ public enum ThemeMode { System, Light, Dark }
 public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
 
-public sealed record QuotaRowViewModel(string WindowName, string Metric, double VisualPercent, string PercentText, string StatusText, string ResetText, string SourceBadge, string FreshnessText, bool IsStale, string ProgressLabel);
+public sealed record QuotaRowViewModel(string WindowName, string Metric, double VisualPercent, string PercentText, string StatusText, string ResetText, string SourceBadge, string FreshnessText, bool IsStale, string ProgressLabel)
+{
+    public DateTimeOffset FetchedAt { get; init; }
+    public DateTimeOffset WindowEnd { get; init; }
+    public DateTimeOffset? FreshUntil { get; init; }
+    public DateTimeOffset? ResetAt { get; init; }
+}
 public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, string Account, string Accent, string StateText, bool IsDemo, IReadOnlyList<QuotaRowViewModel> Windows)
 {
     public string AccessibleLabel => $"{Name}, {Account}. {StateText}";
@@ -36,7 +42,7 @@ public static class QuotaPresentationFormatter
         var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now) : "Reset time unavailable";
         var stale = snapshot.IsStale(now);
         var freshness = stale ? "Stale · last updated " + FormatAge(snapshot.Fetched, now) : "Updated " + FormatAge(snapshot.Fetched, now);
-        return new(snapshot.Window.Kind.ToString(), snapshot.Metric, visual, percentText, status, reset, snapshot.Source.ToString(), freshness, stale, $"{percentText}. {status}. {reset}");
+        return new QuotaRowViewModel(snapshot.Window.Kind.ToString(), snapshot.Metric, visual, percentText, status, reset, snapshot.Source.ToString(), freshness, stale, $"{percentText}. {status}. {reset}") { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt };
     }
 
     public static string FormatReset(DateTimeOffset resetAt, DateTimeOffset now)
@@ -164,6 +170,7 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     public HistoryState(IQuotaHistory? history = null)
     {
         persistentHistory = history;
+        Entries.CollectionChanged += (_, _) => NotifyDerivedProperties();
         if (history is null) for (var i = 0; i < 30; i++) Entries.Add(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual));
     }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -189,6 +196,16 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     public async Task DeleteAllAsync(CancellationToken cancellationToken = default) { if (persistentHistory is not null) await persistentHistory.DeleteAsync(null, cancellationToken); Entries.Clear(); }
     public bool Delete(Guid id) { var entry = Entries.FirstOrDefault(e => e.Id == id); return entry is not null && Entries.Remove(entry); }
     public void DeleteAll() => Entries.Clear();
+    public async Task RefreshAfterPersistAsync(CancellationToken cancellationToken = default)
+    {
+        if (persistentHistory is not null) await InitializeAsync(cancellationToken);
+    }
+    private void NotifyDerivedProperties()
+    {
+        PropertyChanged?.Invoke(this, new(nameof(Entries)));
+        PropertyChanged?.Invoke(this, new(nameof(FilteredEntries)));
+        PropertyChanged?.Invoke(this, new(nameof(SparklinePoints)));
+    }
     public string ExportJson() => "[" + string.Join(",", FilteredEntries.Select(e => $"{{\"provider\":\"{EscapeJson(e.Provider)}\",\"account\":\"{EscapeJson(e.Account)}\",\"window\":\"{EscapeJson(e.Window)}\",\"usedPercent\":{(e.UsedPercent is { } p ? p.ToString(CultureInfo.InvariantCulture) : "null")},\"observed\":\"{EscapeJson(e.Observed.ToString("O", CultureInfo.InvariantCulture))}\",\"source\":\"{e.Source}\",\"confidence\":\"{e.Confidence}\"}}")) + "]";
     public string ExportCsv() => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", FilteredEntries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -328,7 +345,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) NotifyLocalizedProperties(); } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
-    public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); } } }
+    public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
     public bool IsHistoryVisible => CurrentPage == AppPage.History;
     public bool IsSettingsVisible => CurrentPage == AppPage.Settings;
@@ -350,6 +367,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IQuotaApplication? quotaApplication;
     private readonly InAppNotificationService notificationService = new();
     private readonly NotificationDeduplicator notificationDeduplicator;
+    private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
     public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -368,9 +386,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             catch (InvalidDataException) { }
         }
 
-        ReplaceCards(snapshots.Count > 0
-            ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow())
-            : source.Load());
+        if (snapshots.Count > 0) lastKnownSnapshots.Clear();
+        if (snapshots.Count > 0) lastKnownSnapshots.AddRange(snapshots);
+        ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow()) : source.Load());
     }
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
@@ -394,17 +412,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var snapshots = await quotaApplication.RefreshAsync(cancellationToken);
             if (snapshots.Count > 0)
             {
+                lastKnownSnapshots.Clear();
+                lastKnownSnapshots.AddRange(snapshots);
                 if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
                 ReplaceCards(Cards.Where(card => card.Provider != ProviderKind.OpenCode).Concat(DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow())).ToList());
+                if (quotaHistory is not null) await History.RefreshAfterPersistAsync(cancellationToken);
             }
+            else ReevaluateCards(timeProvider.GetUtcNow());
             PresentationState = snapshots.Count == 0 && Cards.Count > 0 ? PresentationState.Error : Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready;
         }
-        catch { PresentationState = PresentationState.Error; }
+        catch { ReevaluateCards(timeProvider.GetUtcNow()); PresentationState = PresentationState.Error; }
     }
     public async ValueTask ApplyProviderSnapshotsAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken = default)
     {
         if (snapshots.Count == 0) return;
         if (quotaHistory is not null) await quotaHistory.AppendAsync(snapshots, cancellationToken);
+        await History.RefreshAfterPersistAsync(cancellationToken);
+        lastKnownSnapshots.RemoveAll(existing => snapshots.Any(updated => updated.Provider == existing.Provider && updated.Account == existing.Account && updated.Window.Kind == existing.Window.Kind && updated.Metric == existing.Metric));
+        lastKnownSnapshots.AddRange(snapshots);
         if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
         ReplaceCards(Cards.Where(card => card.Provider != ProviderKind.OpenCode).Concat(DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow())).ToList());
         PresentationState = PresentationState.Ready;
@@ -420,6 +445,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task ApplyManualSnapshotAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken = default)
     {
         if (manualQuotaService is not null) await manualQuotaService.SetAsync(snapshot, cancellationToken);
+        if (manualQuotaService is not null) await History.RefreshAfterPersistAsync(cancellationToken);
+        lastKnownSnapshots.RemoveAll(existing => existing.Provider == snapshot.Provider && existing.Account == snapshot.Account && existing.Window.Kind == snapshot.Window.Kind && existing.Metric == snapshot.Metric);
+        lastKnownSnapshots.Add(snapshot);
         ApplyManualSnapshotUi(snapshot);
     }
     private void ApplyManualSnapshotUi(QuotaSnapshot snapshot)
@@ -453,6 +481,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(EmptyStateText));
     }
     private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { var replacement = cards.ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
+    private void ReevaluateCards(DateTimeOffset now)
+    {
+        for (var cardIndex = 0; cardIndex < Cards.Count; cardIndex++)
+        {
+            var card = Cards[cardIndex];
+            Cards[cardIndex] = card with
+            {
+                Windows = card.Windows.Select(row =>
+                {
+                    var stale = row.WindowEnd != default && row.WindowEnd <= now || row.FreshUntil is { } expiry && now > expiry;
+                    var freshness = stale ? "Stale · last updated " + FormatAge(row.FetchedAt, now) : "Updated " + FormatAge(row.FetchedAt, now);
+                    var reset = row.ResetAt is { } resetAt ? QuotaPresentationFormatter.FormatReset(resetAt, now) : row.ResetText;
+                    return row with { IsStale = stale, FreshnessText = freshness, ResetText = reset, ProgressLabel = $"{row.PercentText}. {row.StatusText}. {reset}" };
+                }).ToList()
+            };
+        }
+    }
+    private static string FormatAge(DateTimeOffset fetched, DateTimeOffset now)
+    {
+        var minutes = Math.Max(0, (int)(now - fetched).TotalMinutes);
+        return minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
+    }
     private void NotifyLocalizedProperties()
     {
         foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult) }) OnPropertyChanged(name);

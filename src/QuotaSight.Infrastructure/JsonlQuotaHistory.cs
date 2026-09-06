@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -17,16 +18,53 @@ public sealed record PersistedQuotaEvent(
 [JsonSerializable(typeof(JsonlQuotaHistory.ExportQuotaDto))]
 internal partial class QuotaJsonContext : JsonSerializerContext;
 
-public sealed class JsonlQuotaHistory : IQuotaHistory
+public sealed class JsonlQuotaHistory : IQuotaHistory, IDisposable
 {
+    private static readonly ConcurrentDictionary<string, byte> rootsInUse = new(StringComparer.OrdinalIgnoreCase);
     private readonly string root;
     private readonly TimeProvider timeProvider;
     private readonly SemaphoreSlim writer = new(1, 1);
+    private readonly FileStream processLock;
+    private int disposed;
 
     public JsonlQuotaHistory(string root, TimeProvider? timeProvider = null)
     {
-        this.root = root;
+        this.root = Path.GetFullPath(root);
         this.timeProvider = timeProvider ?? TimeProvider.System;
+        Directory.CreateDirectory(this.root);
+        if (!rootsInUse.TryAdd(this.root, 0)) throw new IOException($"Quota history is already open: {this.root}");
+
+        FileStream? lockStream = null;
+        try
+        {
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("Quota history locking requires Windows or Linux.");
+            lockStream = new FileStream(Path.Combine(this.root, ".history.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 1, FileOptions.None);
+            // FileStream.Lock is implemented by the supported Windows/Linux runtimes; CA1416 only models Windows.
+#pragma warning disable CA1416
+            lockStream.Lock(0, 1);
+#pragma warning restore CA1416
+            processLock = lockStream;
+        }
+        catch
+        {
+            lockStream?.Dispose();
+            rootsInUse.TryRemove(this.root, out _);
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
+        {
+#pragma warning disable CA1416
+            processLock.Unlock(0, 1);
+#pragma warning restore CA1416
+        }
+        processLock.Dispose();
+        rootsInUse.TryRemove(root, out _);
+        writer.Dispose();
     }
 
     private string PathFor(DateOnly day) => Path.Combine(root, $"{day:yyyy-MM-dd}.jsonl");
@@ -90,7 +128,9 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
             {
                 var dayText = Path.GetFileNameWithoutExtension(file);
                 if (!DateOnly.TryParseExact(dayText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)) continue;
-                var existing = await ReadEventsCoreAsync(day, cancellationToken);
+                IReadOnlyList<QuotaHistoryEntry> existing;
+                try { existing = await ReadEventsCoreAsync(day, cancellationToken); }
+                catch (InvalidDataException) { continue; }
                 var events = existing.Where(e => e.EventId != eventId).ToList();
                 if (events.Count == 0) { if (existing.Count > 0) File.Delete(file); continue; }
                 if (events.Count != existing.Count) await RewriteAsync(file, events.Select(e => new PersistedQuotaEvent(1, e.EventId, e.Snapshot)), cancellationToken);
@@ -179,7 +219,10 @@ public sealed class JsonlQuotaHistory : IQuotaHistory
             }
             else if (Directory.Exists(root))
             {
-                Directory.Delete(root, true);
+                foreach (var file in Directory.EnumerateFiles(root, "*.jsonl"))
+                {
+                    File.Delete(file);
+                }
             }
         }
         finally

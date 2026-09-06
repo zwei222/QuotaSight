@@ -183,9 +183,20 @@ public partial class MainWindow : Window
     private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
     private async void DeleteHistoryClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: Guid id }) await ViewModel.History.DeleteAsync(id);
+        try
+        {
+            if (sender is Button { Tag: Guid id }) await ViewModel.History.DeleteAsync(id);
+        }
+        catch
+        {
+            ViewModel.Notify("History", "Unable to delete this history entry.");
+        }
     }
-    private async void DeleteAllHistoryClick(object? sender, RoutedEventArgs e) => await ViewModel.History.DeleteAllAsync();
+    private async void DeleteAllHistoryClick(object? sender, RoutedEventArgs e)
+    {
+        try { await ViewModel.History.DeleteAllAsync(); }
+        catch { ViewModel.Notify("History", "Unable to delete history."); }
+    }
     private async void ExportCsvClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.csv", "text/csv", ViewModel.History.ExportCsv());
     private async void ExportJsonClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.json", "application/json", ViewModel.History.ExportJson());
     private async Task ExportAsync(string suggestedName, string contentType, string content)

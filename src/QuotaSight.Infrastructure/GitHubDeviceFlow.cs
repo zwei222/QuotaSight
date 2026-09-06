@@ -50,15 +50,30 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
     public async ValueTask<FetchResult<DeviceAuthorizationStart>> StartAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(clientId)) return new(FetchStatus.Unsupported, Error: "GitHub client ID is not configured.");
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/device/code");
-        request.Headers.Accept.ParseAdd("application/json");
-        request.Content = JsonContent.Create(new DeviceCodeRequest(clientId, scope), GitHubJsonContext.Default.DeviceCodeRequest);
-        using var response = await client.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
-        var details = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceCodeResponse, cancellationToken);
-        if (details is null || !Uri.TryCreate(details.VerificationUri, UriKind.Absolute, out var verificationUri)) return new(FetchStatus.TransientFailure);
-        started = new(details.DeviceCode, details.UserCode, verificationUri, timeProvider.GetUtcNow().AddSeconds(details.ExpiresIn), TimeSpan.FromSeconds(Math.Max(5, details.Interval)));
-        return FetchResult<DeviceAuthorizationStart>.Success(started);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/device/code");
+            request.Headers.Accept.ParseAdd("application/json");
+            request.Content = JsonContent.Create(new DeviceCodeRequest(clientId, scope), GitHubJsonContext.Default.DeviceCodeRequest);
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
+            var details = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceCodeResponse, cancellationToken);
+            if (details is null || string.IsNullOrWhiteSpace(details.DeviceCode) || string.IsNullOrWhiteSpace(details.UserCode) || details.ExpiresIn <= 0 || details.Interval < 0 || !Uri.TryCreate(details.VerificationUri, UriKind.Absolute, out var verificationUri)) return new(FetchStatus.TransientFailure);
+            started = new(details.DeviceCode, details.UserCode, verificationUri, timeProvider.GetUtcNow().AddSeconds(details.ExpiresIn), TimeSpan.FromSeconds(Math.Max(5, details.Interval)));
+            return FetchResult<DeviceAuthorizationStart>.Success(started);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new(FetchStatus.TransientFailure, Error: "GitHub device request timed out.");
+        }
+        catch (HttpRequestException)
+        {
+            return new(FetchStatus.TransientFailure, Error: "GitHub device request failed.");
+        }
+        catch (JsonException)
+        {
+            return new(FetchStatus.TransientFailure, Error: "GitHub device response was invalid.");
+        }
     }
 
     public async ValueTask<FetchResult<string>> PollAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken)
@@ -67,18 +82,34 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
         var interval = authorization.Interval;
         while (timeProvider.GetUtcNow() < authorization.ExpiresAt)
         {
-            await delay.DelayAsync(interval, cancellationToken);
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/oauth/access_token");
-            request.Headers.Accept.ParseAdd("application/json");
-            request.Content = JsonContent.Create(new TokenRequest(clientId, authorization.DeviceCode, GrantType), GitHubJsonContext.Default.TokenRequest);
-            using var response = await client.SendAsync(request, cancellationToken);
-            var result = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceTokenResponse, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(result?.AccessToken)) return FetchResult<string>.Success(result.AccessToken);
-            if (result?.Error == "authorization_pending") continue;
-            if (result?.Error == "slow_down") { interval += TimeSpan.FromSeconds(5); continue; }
-            if (result?.Error == "expired_token") return new(FetchStatus.TransientFailure, Error: "GitHub device authorization expired.");
-            if (result?.Error == "access_denied") return new(FetchStatus.Unauthorized, Error: "GitHub device authorization denied.");
-            return new(FetchStatus.TransientFailure, Error: "GitHub token response was invalid.");
+            try
+            {
+                await delay.DelayAsync(interval, cancellationToken);
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/oauth/access_token");
+                request.Headers.Accept.ParseAdd("application/json");
+                request.Content = JsonContent.Create(new TokenRequest(clientId, authorization.DeviceCode, GrantType), GitHubJsonContext.Default.TokenRequest);
+                using var response = await client.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
+                var result = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceTokenResponse, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(result?.AccessToken)) return FetchResult<string>.Success(result.AccessToken);
+                if (result?.Error == "authorization_pending") continue;
+                if (result?.Error == "slow_down") { interval += TimeSpan.FromSeconds(5); continue; }
+                if (result?.Error == "expired_token") return new(FetchStatus.TransientFailure, Error: "GitHub device authorization expired.");
+                if (result?.Error == "access_denied") return new(FetchStatus.Unauthorized, Error: "GitHub device authorization denied.");
+                return new(FetchStatus.TransientFailure, Error: "GitHub token response was invalid.");
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return new(FetchStatus.TransientFailure, Error: "GitHub token request timed out.");
+            }
+            catch (HttpRequestException)
+            {
+                return new(FetchStatus.TransientFailure, Error: "GitHub token request failed.");
+            }
+            catch (JsonException)
+            {
+                return new(FetchStatus.TransientFailure, Error: "GitHub token response was invalid.");
+            }
         }
         return new(FetchStatus.TransientFailure, Error: "GitHub device authorization expired.");
     }

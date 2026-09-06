@@ -30,6 +30,49 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
+    public async Task Refresh_failure_rebuilds_last_known_cards_at_current_time_and_notifies_error_banner()
+    {
+        var observed = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var clock = new MutableTimeProvider(observed);
+        var snapshot = Snapshot(40) with { Fetched = observed, Observed = observed, Window = new(QuotaWindowKind.Rolling, observed.AddHours(-1), observed.AddHours(1)) };
+        var vm = new MainViewModel(new FixedDashboardSource(snapshot), quotaApplication: new StubApplication([]), timeProvider: clock);
+        var changed = new List<string>();
+        vm.PropertyChanged += (_, args) => changed.Add(args.PropertyName!);
+
+        clock.Advance(TimeSpan.FromHours(2));
+        await vm.RefreshAsync();
+
+        var row = Assert.Single(Assert.Single(vm.Cards).Windows);
+        Assert.True(row.IsStale);
+        Assert.Contains("Stale", row.FreshnessText, StringComparison.Ordinal);
+        Assert.True(vm.IsError);
+        Assert.Contains(nameof(vm.IsNotificationVisible), changed);
+        Assert.Contains(nameof(vm.NotificationBannerText), changed);
+    }
+
+    [Fact]
+    public async Task Saved_manual_and_provider_snapshots_are_immediately_visible_in_history_and_exports()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            var history = new JsonlQuotaHistory(root);
+            var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history);
+            await vm.InitializeAsync();
+            var manual = Snapshot(25) with { Provider = ProviderKind.ChatGpt, Account = "manual-account", DisplayName = "ChatGPT Plus", Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
+            await vm.ApplyManualSnapshotAsync(manual);
+            Assert.Contains(vm.History.Entries, entry => entry.Account == "manual-account");
+            Assert.Contains("manual-account", vm.History.ExportJson(), StringComparison.Ordinal);
+
+            var provider = Snapshot(75) with { Account = "provider-account", Source = QuotaSource.Official, Confidence = QuotaConfidence.Official };
+            await vm.ApplyProviderSnapshotsAsync([provider]);
+            Assert.Contains(vm.History.Entries, entry => entry.Account == "provider-account");
+            Assert.Contains("provider-account", vm.History.ExportCsv(), StringComparison.Ordinal);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Settings_roundtrip_and_client_id_update_are_public_contracts()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -175,6 +218,12 @@ public sealed class RealFeatureTests
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
+    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset current = now;
+        public override DateTimeOffset GetUtcNow() => current;
+        public void Advance(TimeSpan amount) => current = current.Add(amount);
+    }
     private static QuotaSnapshot Snapshot(decimal percent) => new(ProviderKind.OpenCode, "acct", "usage", new(QuotaWindowKind.Rolling, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)), percent, 100, null, "requests", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official, QuotaConfidence.Official, DateTimeOffset.UtcNow.AddHours(1), "OpenCode Go");
     private sealed class JsonHandler(string json) : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }); }
     private sealed class FixedDashboardSource(QuotaSnapshot snapshot) : IDashboardSource { public bool IsDemo => false; public IReadOnlyList<ProviderCardViewModel> Load() => DashboardAggregation.ToCards([snapshot], DateTimeOffset.UtcNow); }

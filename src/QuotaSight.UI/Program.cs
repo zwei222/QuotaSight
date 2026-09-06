@@ -29,7 +29,7 @@ internal static class SmokeTest
             if (config.Load().GithubOAuthClientId != "smoke-client") return 1;
             var app = CompositionRoot.CreateApplication(Path.Combine(root, "data"));
             if (app is null || !Directory.Exists(Path.Combine(root, "config"))) return 2;
-            _ = CompositionRoot.CreateMainViewModel(Path.Combine(root, "data"));
+            _ = CompositionRoot.CreateMainViewModel(Path.Combine(root, "view-model-data"));
             return 0;
         }
         catch { return 3; }

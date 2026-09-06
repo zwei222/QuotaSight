@@ -189,7 +189,8 @@ public sealed class CompletionTests
             Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
 
             await viewModel.History.DeleteAllAsync();
-            Assert.False(Directory.Exists(root));
+            Assert.True(Directory.Exists(root));
+            Assert.Empty(Directory.EnumerateFiles(root, "*.jsonl"));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
