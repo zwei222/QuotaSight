@@ -2,7 +2,7 @@ using QuotaSight.Application;
 using QuotaSight.Core;
 namespace QuotaSight.Infrastructure;
 
-public sealed class QuotaApplication(IEnumerable<IQuotaAdapter> adapters, IQuotaHistory history, TimeProvider timeProvider) : IQuotaApplication
+public sealed class QuotaApplication(IEnumerable<IQuotaAdapter> adapters, IQuotaHistory history, TimeProvider timeProvider) : IQuotaApplication, IDisposable
 {
     private readonly TimeProvider clock = timeProvider;
     public async ValueTask<IReadOnlyList<QuotaSnapshot>> RefreshAsync(CancellationToken cancellationToken)
@@ -12,4 +12,6 @@ public sealed class QuotaApplication(IEnumerable<IQuotaAdapter> adapters, IQuota
         var all = new List<QuotaSnapshot>(); foreach (var adapter in adapters) { var result = await adapter.FetchAsync(adapter.Provider.ToString(), cancellationToken); if (result.IsSuccess && result.Value is not null) all.AddRange(result.Value); }
         if (all.Count > 0) await history.AppendAsync(all, cancellationToken); return all;
     }
+
+    public void Dispose() => (history as IDisposable)?.Dispose();
 }

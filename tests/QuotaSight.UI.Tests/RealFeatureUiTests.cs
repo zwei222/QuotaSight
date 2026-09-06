@@ -56,7 +56,7 @@ public sealed class RealFeatureTests
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         try
         {
-            var history = new JsonlQuotaHistory(root);
+            using var history = new JsonlQuotaHistory(root);
             var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history);
             await vm.InitializeAsync();
             var manual = Snapshot(25) with { Provider = ProviderKind.ChatGpt, Account = "manual-account", DisplayName = "ChatGPT Plus", Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
@@ -101,7 +101,7 @@ public sealed class RealFeatureTests
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var history = new JsonlQuotaHistory(root);
+            using var history = new JsonlQuotaHistory(root);
             await history.AppendAsync([
                 Snapshot(25) with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual },
                 Snapshot(75) with { Source = QuotaSource.Official, Confidence = QuotaConfidence.Official },
@@ -130,7 +130,7 @@ public sealed class RealFeatureTests
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         try
         {
-            var history = new JsonlQuotaHistory(root);
+            using var history = new JsonlQuotaHistory(root);
             await history.AppendAsync([Snapshot(25)], default);
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
 
@@ -151,7 +151,7 @@ public sealed class RealFeatureTests
         var today = DateOnly.FromDateTime(now.UtcDateTime);
         try
         {
-            var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now.AddDays(-1)));
+            using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now.AddDays(-1)));
             await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], default);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
 
@@ -174,7 +174,7 @@ public sealed class RealFeatureTests
         const string account = "Personal, \"quoted\"\naccount";
         try
         {
-            var history = new JsonlQuotaHistory(root);
+            using var history = new JsonlQuotaHistory(root);
             await history.AppendAsync([Snapshot(25) with { Account = account }], default);
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
             await viewModel.InitializeAsync();

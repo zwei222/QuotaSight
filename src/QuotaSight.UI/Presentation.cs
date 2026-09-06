@@ -315,7 +315,7 @@ public sealed class UiProviderFacade : IProviderUiService
     }
 }
 
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly IDashboardSource source;
     private readonly HashSet<string> openCodeAccounts = new(StringComparer.Ordinal);
@@ -368,6 +368,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly InAppNotificationService notificationService = new();
     private readonly NotificationDeduplicator notificationDeduplicator;
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
+
+    public void Dispose() => (quotaHistory as IDisposable)?.Dispose();
     public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {

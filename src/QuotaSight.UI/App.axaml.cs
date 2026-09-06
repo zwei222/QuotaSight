@@ -87,7 +87,7 @@ public partial class App : Avalonia.Application
                 window.TrayAvailable = Tray.IsNativeBackendAvailable;
             }
             catch (Exception exception) { window.TrayAvailable = false; window.ViewModel.Notify("Tray unavailable", exception.GetType().Name); }
-            desktop.Exit += (_, _) => { refreshLifetime?.Cancel(); refreshScheduler?.Dispose(); refreshLifetime?.Dispose(); nativeTray?.Dispose(); nativeTray = null; ExitRequested = true; };
+            desktop.Exit += (_, _) => { refreshLifetime?.Cancel(); refreshScheduler?.Dispose(); refreshLifetime?.Dispose(); window.ViewModel.Dispose(); nativeTray?.Dispose(); nativeTray = null; ExitRequested = true; };
         }
         base.OnFrameworkInitializationCompleted();
     }

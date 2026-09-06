@@ -94,7 +94,7 @@ public sealed class CompletionTests
     [Fact]
     public async Task Gh_probe_distinguishes_available_authenticated_from_quota()
     {
-        var result = await new GhCliProbe("/bin/true").ProbeAsync(default);
+        var result = await CreateExitProbe(0).ProbeAsync(default);
         Assert.Equal(GhProbeStatus.AvailableAuthenticated, result.Status);
         Assert.False(result.QuotaAvailable);
     }
@@ -102,7 +102,7 @@ public sealed class CompletionTests
     [Fact]
     public async Task Gh_probe_distinguishes_unauthorized()
     {
-        var result = await new GhCliProbe("/bin/false").ProbeAsync(default);
+        var result = await CreateExitProbe(1).ProbeAsync(default);
         Assert.Equal(GhProbeStatus.Unauthorized, result.Status);
     }
 
@@ -110,13 +110,13 @@ public sealed class CompletionTests
     public async Task Gh_probe_distinguishes_missing_and_timeout()
     {
         Assert.Equal(GhProbeStatus.Missing, (await new GhCliProbe("/missing/gh").ProbeAsync(default)).Status);
-        Assert.Equal(GhProbeStatus.Timeout, (await new GhCliProbe("/bin/sleep", ["2"], TimeSpan.FromMilliseconds(10)).ProbeAsync(default)).Status);
+        Assert.Equal(GhProbeStatus.Timeout, (await CreateTimeoutProbe().ProbeAsync(default)).Status);
     }
 
     [Fact]
     public async Task Provider_facade_exposes_gh_probe_status_without_output()
     {
-        var result = await new UiProviderFacade(ghProbe: new GhCliProbe("/bin/true")).ProbeGitHubCliAsync(default);
+        var result = await new UiProviderFacade(ghProbe: CreateExitProbe(0)).ProbeGitHubCliAsync(default);
         Assert.Contains("authenticated", result, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("stdout", result, StringComparison.OrdinalIgnoreCase);
     }
@@ -174,7 +174,7 @@ public sealed class CompletionTests
         var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
         try
         {
-            var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now));
+            using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now));
             var snapshot = new QuotaSnapshot(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(1)), 40, 100, null, "%", now, now, QuotaSource.Manual, QuotaConfidence.Manual, null);
             await history.AppendAsync([snapshot], default);
             await File.WriteAllTextAsync(Path.Combine(root, "2026-09-04.jsonl"), "not-json\n");
@@ -198,10 +198,18 @@ public sealed class CompletionTests
     [Fact]
     public async Task Manual_add_reloads_jsonl_into_dashboard_and_history()
     {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")); var history = new JsonlQuotaHistory(root, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero)));
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")); using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero)));
         var snapshot = new QuotaSnapshot(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1)), 40, 100, null, "%", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, null);
         await vm.ApplyManualSnapshotAsync(snapshot); await Task.Delay(30); var reloaded = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); await reloaded.InitializeAsync(); Assert.Contains(reloaded.Cards, c => c.Account == "acct"); Assert.Contains(reloaded.History.Entries, e => e.Account == "acct");
     }
+
+    private static GhCliProbe CreateExitProbe(int exitCode) => OperatingSystem.IsWindows()
+        ? new GhCliProbe("cmd.exe", ["/c", $"exit {exitCode}"])
+        : new GhCliProbe("/bin/sh", ["-c", $"exit {exitCode}"]);
+
+    private static GhCliProbe CreateTimeoutProbe() => OperatingSystem.IsWindows()
+        ? new GhCliProbe("cmd.exe", ["/c", "ping -n 3 127.0.0.1 > nul"], TimeSpan.FromMilliseconds(10))
+        : new GhCliProbe("/bin/sh", ["-c", "sleep 2"], TimeSpan.FromMilliseconds(10));
 
     private sealed class FakeWindowsCredentialApi : IWindowsCredentialApi
     {

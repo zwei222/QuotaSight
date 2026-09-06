@@ -106,7 +106,7 @@ public sealed class WorkflowContractTests
     public void Release_write_permission_is_limited_to_release_job()
     {
         Assert.Contains("contents: write", Release);
-        Assert.Contains("permissions:\n  contents: read", Release);
+        Assert.Contains("permissions:\n  contents: read", Release.ReplaceLineEndings("\n"));
     }
 
     [Fact]
