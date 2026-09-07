@@ -34,7 +34,7 @@ public sealed class UiCopy
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
     public string CopilotDescription => IsJapanese ? "Copilotはgh statusまたはdevice flowを使用します。device flowには実行時に設定したGitHub OAuth Client IDが必要ですが、Client Secretは不要です。gh statusにはClient IDは不要です。組織クォータを取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub OAuth Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
     public string CodexBadge => "Experimental";
-    public string CodexDescription => IsJapanese ? "OpenAI Codexの実験的な連携です。ChatGPT本体全体ではなく、ChatGPT Plus/ProのCodex枠だけを取得します。ログイン後、認証コードは画面にのみ表示します。" : "Experimental OpenAI Codex integration. It reads the ChatGPT Plus/Pro Codex allowance, not all ChatGPT usage. The one-time code is shown on screen only.";
+    public string CodexDescription => IsJapanese ? "OpenAI Codexの実験的な連携です。ChatGPT Plus/ProのCodex枠だけを取得します。Codex CLIのインストールは不要で、QuotaSight自身がブラウザでdevice loginを開始します。ブラウザーを開けない場合も、表示されたURLとコードで手動継続できます。" : "Experimental OpenAI Codex integration for the ChatGPT Plus/Pro Codex allowance only. No Codex CLI installation is required; QuotaSight starts the device login in your browser. If the browser cannot open, continue manually with the displayed URL and code.";
     public string CodexExpires => IsJapanese ? "期限" : "Expires";
     public string CodexConnect => IsJapanese ? "ChatGPTに接続" : "Connect to ChatGPT";
     public string CodexConfirm => IsJapanese ? "接続を確認" : "Confirm connection";
@@ -42,7 +42,7 @@ public sealed class UiCopy
     public string CodexOpenBrowser => IsJapanese ? "認証ページを開く" : "Open verification page";
     public string CodexCodeLabel => IsJapanese ? "認証コード" : "User code";
     public string CodexBrowserOpened => IsJapanese ? "既定のブラウザーで認証ページを開きました。" : "The verification page was opened in your default browser.";
-    public string CodexBrowserFailed => IsJapanese ? "ブラウザーを開けませんでした。認証ページを手動で開いてください。" : "We could not open your browser. Open the verification page manually.";
+    public string CodexBrowserFailed => IsJapanese ? "ブラウザーを開けませんでした。表示されたURLを手動で開き、コードを入力して続行してください。" : "We could not open your browser. Open the displayed URL manually, then enter the code to continue.";
     public string StartDevice => IsJapanese ? "デバイス認証を開始" : "Start device flow";
     public string CopyCode => IsJapanese ? "コードをコピー" : "Copy code";
     public string OpenVerification => IsJapanese ? "認証ページを開く" : "Open verification";

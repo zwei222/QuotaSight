@@ -67,6 +67,15 @@ public sealed class CodexOAuthTests
         Assert.Equal(TimeSpan.FromSeconds(5), result.Value!.Interval);
     }
 
+    [Fact]
+    public async Task Start_reads_string_interval_as_integer()
+    {
+        var client = new CodexOAuthClient(new HttpClient(new AsyncHandler(_ => Task.FromResult(Json(HttpStatusCode.OK, "{\"user_code\":\"user\",\"device_auth_id\":\"device\",\"interval\":\"5\"}")))), new InMemoryCredentialStore(), new FixedTimeProvider(Now));
+        var result = await client.StartAsync(default);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(TimeSpan.FromSeconds(5), result.Value!.Interval);
+    }
+
     [Theory]
     [InlineData(0, 3)]
     [InlineData(1, 3)]
@@ -123,10 +132,33 @@ public sealed class CodexOAuthTests
         Assert.Equal(TimeSpan.FromSeconds(7), pending.RetryAfter);
     }
 
+    [Fact]
+    public async Task Poll_forbidden_waits_with_authorization_interval_and_can_succeed_on_repoll()
+    {
+        var count = 0;
+        var client = new CodexOAuthClient(new HttpClient(new AsyncHandler(_ =>
+        {
+            count++;
+            return Task.FromResult(count switch
+            {
+                1 => Json(HttpStatusCode.Forbidden, "pending"),
+                2 => Json(HttpStatusCode.OK, "{\"authorization_code\":\"code\",\"code_verifier\":\"verifier\"}"),
+                _ => Json(HttpStatusCode.OK, $"{{\"access_token\":\"{Access}\",\"refresh_token\":\"{Refresh}\",\"expires_in\":3600}}")
+            });
+        })), new InMemoryCredentialStore(), new FixedTimeProvider(Now));
+        var authorization = new CodexDeviceAuthorization("u", "d", new Uri("https://auth.openai.com/codex/device"), Now.AddMinutes(5), TimeSpan.FromSeconds(7));
+
+        var pending = await client.PollAndStoreAsync(authorization, default);
+        var completed = await client.PollAndStoreAsync(authorization, default);
+
+        Assert.Equal(FetchStatus.TransientFailure, pending.Status);
+        Assert.Equal(authorization.Interval, pending.RetryAfter);
+        Assert.True(completed.IsSuccess);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.TooManyRequests, FetchStatus.RateLimited)]
     [InlineData(HttpStatusCode.Unauthorized, FetchStatus.Unauthorized)]
-    [InlineData(HttpStatusCode.Forbidden, FetchStatus.Forbidden)]
     public async Task Poll_classifies_http_status(HttpStatusCode status, FetchStatus expected)
     {
         var client = new CodexOAuthClient(new HttpClient(new AsyncHandler(_ => Task.FromResult(Json(status, "status-body")))), new InMemoryCredentialStore(), new FixedTimeProvider(Now));

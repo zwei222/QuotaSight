@@ -92,6 +92,9 @@ public partial class MainWindow : Window
         var content = this.FindControl<ScrollViewer>("ContentScroll")!;
         var nav = this.FindControl<StackPanel>("NavLinks")!;
         var localFirst = this.FindControl<Border>("LocalFirstCard")!;
+        var header = this.FindControl<Grid>("DashboardHeader")!;
+        var headerCopy = this.FindControl<StackPanel>("DashboardHeaderCopy")!;
+        var refresh = this.FindControl<Button>("RefreshButton")!;
         if (compact)
         {
             shell.ColumnDefinitions = new ColumnDefinitions("*");
@@ -102,6 +105,11 @@ public partial class MainWindow : Window
             nav.Orientation = Orientation.Horizontal;
             localFirst.IsVisible = false;
             nav.Children[1].IsVisible = false;
+            header.ColumnDefinitions = new ColumnDefinitions("*");
+            header.RowDefinitions = new RowDefinitions("Auto,Auto");
+            Grid.SetColumn(headerCopy, 0); Grid.SetRow(headerCopy, 0);
+            Grid.SetColumn(refresh, 0); Grid.SetRow(refresh, 1);
+            refresh.HorizontalAlignment = HorizontalAlignment.Right;
         }
         else
         {
@@ -113,6 +121,11 @@ public partial class MainWindow : Window
             nav.Orientation = Orientation.Vertical;
             localFirst.IsVisible = true;
             nav.Children[1].IsVisible = true;
+            header.ColumnDefinitions = new ColumnDefinitions("*,Auto");
+            header.RowDefinitions = new RowDefinitions("Auto");
+            Grid.SetColumn(headerCopy, 0); Grid.SetRow(headerCopy, 0);
+            Grid.SetColumn(refresh, 1); Grid.SetRow(refresh, 0);
+            refresh.HorizontalAlignment = HorizontalAlignment.Stretch;
         }
     }
 

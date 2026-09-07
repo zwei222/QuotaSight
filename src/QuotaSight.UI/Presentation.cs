@@ -4,7 +4,6 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Avalonia;
-using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using QuotaSight.Core;
@@ -412,6 +411,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string CodexStatusText => codexResult.Message;
     public string CodexUserCode => codexResult.Prompt?.UserCode ?? string.Empty;
     public Uri? CodexVerificationUri => codexResult.Prompt?.VerificationUri;
+    public string CodexVerificationUriText => codexResult.Prompt?.VerificationUri.ToString() ?? string.Empty;
     public string CodexExpiresText => codexResult.Prompt is { } prompt ? $"{CopyText.CodexExpires}: {prompt.ExpiresAt.ToLocalTime():g}" : string.Empty;
     public bool IsCodexPromptVisible => codexResult.Prompt is not null && codexResult.State is CodexAuthorizationState.AwaitingAuthorization or CodexAuthorizationState.Pending;
     public bool IsCodexConnected => codexResult.State == CodexAuthorizationState.Connected;
@@ -424,7 +424,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         codexResult = result;
         if (result.Success && result.State == CodexAuthorizationState.Connected) hasCodexCredential = true;
         if (result.Success && result.State == CodexAuthorizationState.Disconnected) hasCodexCredential = false;
-        foreach (var name in new[] { nameof(CodexState), nameof(CodexStatusText), nameof(CodexUserCode), nameof(CodexExpiresText), nameof(IsCodexPromptVisible), nameof(IsCodexConnected), nameof(IsCodexDisconnected), nameof(IsCodexError), nameof(IsCodexLogoutVisible) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CodexState), nameof(CodexStatusText), nameof(CodexUserCode), nameof(CodexVerificationUriText), nameof(CodexExpiresText), nameof(IsCodexPromptVisible), nameof(IsCodexConnected), nameof(IsCodexDisconnected), nameof(IsCodexError), nameof(IsCodexLogoutVisible) }) OnPropertyChanged(name);
     }
     public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
@@ -688,34 +688,11 @@ public static class UiSettings
         try
         {
             if (Avalonia.Application.Current is not null && Dispatcher.UIThread.CheckAccess())
-            {
                 Avalonia.Application.Current.RequestedThemeVariant = AppliedTheme;
-                var dark = mode == ThemeMode.Dark;
-                SetBrush("SidebarBrush", dark ? "#151A24" : "#F1F3F6");
-                SetBrush("CardBrush", dark ? "#202735" : "#FFFFFF");
-                SetBrush("BannerBrush", dark ? "#242B48" : "#E8EEFF");
-                SetBrush("BorderBrush", dark ? "#3A465A" : "#D8DEE8");
-                SetBrush("TextPrimaryBrush", dark ? "#F4F7FB" : "#172033");
-                SetBrush("TextMutedBrush", dark ? "#AAB5C4" : "#5E6A7E");
-                SetBrush("AccentBrush", dark ? "#8FA2FF" : "#405DE6");
-                SetBrush("WarningBrush", dark ? "#F4B46A" : "#B76B16");
-            }
         }
         catch (InvalidOperationException)
         {
             // Headless callers may not own Avalonia's UI thread.
-        }
-    }
-    private static void SetBrush(string key, string color)
-    {
-        try
-        {
-            if (Avalonia.Application.Current?.Resources is not { } resources) return;
-            resources[key] = new SolidColorBrush(Color.Parse(color));
-        }
-        catch (InvalidOperationException)
-        {
-            // Theme resources are best-effort when a headless caller has no UI dispatcher.
         }
     }
 }

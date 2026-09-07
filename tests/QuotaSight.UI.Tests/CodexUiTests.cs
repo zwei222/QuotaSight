@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Avalonia.Controls;
+using Avalonia.VisualTree;
 using Avalonia.Headless.XUnit;
 using QuotaSight.Application;
 using QuotaSight.Core;
@@ -104,7 +105,7 @@ public sealed class CodexUiTests
     {
         var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), new UiProviderFacade());
         window.Show();
-        window.ViewModel.Navigate(AppPage.Settings);
+        window.ViewModel.Navigate(AppPage.Dashboard);
         var button = window.FindControl<Button>("CodexLogoutButton")!;
 
         window.ViewModel.SetCodexResult(new(true, CodexAuthorizationState.Connected, "Codex connected."));
@@ -121,11 +122,36 @@ public sealed class CodexUiTests
     {
         var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), new UiProviderFacade());
         window.Show();
-        window.ViewModel.Navigate(AppPage.Settings);
+        window.ViewModel.Navigate(AppPage.Dashboard);
         Assert.False(window.FindControl<Button>("CodexPollButton")!.IsEnabled);
         Assert.False(window.FindControl<Button>("CodexLogoutButton")!.IsVisible);
         Assert.Equal("OpenAI Codex", window.FindControl<Border>("CodexCard")!.Child is not null ? "OpenAI Codex" : string.Empty);
         window.Close();
+    }
+
+    [AvaloniaFact]
+    public void Dashboard_connect_manage_reveals_one_codex_card_with_manual_browser_fallback()
+    {
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), new UiProviderFacade());
+        window.Show();
+
+        window.ViewModel.Navigate(AppPage.Dashboard);
+        Assert.Contains(window.FindControl<Border>("CodexCard")!.GetVisualAncestors(), item => item is Grid { Name: "DashboardPage" });
+        Assert.Equal("Dashboard", window.ViewModel.HeaderTitle);
+        Assert.Null(window.FindControl<Border>("SettingsCodexCard"));
+        window.Close();
+    }
+
+    [Fact]
+    public void Codex_copy_explicitly_explains_cli_free_device_login_and_manual_browser_fallback_in_both_languages()
+    {
+        foreach (var copy in new[] { new UiCopy(UiLanguage.Japanese), new UiCopy(UiLanguage.English) })
+        {
+            Assert.Contains("CLI", copy.CodexDescription, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("device", copy.CodexDescription, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("URL", copy.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(copy.IsJapanese ? "コード" : "code", copy.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -450,7 +476,7 @@ public sealed class CodexUiTests
         window.Show();
 
         await window.InitializeAsync();
-        window.ViewModel.Navigate(AppPage.Settings);
+        window.ViewModel.Navigate(AppPage.Dashboard);
 
         Assert.True(window.FindControl<Button>("CodexLogoutButton")!.IsVisible);
         window.Close();

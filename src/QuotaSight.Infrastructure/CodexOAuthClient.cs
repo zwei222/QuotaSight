@@ -14,7 +14,7 @@ public sealed record CodexDeviceAuthorization(string UserCode, string DeviceAuth
 internal sealed record CodexTokenBundle([property: JsonPropertyName("access_token")] string AccessToken, [property: JsonPropertyName("refresh_token")] string RefreshToken, [property: JsonPropertyName("id_token")] string? IdToken, [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);
 public sealed record CodexClientRequest([property: JsonPropertyName("client_id")] string ClientId);
 public sealed record CodexDeviceTokenRequest([property: JsonPropertyName("device_auth_id")] string DeviceAuthId, [property: JsonPropertyName("user_code")] string UserCode);
-public sealed record CodexDeviceCodeResponse([property: JsonPropertyName("user_code")] string? UserCode, [property: JsonPropertyName("device_auth_id")] string? DeviceAuthId, [property: JsonPropertyName("interval")] int? Interval);
+public sealed record CodexDeviceCodeResponse([property: JsonPropertyName("user_code")] string? UserCode, [property: JsonPropertyName("device_auth_id")] string? DeviceAuthId, [property: JsonPropertyName("interval"), JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)] int? Interval);
 public sealed record CodexDeviceTokenResponse([property: JsonPropertyName("authorization_code")] string? AuthorizationCode, [property: JsonPropertyName("code_verifier")] string? CodeVerifier);
 public sealed record CodexOAuthTokenResponse([property: JsonPropertyName("access_token")] string? AccessToken, [property: JsonPropertyName("refresh_token")] string? RefreshToken, [property: JsonPropertyName("id_token")] string? IdToken, [property: JsonPropertyName("expires_in")] int? ExpiresIn);
 
@@ -78,9 +78,8 @@ public sealed class CodexOAuthClient
             using var request = new HttpRequestMessage(HttpMethod.Post, DeviceTokenEndpoint) { Content = JsonContent.Create(new CodexDeviceTokenRequest(authorization.DeviceAuthId, authorization.UserCode), CodexJsonContext.Default.CodexDeviceTokenRequest) };
             using var response = await client.SendAsync(request, ct);
             if (response.StatusCode == HttpStatusCode.Unauthorized) return new(FetchStatus.Unauthorized);
-            if (response.StatusCode == HttpStatusCode.Forbidden) return new(FetchStatus.Forbidden);
             if ((int)response.StatusCode == 429) return new(FetchStatus.RateLimited, RetryAfter: RetryAfter(response));
-            if (response.StatusCode == HttpStatusCode.NotFound) return new(FetchStatus.TransientFailure, RetryAfter: authorization.Interval);
+            if (response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.Forbidden) return new(FetchStatus.TransientFailure, RetryAfter: authorization.Interval);
             if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
             var device = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(ct), CodexJsonContext.Default.CodexDeviceTokenResponse, ct);
             if (device is null || string.IsNullOrWhiteSpace(device.AuthorizationCode) || string.IsNullOrWhiteSpace(device.CodeVerifier)) return new(FetchStatus.TransientFailure);
