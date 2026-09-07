@@ -87,13 +87,14 @@ public sealed class CodexUiTests
         try
         {
             var parts = CompositionRoot.CreateMainWindowParts(root, client, store);
+            using var viewModel = parts.ViewModel;
             var started = await parts.Provider.StartCodexAsync(default);
             Assert.True(started.Success);
             var connected = await parts.Provider.PollCodexAsync(default);
             Assert.True(connected.Success);
             Assert.NotNull(await store.GetAsync(CodexOAuthClient.CredentialKey, default));
-            await parts.ViewModel.RefreshAsync();
-            Assert.Contains(parts.ViewModel.Cards, card => card.Provider == QuotaSight.Core.ProviderKind.ChatGpt);
+            await viewModel.RefreshAsync();
+            Assert.Contains(viewModel.Cards, card => card.Provider == QuotaSight.Core.ProviderKind.ChatGpt);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
