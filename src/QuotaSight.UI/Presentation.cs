@@ -240,6 +240,7 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
     public string BannerText { get; private set; } = string.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
     public void Notify(string title, string reason) { BannerText = $"{title}: {reason}"; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
+    public void Clear() { if (BannerText.Length == 0) return; BannerText = string.Empty; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
     public ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken) { Notify($"{snapshot.Provider} quota threshold", $"{snapshot.EffectivePercent:0.#}% used"); return ValueTask.CompletedTask; }
 }
 
@@ -429,19 +430,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) NotifyLocalizedProperties(); } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
-    public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
+    public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
     public bool IsHistoryVisible => CurrentPage == AppPage.History;
     public bool IsSettingsVisible => CurrentPage == AppPage.Settings;
     public bool IsLoading => PresentationState == PresentationState.Loading;
     public bool IsError => PresentationState == PresentationState.Error;
     public bool IsOffline => PresentationState == PresentationState.Offline;
-    public bool IsEmpty => PresentationState == PresentationState.Empty || Cards.Count == 0;
+    public bool IsEmpty => PresentationState == PresentationState.Empty;
 
     public bool IsDemo => source.IsDemo;
     public string DemoBanner => IsDemo ? CopyText.DemoBanner : string.Empty;
     public bool HasCards => Cards.Count > 0;
-    public bool HasEmptyState => Cards.Count == 0;
+    public bool HasEmptyState => PresentationState == PresentationState.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
     private readonly IManualQuotaService? manualQuotaService;
     private readonly IQuotaHistory? quotaHistory;
@@ -452,8 +453,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly InAppNotificationService notificationService = new();
     private readonly NotificationDeduplicator notificationDeduplicator;
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
 
-    public void Dispose() => (quotaHistory as IDisposable)?.Dispose();
+    public void Dispose()
+    {
+        // RefreshAsync may still be waiting on or holding the gate; leave it undisposed to avoid a race.
+        (quotaHistory as IDisposable)?.Dispose();
+    }
     public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -491,15 +497,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Refresh() => _ = RefreshAsync();
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
-        PresentationState = PresentationState.Loading;
+        await refreshGate.WaitAsync(cancellationToken);
         try
         {
+            PresentationState = PresentationState.Loading;
             if (quotaApplication is null) { LoadCards(); PresentationState = Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready; return; }
             var previousProviderIdentities = lastKnownSnapshots
                 .Where(snapshot => snapshot.Source != QuotaSource.Manual)
                 .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
                 .ToHashSet();
-            var snapshots = await quotaApplication.RefreshAsync(cancellationToken);
+            var refreshResult = await quotaApplication.RefreshAsync(cancellationToken);
+            var snapshots = refreshResult.Snapshots;
             if (snapshots.Count > 0)
             {
                 MergeLastKnownSnapshots(snapshots);
@@ -512,13 +520,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
                     .ToHashSet();
                 var partialFailure = previousProviderIdentities.Any(identity => !currentProviderIdentities.Contains(identity));
-                if (partialFailure) notificationService.Notify("Quota refresh incomplete", "Some previously connected providers did not return data; showing their last successful values as stale when expired.");
-                PresentationState = partialFailure ? PresentationState.Error : PresentationState.Ready;
+                if (refreshResult.Failures.Count > 0)
+                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
+                else if (partialFailure)
+                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshError);
+                else
+                    notificationService.Clear();
+                PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
             }
             else ReevaluateCards(timeProvider.GetUtcNow());
-            if (snapshots.Count == 0) PresentationState = Cards.Count > 0 ? PresentationState.Error : PresentationState.Empty;
+            if (snapshots.Count == 0)
+            {
+                if (refreshResult.Failures.Count > 0)
+                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
+                else
+                    notificationService.Clear();
+                PresentationState = refreshResult.Failures.Count > 0 ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
+            }
         }
+        catch (OperationCanceledException) { throw; }
         catch { ReevaluateCards(timeProvider.GetUtcNow()); PresentationState = PresentationState.Error; }
+        finally { refreshGate.Release(); }
     }
     public async ValueTask ApplyProviderSnapshotsAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken = default)
     {

@@ -1,3 +1,6 @@
+using QuotaSight.Application;
+using QuotaSight.Core;
+
 namespace QuotaSight.UI;
 
 // Explicit, strongly typed copy keeps localization trim/AOT safe and makes every UI string auditable.
@@ -68,4 +71,34 @@ public sealed class UiCopy
     public string Autostart => IsJapanese ? "自動起動: 未対応 · プラットフォームバックエンド未導入" : "Autostart: Unsupported · platform backend not installed";
     public string CredentialUnavailable(string availability) => IsJapanese ? $"OpenCode Goの資格情報ストア: {availability}; セッション限定の代替を使用。キーは表示・記録しません。" : $"OpenCode Go credential store: {availability}; session-only fallback; key is never displayed or logged.";
     public string SecureCredential => IsJapanese ? "資格情報ストア: 安全なストアを利用可能。キーは表示・記録しません。" : "Credential store: secure store available; key is never displayed or logged.";
+    public string RefreshIncompleteTitle => IsJapanese ? "一部更新できません" : "Quota refresh incomplete";
+    public string RefreshFailure(ProviderFailure failure, bool mixedResult)
+    {
+        var provider = failure.Provider switch
+        {
+            ProviderKind.ChatGpt => "Codex",
+            ProviderKind.OpenCode => "OpenCode Go",
+            ProviderKind.Claude => "Claude",
+            ProviderKind.Copilot => "GitHub Copilot",
+            _ => failure.Provider.ToString()
+        };
+        var detail = failure.Status switch
+        {
+            FetchStatus.Unauthorized => IsJapanese ? "再接続が必要です。手動入力または公式ページを利用してください。" : "Reconnect is required. Use manual input or the official page.",
+            FetchStatus.Forbidden => IsJapanese ? "権限が不足しています。権限を確認してください。" : "Permission is insufficient. Check the account permissions.",
+            FetchStatus.RateLimited => IsJapanese ? "一時的なレート制限です。" : "Temporary rate limit.",
+            FetchStatus.TransientFailure => IsJapanese ? "一時的な取得失敗です。" : "Temporary fetch failure.",
+            FetchStatus.Unsupported => IsJapanese ? "この連携は対応していません。手動入力または公式ページを利用してください。" : "This integration is unsupported. Use manual input or the official page.",
+            _ => IsJapanese ? "取得できませんでした。" : "Could not fetch quota data."
+        };
+        if (failure.RetryAfter is { } retry)
+        {
+            var minutes = Math.Max(1, (int)Math.Ceiling(retry.TotalMinutes));
+            detail += IsJapanese ? $" 約{minutes}分待ってから再試行してください。" : $" Try again in about {minutes}m.";
+        }
+        return $"{provider}: {detail}";
+    }
+    public string RefreshFailures(IReadOnlyList<ProviderFailure> failures, bool mixedResult) =>
+        (mixedResult ? (IsJapanese ? "一部更新できません。" : "Some quotas could not be updated. ") : string.Empty) +
+        string.Join(IsJapanese ? "\n" : "\n", failures.Select(failure => RefreshFailure(failure, mixedResult)));
 }

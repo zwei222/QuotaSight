@@ -35,6 +35,17 @@ public sealed class CodexOAuthTests
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1789296000), result.Value[1].Window.ResetAt);
     }
 
+    [Fact]
+    public async Task Quota_keeps_primary_and_secondary_when_both_windows_are_unknown_custom_duration()
+    {
+        var result = await FetchUsage(UsageJson(10m, 1788696000, 999, 20m, 1789296000, 999));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal(["Codex primary", "Codex secondary"], result.Value.Select(snapshot => snapshot.Metric));
+        Assert.All(result.Value, snapshot => Assert.Equal(QuotaWindowKind.Custom, snapshot.Window.Kind));
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized, FetchStatus.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden, FetchStatus.Forbidden)]
@@ -236,6 +247,42 @@ public sealed class CodexOAuthTests
         var result = await fetch;
 
         Assert.Equal(FetchStatus.Unauthorized, result.Status);
+        Assert.Null(await store.GetAsync(CodexOAuthClient.CredentialKey, default));
+    }
+
+    [Fact]
+    public async Task Logout_during_quota_http_rejects_late_snapshot_before_fetch_returns()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync(CodexOAuthClient.CredentialKey, BundleJson(Refresh, Now.AddHours(1)), default);
+        var quotaStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseQuota = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new AsyncHandler(async request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/wham/usage", StringComparison.Ordinal))
+            {
+                quotaStarted.SetResult();
+                await releaseQuota.Task;
+                return Json(HttpStatusCode.OK, UsageJson(10m, 1788696000, 18000, 20m, 1789296000, 10080));
+            }
+
+            return Json(HttpStatusCode.InternalServerError, "unexpected");
+        });
+        var manager = new CodexSessionManager(
+            new CodexOAuthClient(new HttpClient(handler), store, new FixedTimeProvider(Now)),
+            new HttpClient(handler),
+            new FixedTimeProvider(Now));
+
+        var fetch = manager.FetchAsync(default).AsTask();
+        await quotaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var logout = manager.LogoutAsync(default).AsTask();
+        releaseQuota.SetResult();
+
+        var result = await fetch.WaitAsync(TimeSpan.FromSeconds(5));
+        await logout.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FetchStatus.Unauthorized, result.Status);
+        Assert.Null(result.Value);
         Assert.Null(await store.GetAsync(CodexOAuthClient.CredentialKey, default));
     }
 

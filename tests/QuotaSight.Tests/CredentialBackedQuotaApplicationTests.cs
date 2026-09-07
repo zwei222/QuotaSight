@@ -25,8 +25,9 @@ public sealed class CredentialBackedQuotaApplicationTests
 
         var result = await application.RefreshAsync(default);
 
-        Assert.Single(result);
-        Assert.Equal(ProviderKind.ChatGpt, result[0].Provider);
+        Assert.Single(result.Snapshots);
+        Assert.Equal(ProviderKind.ChatGpt, result.Snapshots[0].Provider);
+        Assert.Empty(result.Failures);
         Assert.Equal(1, history.AppendCount);
         Assert.Single(history.LastSnapshots!);
     }
@@ -47,7 +48,8 @@ public sealed class CredentialBackedQuotaApplicationTests
 
         var result = await application.RefreshAsync(default);
 
-        Assert.Equal(2, result.Count);
+        Assert.Equal(2, result.Snapshots.Count);
+        Assert.Empty(result.Failures);
         Assert.Equal(1, history.AppendCount);
         Assert.Equal(2, history.LastSnapshots!.Count);
     }
@@ -57,19 +59,47 @@ public sealed class CredentialBackedQuotaApplicationTests
     {
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
+        await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
         var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => new FixedAdapter(OpenCodeSnapshot()),
             credentials,
             history,
             null,
-            CreateCodex(credentials, HttpStatusCode.InternalServerError));
+            CreateCodex(credentials, HttpStatusCode.Unauthorized));
 
         var result = await application.RefreshAsync(default);
 
-        Assert.Single(result);
-        Assert.Equal(ProviderKind.OpenCode, result[0].Provider);
+        Assert.Single(result.Snapshots);
+        Assert.Equal(ProviderKind.OpenCode, result.Snapshots[0].Provider);
+        Assert.Single(result.Failures);
+        Assert.Equal(FetchStatus.Unauthorized, result.Failures[0].Status);
         Assert.Equal(1, history.AppendCount);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, FetchStatus.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden, FetchStatus.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests, FetchStatus.RateLimited)]
+    [InlineData(HttpStatusCode.InternalServerError, FetchStatus.TransientFailure)]
+    public async Task Refresh_classifies_codex_failures_without_error_details(HttpStatusCode status, FetchStatus expected)
+    {
+        var credentials = new InMemoryCredentialStore();
+        await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
+        var application = new CredentialBackedQuotaApplication(
+            _ => throw new Xunit.Sdk.XunitException("OpenCode adapter must not be called"),
+            credentials,
+            new RecordingHistory(),
+            codexSessionManager: CreateCodex(credentials, status));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Empty(result.Snapshots);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal(ProviderKind.ChatGpt, failure.Provider);
+        Assert.Equal(expected, failure.Status);
+        Assert.Null(failure.RetryAfter);
+        Assert.DoesNotContain("access", failure.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -80,7 +110,8 @@ public sealed class CredentialBackedQuotaApplicationTests
 
         var result = await application.RefreshAsync(default);
 
-        Assert.Empty(result);
+        Assert.Empty(result.Snapshots);
+        Assert.Empty(result.Failures);
         Assert.Equal(0, history.AppendCount);
     }
 
@@ -102,12 +133,12 @@ public sealed class CredentialBackedQuotaApplicationTests
 
     private static CodexSessionManager CreateCodex(InMemoryCredentialStore credentials, HttpStatusCode status = HttpStatusCode.OK)
     {
-        var handler = new Handler(_ => status == HttpStatusCode.OK
-            ? Json("{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1788696000,\"limit_window_seconds\":18000}}}")
-            : new HttpResponseMessage(status));
+        var responseFactory = status == HttpStatusCode.OK
+            ? new Func<HttpResponseMessage>(() => Json("{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1788696000,\"limit_window_seconds\":18000}}}"))
+            : new Func<HttpResponseMessage>(() => new HttpResponseMessage(status));
         return new CodexSessionManager(
-            new CodexOAuthClient(new HttpClient(handler), credentials),
-            new HttpClient(handler));
+            new CodexOAuthClient(new HttpClient(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK))), credentials),
+            new HttpClient(new Handler(_ => responseFactory())));
     }
 
     private static QuotaSnapshot OpenCodeSnapshot() => new(

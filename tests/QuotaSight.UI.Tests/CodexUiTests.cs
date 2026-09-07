@@ -203,6 +203,112 @@ public sealed class CodexUiTests
     }
 
     [Fact]
+    public async Task RefreshAsync_initial_codex_unauthorized_is_error_with_safe_reconnect_and_manual_fallback_guidance()
+    {
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([], [new(ProviderKind.ChatGpt, FetchStatus.Unauthorized)])));
+
+        await vm.RefreshAsync();
+
+        Assert.True(vm.IsError);
+        Assert.Empty(vm.Cards);
+        Assert.False(vm.IsEmpty);
+        Assert.False(vm.HasEmptyState);
+        Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("reconnect", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("manual", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("official", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("401", vm.NotificationBannerText, StringComparison.Ordinal);
+        Assert.DoesNotContain("token", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_open_code_success_and_codex_rate_limit_keeps_card_and_reports_error()
+    {
+        var openCode = Snapshot(41, "opencode-account", "OpenCode", QuotaWindowKind.Rolling) with
+        {
+            Provider = ProviderKind.OpenCode,
+            DisplayName = "OpenCode Go",
+            Source = QuotaSource.Official,
+            Confidence = QuotaConfidence.Official
+        };
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([openCode], [new(ProviderKind.ChatGpt, FetchStatus.RateLimited, TimeSpan.FromMinutes(2))])));
+
+        await vm.RefreshAsync();
+
+        Assert.True(vm.IsError);
+        Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
+        Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("rate limit", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2m", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_codex_transient_failure_keeps_old_value_and_stale_re_evaluation_then_success_clears_error()
+    {
+        var clock = new FixedTimeProvider();
+        var old = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling) with
+        {
+            DisplayName = "OpenAI Codex",
+            FreshUntil = clock.GetUtcNow().AddMinutes(1)
+        };
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([old], []),
+            new QuotaRefreshResult([], [new(ProviderKind.ChatGpt, FetchStatus.TransientFailure)]),
+            new QuotaRefreshResult([old with { Used = 52, Fetched = clock.GetUtcNow().AddMinutes(3), Observed = clock.GetUtcNow().AddMinutes(3), FreshUntil = clock.GetUtcNow().AddMinutes(4) }], [])), timeProvider: clock);
+
+        await vm.RefreshAsync();
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await vm.RefreshAsync();
+        var staleRow = Assert.Single(Assert.Single(vm.Cards).Windows);
+        Assert.Equal("45% used · 55% remaining", staleRow.PercentText);
+        Assert.True(staleRow.IsStale);
+        Assert.True(vm.IsError);
+
+        await vm.RefreshAsync();
+        Assert.Equal(PresentationState.Ready, vm.PresentationState);
+        Assert.False(vm.IsNotificationVisible);
+        Assert.Equal("52% used · 48% remaining", Assert.Single(Assert.Single(vm.Cards).Windows).PercentText);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_caller_cancellation_is_rethrown_and_gate_is_released()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var application = new CancellingRefreshApplication();
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.RefreshAsync(cancellation.Token));
+        await vm.RefreshAsync();
+        Assert.Equal(2, application.Calls);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_serializes_overlapping_provider_calls_and_keeps_newer_response()
+    {
+        var older = Snapshot(35, "codex-account", "Codex", QuotaWindowKind.Rolling);
+        var newer = older with { Used = 71, Observed = older.Observed.AddMinutes(1), Fetched = older.Fetched.AddMinutes(1) };
+        var application = new BlockingRefreshApplication(older, newer);
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
+
+        var firstRefresh = vm.RefreshAsync();
+        await application.FirstEntered.Task;
+        var secondRefresh = vm.RefreshAsync();
+
+        Assert.Equal(1, application.CallCount);
+        Assert.False(application.SecondEntered.Task.IsCompleted);
+        Assert.False(secondRefresh.IsCompleted);
+
+        application.ReleaseFirst.TrySetResult(true);
+        await Task.WhenAll(firstRefresh, secondRefresh);
+
+        var card = Assert.Single(vm.Cards);
+        var row = Assert.Single(card.Windows);
+        Assert.Equal("71% used · 29% remaining", row.PercentText);
+    }
+
+    [Fact]
     public async Task Refresh_partial_failure_keeps_successful_cards_and_re_evaluates_missing_provider_as_stale_error()
     {
         var clock = new FixedTimeProvider();
@@ -424,8 +530,49 @@ public sealed class CodexUiTests
     private sealed class SequencedApplication(IReadOnlyList<QuotaSnapshot> first, IReadOnlyList<QuotaSnapshot> latest) : IQuotaApplication
     {
         private int calls;
-        public ValueTask<IReadOnlyList<QuotaSnapshot>> RefreshAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult(Interlocked.Increment(ref calls) == 1 ? first : latest);
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new QuotaRefreshResult(Interlocked.Increment(ref calls) == 1 ? first : latest, []));
+    }
+
+    private sealed class BlockingRefreshApplication(QuotaSnapshot older, QuotaSnapshot newer) : IQuotaApplication
+    {
+        private int calls;
+        public TaskCompletionSource<bool> FirstEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> SecondEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> ReleaseFirst { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int CallCount => Volatile.Read(ref calls);
+
+        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref calls);
+            if (call == 1)
+            {
+                FirstEntered.TrySetResult(true);
+                await ReleaseFirst.Task.WaitAsync(cancellationToken);
+                return new([older], []);
+            }
+
+            SecondEntered.TrySetResult(true);
+            return new([newer], []);
+        }
+    }
+
+    private sealed class SequencedRefreshApplication(params QuotaRefreshResult[] results) : IQuotaApplication
+    {
+        private int calls;
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(results[Math.Min(Interlocked.Increment(ref calls) - 1, results.Length - 1)]);
+    }
+
+    private sealed class CancellingRefreshApplication : IQuotaApplication
+    {
+        public int Calls { get; private set; }
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (Calls == 1) throw new OperationCanceledException(cancellationToken);
+            return ValueTask.FromResult(new QuotaRefreshResult([], []));
+        }
     }
 
     private sealed class ThrowingReadStore : ICredentialStore

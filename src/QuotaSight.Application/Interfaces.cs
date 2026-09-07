@@ -11,5 +11,7 @@ public interface IQuotaHistory { ValueTask AppendAsync(IReadOnlyList<QuotaSnapsh
 public interface IGitHubAuthenticator { ValueTask<FetchResult<string>> AuthenticateAsync(CancellationToken cancellationToken); }
 public interface IRefreshScheduler { ValueTask RunAsync(Func<CancellationToken, ValueTask> refresh, CancellationToken cancellationToken); }
 public interface INotificationSink { ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken); }
-public interface IQuotaApplication { ValueTask<IReadOnlyList<QuotaSnapshot>> RefreshAsync(CancellationToken cancellationToken); }
+public sealed record ProviderFailure(ProviderKind Provider, FetchStatus Status, TimeSpan? RetryAfter = null);
+public sealed record QuotaRefreshResult(IReadOnlyList<QuotaSnapshot> Snapshots, IReadOnlyList<ProviderFailure> Failures);
+public interface IQuotaApplication { ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken); }
 public sealed record NotificationKey(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Window, decimal Threshold);

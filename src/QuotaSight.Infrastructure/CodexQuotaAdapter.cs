@@ -50,7 +50,7 @@ public sealed class CodexQuotaAdapter(HttpClient client, TimeProvider? clock = n
         {
             var reset = DateTimeOffset.FromUnixTimeSeconds(dto.ResetAt.Value); var duration = TimeSpan.FromSeconds(dto.LimitWindowSeconds.Value); var start = reset.Subtract(duration); var minutes = dto.LimitWindowSeconds.Value / 60m;
             var kind = Math.Abs(minutes - 300m) < 1m ? QuotaWindowKind.Rolling : Math.Abs(minutes - 10080m) < 1m ? QuotaWindowKind.Weekly : QuotaWindowKind.Custom;
-            output.Add(new(ProviderKind.ChatGpt, account, "Codex", new(kind, start, reset, duration, reset), null, null, dto.UsedPercent, "percent", now, now, QuotaSource.Experimental, QuotaConfidence.Low, now.AddMinutes(10), "ChatGPT Codex")); return true;
+            output.Add(new(ProviderKind.ChatGpt, account, $"Codex {name}", new(kind, start, reset, duration, reset), null, null, dto.UsedPercent, "percent", now, now, QuotaSource.Experimental, QuotaConfidence.Low, now.AddMinutes(10), "ChatGPT Codex")); return true;
         }
         catch (ArgumentOutOfRangeException) { return false; }
     }

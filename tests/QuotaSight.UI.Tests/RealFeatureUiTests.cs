@@ -227,5 +227,9 @@ public sealed class RealFeatureTests
     private static QuotaSnapshot Snapshot(decimal percent) => new(ProviderKind.OpenCode, "acct", "usage", new(QuotaWindowKind.Rolling, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)), percent, 100, null, "requests", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official, QuotaConfidence.Official, DateTimeOffset.UtcNow.AddHours(1), "OpenCode Go");
     private sealed class JsonHandler(string json) : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }); }
     private sealed class FixedDashboardSource(QuotaSnapshot snapshot) : IDashboardSource { public bool IsDemo => false; public IReadOnlyList<ProviderCardViewModel> Load() => DashboardAggregation.ToCards([snapshot], DateTimeOffset.UtcNow); }
-    private sealed class StubApplication(IReadOnlyList<QuotaSnapshot> result) : IQuotaApplication { public ValueTask<IReadOnlyList<QuotaSnapshot>> RefreshAsync(CancellationToken cancellationToken) => ValueTask.FromResult(result); }
+    private sealed class StubApplication(IReadOnlyList<QuotaSnapshot> result) : IQuotaApplication
+    {
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new QuotaRefreshResult(result, result.Count == 0 ? [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)] : []));
+    }
 }

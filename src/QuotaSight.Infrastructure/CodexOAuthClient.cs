@@ -158,7 +158,9 @@ public sealed class CodexSessionManager
             if (bundle is null || string.IsNullOrWhiteSpace(bundle.AccessToken) || string.IsNullOrWhiteSpace(bundle.RefreshToken)) return new(FetchStatus.TransientFailure);
             if (bundle.ExpiresAt <= clock.GetUtcNow().AddMinutes(2)) { var refreshed = await RefreshAsync(bundle, store, ct, observedGeneration); if (!refreshed.IsSuccess) return new(refreshed.Status, RetryAfter: refreshed.RetryAfter); bundle = refreshed.Value; }
             if (observedGeneration != oauth.Generation) return new(FetchStatus.Unauthorized);
-            return await new CodexQuotaAdapter(client, clock).FetchTokenAsync(bundle!.AccessToken, "ChatGPT", ct);
+            var quota = await new CodexQuotaAdapter(client, clock).FetchTokenAsync(bundle!.AccessToken, "ChatGPT", ct);
+            if (observedGeneration != oauth.Generation) return new(FetchStatus.Unauthorized);
+            return quota;
         }
         finally { oauth.SessionGate.Release(); }
     }

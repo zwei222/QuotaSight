@@ -50,54 +50,66 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
         _ = timeProvider;
     }
 
-    public async ValueTask<IReadOnlyList<QuotaSnapshot>> RefreshAsync(CancellationToken cancellationToken)
+    public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
     {
-        var openCodeTask = FetchOpenCodeAsync(cancellationToken).AsTask();
-        var codexTask = FetchCodexAsync(cancellationToken).AsTask();
-        var results = await Task.WhenAll(openCodeTask, codexTask);
-        var snapshots = results[0].Concat(results[1]).ToArray();
-        if (snapshots.Length == 0) return [];
+        var openCode = await FetchOpenCodeAsync(cancellationToken);
+        var codex = await FetchCodexAsync(cancellationToken);
+        var results = new[] { openCode, codex };
+        var snapshots = results.SelectMany(result => result.Snapshots).ToArray();
+        var failures = results.SelectMany(result => result.Failures).ToArray();
+        if (snapshots.Length == 0) return new(snapshots, failures);
 
         await history.AppendAsync(snapshots, cancellationToken);
-        return snapshots;
+        return new(snapshots, failures);
     }
 
-    private async ValueTask<IReadOnlyList<QuotaSnapshot>> FetchOpenCodeAsync(CancellationToken cancellationToken)
+    private async ValueTask<QuotaRefreshResult> FetchOpenCodeAsync(CancellationToken cancellationToken)
     {
         try
         {
             var key = await credentials.GetAsync("OpenCode Go", cancellationToken);
-            if (string.IsNullOrWhiteSpace(key)) return [];
+            if (string.IsNullOrWhiteSpace(key)) return Empty(ProviderKind.OpenCode);
 
             var result = await adapterFactory(key).FetchAsync("OpenCode Go", cancellationToken);
-            return result.IsSuccess && result.Value is { Count: > 0 } ? result.Value : [];
+            return ToRefreshResult(ProviderKind.OpenCode, result);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return [];
+            return Failure(ProviderKind.OpenCode, FetchStatus.TransientFailure);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            return [];
+            return Failure(ProviderKind.OpenCode, FetchStatus.TransientFailure);
         }
     }
 
-    private async ValueTask<IReadOnlyList<QuotaSnapshot>> FetchCodexAsync(CancellationToken cancellationToken)
+    private async ValueTask<QuotaRefreshResult> FetchCodexAsync(CancellationToken cancellationToken)
     {
-        if (codexSessionManager is null) return [];
+        if (codexSessionManager is null) return Empty(ProviderKind.ChatGpt);
 
         try
         {
+            if (!await codexSessionManager.HasCredentialAsync(cancellationToken)) return Empty(ProviderKind.ChatGpt);
             var result = await codexSessionManager.FetchAsync(cancellationToken);
-            return result.IsSuccess && result.Value is { Count: > 0 } ? result.Value : [];
+            return ToRefreshResult(ProviderKind.ChatGpt, result);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return [];
+            return Failure(ProviderKind.ChatGpt, FetchStatus.TransientFailure);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            return [];
+            return Failure(ProviderKind.ChatGpt, FetchStatus.TransientFailure);
         }
     }
+
+    private static QuotaRefreshResult Empty(ProviderKind provider) => new([], []);
+
+    private static QuotaRefreshResult Failure(ProviderKind provider, FetchStatus status, TimeSpan? retryAfter = null) =>
+        new([], [new(provider, status, retryAfter)]);
+
+    private static QuotaRefreshResult ToRefreshResult(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result) =>
+        result.IsSuccess
+            ? new(result.Value ?? [], [])
+            : Failure(provider, result.Status, result.RetryAfter);
 }
