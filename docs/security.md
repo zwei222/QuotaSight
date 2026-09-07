@@ -14,7 +14,13 @@ history は quota の表示値、source、timestamps、window、stale 状態だ�
 
 ## OAuth device flow
 
-GitHub OAuth App Client ID は Settings の runtime 設定でのみ受け取り、コードや workflow に hardcode しません。client secret は要求しません。device code、user code、access token は画面・ログ・history に表示せず、認証完了後は secure store または session-only に置きます。device flow の承認 URL はユーザーが確認して開きます。認証できても quota endpoint が使えない場合は manual と表示します。
+GitHub OAuth App Client ID は Settings の runtime 設定でのみ受け取り、コードや workflow に hardcode しません。client secret は要求しません。user codeは認証中だけ画面へ表示し、device code/device auth IDとaccess tokenは画面・ログ・historyへ出しません。認証完了後のtokenはsecure storeまたはsession-onlyに置きます。device flow の承認 URL はユーザーが確認して開きます。認証できても quota endpoint が使えない場合は manual と表示します。
+
+## OpenAI Codex device OAuth（Undocumented/Experimental）
+
+ChatGPT Plus/Proの全ChatGPT利用量ではなくCodex枠だけを、単一アカウントについて取得します。QuotaSight自身がOpenAI Codex device OAuthを実行し、client secretは要求・保持せず、Hermes/Codexのcredentialファイルは読みません。OAuth public client IDとdevice endpoints、`wham/usage`は公式Codex実装で確認できますが、第三者アプリ向けの公開安定契約およびclient ID流用許諾は確認できないため、Officialとは表現しません。実サービスのlive loginは未検証です。
+
+Codexのaccess token、refresh token、id tokenはOS secure storeへ保存し、secure storeが利用不能またはlockedの場合だけsession-memoryに保持します。settings、history、export、log、raw response、UIには出しません。user codeだけは認証中に限り画面へ表示し、永続化しません。refresh rotationは排他制御し、logout時は保存済みcredentialとsession cacheを削除します。`used_percent`、`reset_at`、`limit_window_seconds`をprimary/secondaryの独立windowへそのまま写像し、used/limitは推測しません。100超の値も保持します。取得失敗時はmanual入力と公式ChatGPTサブスクリプションページへfallbackします。
 
 ## CLI process safety
 

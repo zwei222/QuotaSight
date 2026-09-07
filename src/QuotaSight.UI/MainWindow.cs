@@ -35,14 +35,22 @@ public partial class MainWindow : Window
         SizeChanged += (_, _) => ApplyResponsiveLayout();
         ApplyResponsiveLayout();
         Closing += OnClosing;
-        Opened += (_, _) => _ = InitializeAsync();
+        Opened += (_, _) => _ = InitializeSafelyAsync();
     }
 
     public Task InitializeAsync() => initializationTask ??= InitializeCoreAsync();
 
+    private async Task InitializeSafelyAsync()
+    {
+        try { await InitializeAsync(); }
+        catch { ViewModel.SetCodexResult(new(false, CodexAuthorizationState.Error, "Unable to initialize provider state.")); }
+    }
+
     private async Task InitializeCoreAsync()
     {
         await ViewModel.InitializeAsync();
+        if (providerService is UiProviderFacade facade)
+            ViewModel.SetCodexCredentialPresence(await facade.HasCodexCredentialAsync(CancellationToken.None));
         ConfigureLists();
         isInitializing = false;
     }
@@ -179,6 +187,37 @@ public partial class MainWindow : Window
     private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = Launcher.LaunchUriAsync(auth.VerificationUri); }
     private void CopilotCopyClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(auth.UserCode); }
     private void OpenChatGptClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.ChatGpt));
+    private async void CodexStartClick(object? sender, RoutedEventArgs e)
+    {
+        var result = await providerService.StartCodexAsync(CancellationToken.None);
+        ViewModel.SetCodexResult(result);
+        if (result.Success) await OpenCodexBrowserAsync();
+    }
+    private async void CodexPollClick(object? sender, RoutedEventArgs e)
+    {
+        var result = await providerService.PollCodexAsync(CancellationToken.None);
+        ViewModel.SetCodexResult(result);
+        if (result.Success) await ViewModel.RefreshAsync();
+    }
+    private async void CodexLogoutClick(object? sender, RoutedEventArgs e)
+    {
+        CodexUiResult result;
+        try { result = await providerService.LogoutCodexAsync(CancellationToken.None); }
+        catch { result = new(false, CodexAuthorizationState.Error, "Unable to disconnect Codex."); }
+        ViewModel.SetCodexResult(result);
+        if (result.Success)
+        {
+            ViewModel.RemoveCodexCards();
+            await ViewModel.RefreshAsync();
+        }
+    }
+    private async void CodexOpenClick(object? sender, RoutedEventArgs e) => await OpenCodexBrowserAsync();
+    private async Task OpenCodexBrowserAsync()
+    {
+        if (ViewModel.CodexVerificationUri is not { } uri) return;
+        try { ViewModel.SetCodexBrowserStatus(await Launcher.LaunchUriAsync(uri)); }
+        catch { ViewModel.SetCodexBrowserStatus(false); }
+    }
     private void OpenClaudeClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Claude));
     private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
     private async void DeleteHistoryClick(object? sender, RoutedEventArgs e)

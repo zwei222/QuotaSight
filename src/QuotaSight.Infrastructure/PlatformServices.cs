@@ -47,7 +47,21 @@ public sealed class LinuxSecretToolCredentialStore(ISecretToolProcessRunner runn
         var result = await runner.RunAsync(["store", "--label", "QuotaSight", "service", "quotasight", "account", account], secret, cancellationToken);
         if (result.ExitCode != 0) Availability = result.Stderr.Contains("locked", StringComparison.OrdinalIgnoreCase) ? CredentialStoreAvailability.Locked : CredentialStoreAvailability.Unavailable;
     }
-    public async ValueTask RemoveAsync(string account, CancellationToken cancellationToken) => await runner.RunAsync(["clear", "service", "quotasight", "account", account], null, cancellationToken);
+    public async ValueTask RemoveAsync(string account, CancellationToken cancellationToken)
+    {
+        SecretToolResult result;
+        try { result = await runner.RunAsync(["clear", "service", "quotasight", "account", account], null, cancellationToken); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Availability = CredentialStoreAvailability.Unavailable;
+            throw new InvalidOperationException("Linux credential removal failed.");
+        }
+        if (result.ExitCode != 0)
+        {
+            Availability = CredentialStoreAvailability.Unavailable;
+            throw new InvalidOperationException("Linux credential removal failed.");
+        }
+    }
 }
 
 public static class PlatformPaths

@@ -17,6 +17,9 @@ public enum AppPage { Dashboard, History, Settings }
 public enum ThemeMode { System, Light, Dark }
 public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
+public enum CodexAuthorizationState { Disconnected, AwaitingAuthorization, Pending, Connected, Error }
+public sealed record CodexAuthorizationPrompt(string UserCode, Uri VerificationUri, DateTimeOffset ExpiresAt);
+public sealed record CodexUiResult(bool Success, CodexAuthorizationState State, string Message, CodexAuthorizationPrompt? Prompt = null, TimeSpan? RetryAfter = null);
 
 public sealed record QuotaRowViewModel(string WindowName, string Metric, double VisualPercent, string PercentText, string StatusText, string ResetText, string SourceBadge, string FreshnessText, bool IsStale, string ProgressLabel)
 {
@@ -252,6 +255,10 @@ public interface IProviderUiService
     ValueTask<string> ProbeGitHubCliAsync(CancellationToken cancellationToken);
     ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken cancellationToken);
     ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken);
+    ValueTask<CodexUiResult> StartCodexAsync(CancellationToken cancellationToken);
+    ValueTask<CodexUiResult> PollCodexAsync(CancellationToken cancellationToken);
+    ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken cancellationToken);
+    ValueTask<bool> HasCodexCredentialAsync(CancellationToken cancellationToken);
 }
 public sealed class UiProviderFacade : IProviderUiService
 {
@@ -260,13 +267,17 @@ public sealed class UiProviderFacade : IProviderUiService
     private readonly ICredentialStore? credentialStore;
     private readonly GhCliProbe ghProbe;
     private readonly IGitHubClientFactory? githubFactory;
+    private readonly CodexSessionManager? codexSessionManager;
+    private readonly TimeProvider timeProvider;
+    private CodexDeviceAuthorization? codexAuthorization;
+    private DateTimeOffset nextCodexPollAt;
     private readonly InMemoryCredentialStore sessionCredentials = new();
     private Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess;
     public CredentialStoreAvailability CredentialAvailability => credentialStore?.Availability ?? CredentialStoreAvailability.Unavailable;
-    public UiProviderFacade(Func<string, IQuotaAdapter>? openCodeAdapterFactory = null, GitHubDeviceFlowClient? github = null, ICredentialStore? credentialStore = null, GhCliProbe? ghProbe = null, IGitHubClientFactory? githubFactory = null, Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess = null)
+    public UiProviderFacade(Func<string, IQuotaAdapter>? openCodeAdapterFactory = null, GitHubDeviceFlowClient? github = null, ICredentialStore? credentialStore = null, GhCliProbe? ghProbe = null, IGitHubClientFactory? githubFactory = null, Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess = null, CodexSessionManager? codexSessionManager = null, TimeProvider? timeProvider = null)
     {
         this.openCodeAdapterFactory = openCodeAdapterFactory ?? (key => new OpenCodeGoAdapter(new HttpClient(), key));
-        this.github = github; this.credentialStore = credentialStore; this.ghProbe = ghProbe ?? new GhCliProbe(); this.githubFactory = githubFactory; this.openCodeSuccess = openCodeSuccess;
+        this.github = github; this.credentialStore = credentialStore; this.ghProbe = ghProbe ?? new GhCliProbe(); this.githubFactory = githubFactory; this.openCodeSuccess = openCodeSuccess; this.codexSessionManager = codexSessionManager; this.timeProvider = timeProvider ?? TimeProvider.System;
     }
     public void SetOpenCodeSuccessHandler(Func<IReadOnlyList<QuotaSnapshot>, ValueTask> handler) => openCodeSuccess = handler;
     public async ValueTask<string?> GetStoredOpenCodeKeyAsync(CancellationToken cancellationToken)
@@ -313,6 +324,58 @@ public sealed class UiProviderFacade : IProviderUiService
         if (result.IsSuccess && result.Value is { } token && credentialStore is not null) await credentialStore.SetAsync("github", token, cancellationToken);
         return result;
     }
+
+    public async ValueTask<CodexUiResult> StartCodexAsync(CancellationToken cancellationToken)
+    {
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
+        var result = await codexSessionManager.StartAsync(cancellationToken);
+        if (!result.IsSuccess || result.Value is not { } authorization) return CodexFailure(result.Status, result.RetryAfter);
+        codexAuthorization = authorization;
+        nextCodexPollAt = timeProvider.GetUtcNow();
+        return new(true, CodexAuthorizationState.AwaitingAuthorization, "Authorization started.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt));
+    }
+
+    public async ValueTask<CodexUiResult> PollCodexAsync(CancellationToken cancellationToken)
+    {
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
+        if (codexAuthorization is not { } authorization) return new(false, CodexAuthorizationState.Disconnected, "Start Codex authorization first.");
+        var now = timeProvider.GetUtcNow();
+        if (now < nextCodexPollAt) return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), nextCodexPollAt - now);
+        var result = await codexSessionManager.PollAndStoreAsync(authorization, cancellationToken);
+        if (result.IsSuccess)
+        {
+            codexAuthorization = null;
+            return new(true, CodexAuthorizationState.Connected, "Codex connected.");
+        }
+        if (result.RetryAfter is { } retry)
+        {
+            nextCodexPollAt = timeProvider.GetUtcNow().Add(retry);
+            return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retry);
+        }
+        return CodexFailure(result.Status, result.RetryAfter, authorization);
+    }
+
+    public async ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken cancellationToken)
+    {
+        codexAuthorization = null;
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
+        try
+        {
+            await codexSessionManager.LogoutAsync(cancellationToken);
+            return new(true, CodexAuthorizationState.Disconnected, "Codex disconnected.");
+        }
+        catch { return new(false, CodexAuthorizationState.Error, "Unable to disconnect Codex."); }
+    }
+    public ValueTask<bool> HasCodexCredentialAsync(CancellationToken cancellationToken) => codexSessionManager?.HasCredentialAsync(cancellationToken) ?? ValueTask.FromResult(false);
+
+    private static CodexUiResult CodexFailure(FetchStatus status, TimeSpan? retryAfter, CodexDeviceAuthorization? authorization = null) =>
+        new(false, CodexAuthorizationState.Error, status switch
+        {
+            FetchStatus.Unauthorized => "Codex authorization was rejected.",
+            FetchStatus.Forbidden => "Codex authorization was not permitted.",
+            FetchStatus.RateLimited => "Codex authorization is temporarily rate-limited.",
+            _ => "Codex authorization is temporarily unavailable."
+        }, authorization is null ? null : new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retryAfter);
 }
 
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
@@ -342,6 +405,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string PersistentStateForTests => Settings.GithubOAuthClientId;
     public string CopilotNotice => CopyText.CopilotDescription;
     public string CopilotDeviceResult { get; private set; } = "No device flow started.";
+    private CodexUiResult codexResult = new(false, CodexAuthorizationState.Disconnected, "Codex is not connected.");
+    private bool hasCodexCredential;
+    public CodexAuthorizationState CodexState => codexResult.State;
+    public string CodexStatusText => codexResult.Message;
+    public string CodexUserCode => codexResult.Prompt?.UserCode ?? string.Empty;
+    public Uri? CodexVerificationUri => codexResult.Prompt?.VerificationUri;
+    public string CodexExpiresText => codexResult.Prompt is { } prompt ? $"{CopyText.CodexExpires}: {prompt.ExpiresAt.ToLocalTime():g}" : string.Empty;
+    public bool IsCodexPromptVisible => codexResult.Prompt is not null && codexResult.State is CodexAuthorizationState.AwaitingAuthorization or CodexAuthorizationState.Pending;
+    public bool IsCodexConnected => codexResult.State == CodexAuthorizationState.Connected;
+    public bool IsCodexDisconnected => codexResult.State == CodexAuthorizationState.Disconnected;
+    public bool IsCodexError => codexResult.State == CodexAuthorizationState.Error;
+    public bool IsCodexLogoutVisible => hasCodexCredential || IsCodexConnected;
+    public void SetCodexCredentialPresence(bool exists) { hasCodexCredential = exists; OnPropertyChanged(nameof(IsCodexLogoutVisible)); }
+    public void SetCodexResult(CodexUiResult result)
+    {
+        codexResult = result;
+        if (result.Success && result.State == CodexAuthorizationState.Connected) hasCodexCredential = true;
+        if (result.Success && result.State == CodexAuthorizationState.Disconnected) hasCodexCredential = false;
+        foreach (var name in new[] { nameof(CodexState), nameof(CodexStatusText), nameof(CodexUserCode), nameof(CodexExpiresText), nameof(IsCodexPromptVisible), nameof(IsCodexConnected), nameof(IsCodexDisconnected), nameof(IsCodexError), nameof(IsCodexLogoutVisible) }) OnPropertyChanged(name);
+    }
+    public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) NotifyLocalizedProperties(); } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
@@ -411,17 +495,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             if (quotaApplication is null) { LoadCards(); PresentationState = Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready; return; }
+            var previousProviderIdentities = lastKnownSnapshots
+                .Where(snapshot => snapshot.Source != QuotaSource.Manual)
+                .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
+                .ToHashSet();
             var snapshots = await quotaApplication.RefreshAsync(cancellationToken);
             if (snapshots.Count > 0)
             {
-                lastKnownSnapshots.Clear();
-                lastKnownSnapshots.AddRange(snapshots);
+                MergeLastKnownSnapshots(snapshots);
                 if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
-                ReplaceCards(Cards.Where(card => card.Provider != ProviderKind.OpenCode).Concat(DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow())).ToList());
+                UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
+                ReevaluateCards(timeProvider.GetUtcNow());
                 if (quotaHistory is not null) await History.RefreshAfterPersistAsync(cancellationToken);
+                var currentProviderIdentities = snapshots
+                    .Where(snapshot => snapshot.Source != QuotaSource.Manual)
+                    .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
+                    .ToHashSet();
+                var partialFailure = previousProviderIdentities.Any(identity => !currentProviderIdentities.Contains(identity));
+                if (partialFailure) notificationService.Notify("Quota refresh incomplete", "Some previously connected providers did not return data; showing their last successful values as stale when expired.");
+                PresentationState = partialFailure ? PresentationState.Error : PresentationState.Ready;
             }
             else ReevaluateCards(timeProvider.GetUtcNow());
-            PresentationState = snapshots.Count == 0 && Cards.Count > 0 ? PresentationState.Error : Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready;
+            if (snapshots.Count == 0) PresentationState = Cards.Count > 0 ? PresentationState.Error : PresentationState.Empty;
         }
         catch { ReevaluateCards(timeProvider.GetUtcNow()); PresentationState = PresentationState.Error; }
     }
@@ -430,10 +525,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (snapshots.Count == 0) return;
         if (quotaHistory is not null) await quotaHistory.AppendAsync(snapshots, cancellationToken);
         await History.RefreshAfterPersistAsync(cancellationToken);
-        lastKnownSnapshots.RemoveAll(existing => snapshots.Any(updated => updated.Provider == existing.Provider && updated.Account == existing.Account && updated.Window.Kind == existing.Window.Kind && updated.Metric == existing.Metric));
-        lastKnownSnapshots.AddRange(snapshots);
+        MergeLastKnownSnapshots(snapshots);
         if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
-        ReplaceCards(Cards.Where(card => card.Provider != ProviderKind.OpenCode).Concat(DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow())).ToList());
+        UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
+        ReevaluateCards(timeProvider.GetUtcNow());
         PresentationState = PresentationState.Ready;
     }
     public string Copy(string key) => Language == UiLanguage.Japanese ? key switch { "Dashboard" => "ダッシュボード", "History" => "履歴", "Settings" => "設定", _ => key } : key;
@@ -469,6 +564,52 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             Cards.Add(new ProviderCardViewModel(snapshot.Provider, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, "#405DE6", "Manual", false, [row]));
         }
+        OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
+    }
+    private void MergeLastKnownSnapshots(IEnumerable<QuotaSnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots)
+        {
+            lastKnownSnapshots.RemoveAll(existing => IsSameSnapshotIdentity(existing, snapshot));
+            lastKnownSnapshots.Add(snapshot);
+        }
+    }
+    private void UpsertSnapshotCards(IEnumerable<QuotaSnapshot> snapshots, DateTimeOffset now)
+    {
+        foreach (var snapshot in snapshots)
+        {
+            var row = QuotaPresentationFormatter.Format(snapshot, now);
+            var matches = Cards
+                .Select((card, index) => (card, index))
+                .Where(item => item.card.Provider == snapshot.Provider && item.card.Account == snapshot.Account)
+                .ToList();
+            if (matches.Count == 0)
+            {
+                Cards.Add(DashboardAggregation.ToCards([snapshot], now)[0]);
+                continue;
+            }
+
+            var first = matches[0];
+            var windows = matches
+                .SelectMany(item => item.card.Windows)
+                .Where(existing => existing.WindowName != row.WindowName || existing.Metric != row.Metric)
+                .Append(row)
+                .GroupBy(existing => (existing.WindowName, existing.Metric))
+                .Select(group => group.Last())
+                .OrderByDescending(existing => existing.VisualPercent)
+                .ToList();
+            Cards[first.index] = first.card with { Windows = windows };
+            foreach (var duplicate in matches.Skip(1).OrderByDescending(item => item.index)) Cards.RemoveAt(duplicate.index);
+        }
+        OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
+    }
+    private static bool IsSameSnapshotIdentity(QuotaSnapshot left, QuotaSnapshot right) =>
+        left.Provider == right.Provider && left.Account == right.Account && left.Metric == right.Metric && left.Window.Kind == right.Window.Kind;
+    public void RemoveCodexCards()
+    {
+        lastKnownSnapshots.RemoveAll(snapshot => snapshot.Provider == ProviderKind.ChatGpt && snapshot.DisplayName.Contains("Codex", StringComparison.OrdinalIgnoreCase));
+        for (var index = Cards.Count - 1; index >= 0; index--)
+            if (Cards[index].Provider == ProviderKind.ChatGpt && Cards[index].Name.Contains("Codex", StringComparison.OrdinalIgnoreCase)) Cards.RemoveAt(index);
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
     public void SetCopilotDeviceResult(string url, string code) { CopilotDeviceResult = Language == UiLanguage.Japanese ? $"認証URL: {url}\nユーザーコード: {code}\n操作: コピー · 開く · 確認" : $"Verification URL: {url}\nUser code: {code}\nActions: Copy · Open · Poll"; OnPropertyChanged(nameof(CopilotDeviceResult)); }
@@ -507,7 +648,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexExpiresText) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); } return true; }
     private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new(name));

@@ -44,7 +44,9 @@ public sealed class WindowsCredentialStore(IWindowsCredentialApi api) : ICredent
     public async ValueTask RemoveAsync(string account, CancellationToken cancellationToken)
     {
         await Task.CompletedTask;
-        if (api.Delete(Target(account)) != 0) Availability = CredentialStoreAvailability.Unavailable;
+        var error = api.Delete(Target(account));
+        if (error == (int)WindowsCredentialError.NotFound) return;
+        if (error != 0) { Availability = CredentialStoreAvailability.Unavailable; throw new InvalidOperationException("Windows credential removal failed."); }
     }
 }
 

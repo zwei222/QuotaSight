@@ -17,7 +17,9 @@ public static class CompositionRoot
     {
         var client = httpClient ?? new HttpClient();
         var github = new GitHubDeviceFlowClient(client, clientId ?? new JsonSettingsStore().Load().GithubOAuthClientId);
-        return new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, CreateCredentialStore());
+        var credentials = CreateCredentialStore();
+        var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
+        return new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, codexSessionManager: codex);
     }
 
     private static ICredentialStore CreateCredentialStore()
@@ -41,21 +43,23 @@ public static class CompositionRoot
         var settings = new AppSettingsStore();
         var credentials = CreateCredentialStore();
         var source = new PersistentDashboardSource(history);
-        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history);
+        var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
+        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history, codex);
         return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application);
     }
 
-    public static (MainViewModel ViewModel, IProviderUiService Provider) CreateMainWindowParts(string? dataDirectory = null, HttpClient? httpClient = null)
+    public static (MainViewModel ViewModel, IProviderUiService Provider) CreateMainWindowParts(string? dataDirectory = null, HttpClient? httpClient = null, ICredentialStore? credentialStore = null)
     {
         var client = httpClient ?? new HttpClient();
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
-        var credentials = CreateCredentialStore();
-        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history);
+        var credentials = credentialStore ?? CreateCredentialStore();
+        var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
+        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history, codex);
         var settings = new AppSettingsStore();
         var factory = new GitHubClientFactory(client);
         var github = factory.Create(settings.Load().GithubOAuthClientId);
         var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application);
-        var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory);
+        var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory, codexSessionManager: codex);
         return (viewModel, provider);
     }
 

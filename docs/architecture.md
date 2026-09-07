@@ -4,13 +4,13 @@
 
 - Core: quota snapshot、quota window、overage、freshness、source confidence、fetch status の副作用なしの契約。
 - Application: provider を束ねる dashboard refresh、30 日 history、settings、credential lifecycle、export のユースケース。
-- Infrastructure: ChatGPT/Claude の manual URL、OpenCode Go usage endpoint、Copilot の gh/device flow/manual fallback、OS credential backend、JSONL repository。
+- Infrastructure: ChatGPT Codexのdevice OAuthとUndocumented/Experimental `wham/usage` adapter、Claudeのmanual URL、OpenCode Go usage endpoint、Copilot の gh/device flow/manual fallback、OS credential backend、JSONL repository。
 - UI: Avalonia の dashboard/history/settings、tray、notification と fallback。ViewModel は Application 契約を呼びます。
 
 ## Data flow
 
 1. UI が refresh または scheduler tick を Application に依頼。
-2. Adapter は provider ごとの方式で quota 値を取得し、source（manual/official/delayed/experimental）、取得時刻、reset window、fresh-until を付ける。
+2. Adapter は provider ごとの方式で quota 値を取得し、source（manual/official/delayed/experimental）、取得時刻、reset window、fresh-until を付ける。Codexは`used_percent`、`reset_at`、`limit_window_seconds`を各primary/secondary windowへ写像し、used/limitを推測しない。両windowは独立して保持し、100超も保持する。
 3. Application は Core の契約で overage と stale を計算し、UI model に投影する。
 4. snapshot は token や生 response を含めず JSONL history に append する。dashboard は current snapshot、history は日付範囲を読む。
 5. tray/notification は同じ要約を利用し、OS backend が無い場合は UI fallback を使う。
@@ -37,6 +37,7 @@ UI csproj の NativeAOT publish を対象 OS 上で行います。Avalonia compi
 
 ## Provider adapters
 
-- ChatGPTAdapter と ClaudeAdapter は official URL を開く manual adapter。アプリが請求 API や内部 API を模倣しません。
+- CodexAdapter と CodexSessionManager はQuotaSight自身でOpenAI Codex device OAuthを実行し、OAuth public client ID、device endpoints、`wham/usage`を使います。これらは公式Codex実装で確認できるものの、第三者アプリ向け公開安定契約・client ID流用許諾は確認できないため、Undocumented/ExperimentalでありOfficialではありません。client secretは要求・保持しません。対象はChatGPT Plus/Pro全体ではなくCodex枠のみ、単一アカウントです。取得失敗時はmanual + 公式ChatGPTサブスクリプションページへfallbackし、live loginは未検証です。
+- ClaudeAdapter は official URL を開く manual adapter。アプリが請求 API や内部 API を模倣しません。
 - OpenCodeGoAdapter は明示的な API key を secure store から読み、usage endpoint を呼びます。endpoint が遅延または quota を返さない場合は delayed/unknown。
 - CopilotAdapter は `gh auth` または device flow の認証状態を使います。quota endpoint が無い・権限が無い場合は、認証成功を quota 成功と誤表示せず manual に切り替えます。

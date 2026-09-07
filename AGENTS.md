@@ -68,7 +68,9 @@ Windows Native AOTはWindows runner、Linux Native AOTはLinux runnerでpublish�
 
 ## プロバイダー境界
 
-- ChatGPT PlusとClaude Proは、対応する公開契約が存在するまで、利用率/resetの手動入力と公式Usageページへのリンクを使用します。
+- ChatGPT Plus/ProのCodex枠は、QuotaSight独自のOpenAI Codex device OAuthと`wham/usage`を使用できます。ただし第三者アプリ向けの公開安定契約と公式Client ID流用許諾は未確認のため、常に`Experimental`として表示し、実サービスでのlive login未検証を明記してください。ChatGPT全体の利用量と混同せず、取得失敗時は手動入力と公式ChatGPTサブスクリプションページへfallbackします。Hermes/Codexの資格情報ファイルは読み取らず、client secretを持たず、単一アカウントとして扱います。
+- Claude Proは、対応する公開契約が存在するまで、利用率/resetの手動入力と公式Usageページへのリンクを使用します。
+- OpenAI Codexのaccess/refresh/id tokenはOS資格情報ストアだけへ永続化し、利用不能時はsession-memoryに限定します。refresh token rotationは排他し、logout時に専用資格情報を削除してください。`used_percent`、`reset_at`、`limit_window_seconds`だけを写像し、`used`/`limit`を推測せず、primary/secondary windowと100%超の値を保持してください。
 - OpenCode Goは明示的に入力されたAPI keyとusage endpoint adapterを使用します。OpenCode内部の認証ファイルを読み取ってはいけません。
 - GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight OAuth Appのdevice flowを使用できます。認証成功は利用枠の参照可否を保証しません。組織利用枠を取得できない場合は手動入力へfallbackします。
 - GitHub OAuth Client IDは実行時設定です。デスクトップアプリにclient secretを要求または埋め込んではいけません。

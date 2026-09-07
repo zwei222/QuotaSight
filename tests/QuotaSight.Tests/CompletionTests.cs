@@ -73,10 +73,70 @@ public sealed class CompletionTests
     }
 
     [Fact]
+    public async Task Windows_credentials_delete_not_found_is_success_but_other_error_is_failure()
+    {
+        var notFound = new FakeWindowsCredentialApi { DeleteResult = (int)WindowsCredentialError.NotFound };
+        await new WindowsCredentialStore(notFound).RemoveAsync("alice", default);
+
+        var other = new FakeWindowsCredentialApi { DeleteResult = 5 };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WindowsCredentialStore(other).RemoveAsync("alice", default).AsTask());
+        Assert.Equal("Windows credential removal failed.", error.Message);
+        Assert.DoesNotContain("secret", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Linux_secret_store_delete_requires_zero_exit_and_hides_failures()
+    {
+        await new LinuxSecretToolCredentialStore(new FakeSecretRunner(0)).RemoveAsync("key", default);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new LinuxSecretToolCredentialStore(new FakeSecretRunner(1)).RemoveAsync("key", default).AsTask());
+        Assert.Equal("Linux credential removal failed.", error.Message);
+        Assert.DoesNotContain("locked", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Fallback_get_prefers_session_value_and_primary_success_removes_stale_value()
+    {
+        var primary = new InMemoryCredentialStore();
+        var fallback = new InMemoryCredentialStore();
+        await primary.SetAsync("alice", "old", default);
+        await fallback.SetAsync("alice", "new", default);
+        var store = new FallbackCredentialStore(primary, fallback);
+
+        Assert.Equal("new", await store.GetAsync("alice", default));
+        await store.SetAsync("alice", "fresh", default);
+        Assert.Equal("fresh", await primary.GetAsync("alice", default));
+        Assert.Null(await fallback.GetAsync("alice", default));
+    }
+
+    [Fact]
+    public async Task Fallback_remove_propagates_primary_failure_after_trying_fallback()
+    {
+        var primary = new FailingCredentialStore();
+        var fallback = new RecordingRemoveStore();
+        var store = new FallbackCredentialStore(primary, fallback);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RemoveAsync("alice", default).AsTask());
+        Assert.True(fallback.RemoveCalled);
+    }
+
+    [Fact]
     public async Task Fallback_credential_store_keeps_secret_in_session_when_primary_write_fails()
     {
         var primary = new FailingCredentialStore(); var fallback = new InMemoryCredentialStore(); var store = new FallbackCredentialStore(primary, fallback);
         await store.SetAsync("alice", "secret", default); Assert.Equal("secret", await store.GetAsync("alice", default)); Assert.Equal(CredentialStoreAvailability.Unavailable, store.Availability);
+    }
+
+    [Fact]
+    public async Task Fallback_set_propagates_cancellation_without_writing_fallback()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var primary = new CancellationThrowingStore();
+        var fallback = new InMemoryCredentialStore();
+        var store = new FallbackCredentialStore(primary, fallback);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => store.SetAsync("alice", "secret", cancellation.Token).AsTask());
+        Assert.Null(await fallback.GetAsync("alice", default));
     }
 
     [Fact]
@@ -213,11 +273,11 @@ public sealed class CompletionTests
 
     private sealed class FakeWindowsCredentialApi : IWindowsCredentialApi
     {
-        public string? Target; public string? WrittenSecret; public string Log = ""; public string? ReadValue; public WindowsCredentialError ReadError; public bool FreeCalled; public bool DeleteCalled; public bool ZeroingContractObserved; public uint Type; public uint Persist;
+        public string? Target; public string? WrittenSecret; public string Log = ""; public string? ReadValue; public WindowsCredentialError ReadError; public bool FreeCalled; public bool DeleteCalled; public bool ZeroingContractObserved; public uint Type; public uint Persist; public int DeleteResult;
         public int Write(string target, ReadOnlySpan<byte> blob, uint type, uint persist) { Target = target; Type = type; Persist = persist; WrittenSecret = MemoryMarshal.Cast<byte, char>(blob).ToString().TrimEnd('\0'); return 0; }
         public WindowsCredentialReadResult Read(string target) { Target = target; return ReadError != 0 ? new(null, ReadError) : new(ReadValue is null ? null : MemoryMarshal.AsBytes(ReadValue.AsSpan()).ToArray(), 0); }
         public void Free() => FreeCalled = true;
-        public int Delete(string target) { Target = target; DeleteCalled = true; return 0; }
+        public int Delete(string target) { Target = target; DeleteCalled = true; return DeleteResult; }
         public void ObserveZeroing() => ZeroingContractObserved = true;
         public void ZeroNativeBlob() => ZeroingContractObserved = true;
     }
@@ -226,11 +286,27 @@ public sealed class CompletionTests
         public CredentialStoreAvailability Availability => CredentialStoreAvailability.Unavailable;
         public ValueTask<string?> GetAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult<string?>(null);
         public ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken) => throw new InvalidOperationException();
+        public ValueTask RemoveAsync(string account, CancellationToken cancellationToken) => throw new InvalidOperationException();
+    }
+    private sealed class CancellationThrowingStore : ICredentialStore
+    {
+        public CredentialStoreAvailability Availability => CredentialStoreAvailability.SecureStore;
+        public ValueTask<string?> GetAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult<string?>(null);
+        public ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken) => throw new OperationCanceledException(cancellationToken);
         public ValueTask RemoveAsync(string account, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+    private sealed class RecordingRemoveStore : ICredentialStore
+    {
+        public bool RemoveCalled;
+        public CredentialStoreAvailability Availability => CredentialStoreAvailability.SessionOnly;
+        public ValueTask<string?> GetAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult<string?>(null);
+        public ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask RemoveAsync(string account, CancellationToken cancellationToken) { RemoveCalled = true; return ValueTask.CompletedTask; }
     }
     private sealed class RecordingHistory : IQuotaHistory
     {
-        public DateOnly? PrunedBefore; public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> s, CancellationToken c) => ValueTask.CompletedTask; public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]); public ValueTask PruneAsync(DateOnly b, CancellationToken c) { PrunedBefore = b; return ValueTask.CompletedTask; }
+        public DateOnly? PrunedBefore;
+        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> s, CancellationToken c) => ValueTask.CompletedTask; public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]); public ValueTask PruneAsync(DateOnly b, CancellationToken c) { PrunedBefore = b; return ValueTask.CompletedTask; }
         public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]); public ValueTask DeleteEventAsync(Guid id, CancellationToken c) => ValueTask.CompletedTask; public ValueTask DeleteAsync(DateOnly? d, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportJsonAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportCsvAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask;
     }
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }

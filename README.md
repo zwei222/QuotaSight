@@ -15,12 +15,12 @@ QuotaSight は API 請求額ではなく、subscription quota（契約プラン�
 
 | Provider | 方式 | 表示上の限界 |
 |---|---|---|
-| ChatGPT | manual + official URL | quota は公式 URL を開いて手動入力。請求額 API ではない。 |
+| ChatGPT Codex | OpenAI device OAuth + Undocumented/Experimental `wham/usage` | ChatGPT Plus/Pro全体ではなくCodex枠のみ。public client IDとdevice endpointは公式Codex実装で確認できるが、第三者アプリ向け公開安定契約・client ID流用許諾は未確認。失敗時はmanual + 公式ChatGPTサブスクリプションページ。live loginは未検証。 |
 | Claude | manual + official URL | quota は公式 URL を開いて手動入力。請求額 API ではない。 |
 | OpenCode Go | API key + usage endpoint | usage endpoint の返す subscription quota の範囲のみ。応答が遅延・未提供なら stale/unknown。 |
 | Copilot | `gh auth`/device flow | GitHub CLI 認証は使えるが、quota endpoint が利用できない場合は manual。請求額 API ではない。 |
 
-未検証の実サービス応答を実装済み・保証済みとは扱いません。provider の状態は manual / official / delayed / experimental の truthfulness を維持します。
+CodexのOAuth public client ID、device endpoints、`wham/usage`は公式Codex実装で確認できるものの、第三者アプリ向けの公開安定契約やclient ID流用許諾は確認できないため、Officialとは扱いません。QuotaSight自身がdevice OAuthを実行し、client secretは要求・保持せず、Hermes/Codexのcredentialファイルも読みません。Codexは単一アカウントのCodex枠だけを対象にし、失敗時はmanual + 公式ChatGPTサブスクリプションページへfallbackします。未検証の実サービス応答およびlive loginを、実装済み・保証済みとは扱いません。provider の状態は manual / official / delayed / experimental のtruthfulnessを維持します。
 
 ## 必要条件
 
@@ -60,4 +60,4 @@ Release workflow が OS 上で NativeAOT self-contained binary を作り、`Quot
 
 ## English short section
 
-QuotaSight tracks subscription quotas, not API billing. It supports honest source labels, Demo mode, dashboard/history/settings, tray and notification fallbacks, and privacy-first local storage. Provider integrations may be manual, delayed, experimental, or unavailable; unverified live-service behavior is not promised.
+QuotaSight tracks subscription quotas, not API billing. For ChatGPT Plus/Pro it targets the Codex quota only, not all ChatGPT usage. QuotaSight runs its own OpenAI Codex device OAuth for one account and does not read Hermes/Codex credential files. The public client ID, device endpoints, and `wham/usage` are visible in the official Codex implementation, but no public stable third-party contract or permission to reuse the client ID has been confirmed; this integration is therefore Undocumented/Experimental, never Official. Tokens stay in the OS secure store or session memory only; failures fall back to manual entry and the official ChatGPT subscription page. Live login is unverified.
