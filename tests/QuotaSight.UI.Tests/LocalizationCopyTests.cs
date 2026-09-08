@@ -18,11 +18,11 @@ public sealed class LocalizationCopyTests
         Assert.Contains("otherwise it is kept for this session only", english.OpenCodeDescription);
         Assert.Contains("never displayed or logged", english.OpenCodeDescription);
 
-        Assert.Contains("デバイス認証には実行時に設定したGitHub OAuth Client IDが必要", japanese.CopilotDescription);
+        Assert.Contains("デバイス認証には実行時に設定したGitHub App Client IDが必要", japanese.CopilotDescription);
         Assert.Contains("クライアントシークレットは不要", japanese.CopilotDescription);
         Assert.Contains("ghの状態確認にはClient IDは不要", japanese.CopilotDescription);
         Assert.Contains("組織の利用枠を取得できない場合は手動入力", japanese.CopilotDescription);
-        Assert.Contains("Device flow requires a runtime-configured GitHub OAuth Client ID", english.CopilotDescription);
+        Assert.Contains("Device flow requires a runtime-configured GitHub App Client ID", english.CopilotDescription);
         Assert.Contains("no client secret", english.CopilotDescription);
         Assert.Contains("gh status does not require a Client ID", english.CopilotDescription);
         Assert.Contains("Organization quota may be unavailable, so manual fallback is supported", english.CopilotDescription);

@@ -77,24 +77,25 @@ public partial class MainWindow : Window
             var language = this.FindControl<ComboBox>("LanguageBox")!;
             var accountFilter = this.FindControl<ComboBox>("HistoryAccountFilter")!;
             var windowFilter = this.FindControl<ComboBox>("HistoryWindowFilter")!;
-            var selectedProvider = provider.SelectedItem is ProviderKind currentProvider ? currentProvider : ProviderKind.ChatGpt;
+            var selectedProvider = provider.SelectedItem switch { LocalizedChoice<ProviderKind> current => current.Value, ProviderKind legacy => legacy, _ => ProviderKind.ChatGpt };
             var selectedWindow = window.SelectedItem is LocalizedChoice<QuotaWindowKind> currentWindow ? currentWindow.Value : QuotaWindowKind.Weekly;
+            var selectedTheme = theme.SelectedItem switch { LocalizedChoice<ThemeMode> current => current.Value, ThemeMode legacy => legacy, _ => ViewModel.Settings.Theme };
             var accountText = account.Text;
             var usedPercentText = usedPercent.Text;
             var resetAtText = resetAt.Text;
-            provider.ItemsSource = new[] { ProviderKind.ChatGpt, ProviderKind.Claude, ProviderKind.Copilot };
+            provider.ItemsSource = UiSettings.ManualProviderChoices(ViewModel.Language);
             window.ItemsSource = UiSettings.ManualWindowChoices(ViewModel.Language);
-            theme.ItemsSource = Enum.GetValues<ThemeMode>();
+            theme.ItemsSource = UiSettings.ThemeChoices(ViewModel.Language);
             language.ItemsSource = UiSettings.SupportedLanguages;
             accountFilter.ItemsSource = UiSettings.HistoryAccountChoices(ViewModel.Language);
             windowFilter.ItemsSource = UiSettings.HistoryWindowChoices(ViewModel.Language);
-            provider.SelectedItem = selectedProvider;
+            provider.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == selectedProvider);
             this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(item => item.Choice == ViewModel.SelectedProvider);
             window.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == selectedWindow);
             account.Text = accountText;
             usedPercent.Text = usedPercentText;
             resetAt.Text = resetAtText;
-            theme.SelectedItem = ViewModel.Settings.Theme;
+            theme.SelectedItem = UiSettings.ThemeChoices(ViewModel.Language).Single(item => item.Value == selectedTheme);
             language.SelectedIndex = ViewModel.Language == UiLanguage.Japanese ? 1 : 0;
             this.FindControl<NumericUpDown>("RefreshMinutesBox")!.Value = ViewModel.Settings.RefreshMinutes;
             this.FindControl<NumericUpDown>("ThresholdBox")!.Value = ViewModel.Settings.OverallThreshold;
@@ -177,7 +178,10 @@ public partial class MainWindow : Window
         {
             ViewModel.SelectProvider(choice.Choice);
             if (choice.Choice is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude)
-                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = choice.Choice == ProviderConnectionChoice.ChatGpt ? ProviderKind.ChatGpt : ProviderKind.Claude;
+            {
+                var provider = choice.Choice == ProviderConnectionChoice.ChatGpt ? ProviderKind.ChatGpt : ProviderKind.Claude;
+                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == provider);
+            }
         }
     }
     private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();
@@ -188,7 +192,7 @@ public partial class MainWindow : Window
     private async void RefreshClick(object? sender, RoutedEventArgs e) => await ViewModel.RefreshAsync();
     private async void ThemeChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (!isInitializing && sender is ComboBox box && box.SelectedItem is ThemeMode theme) await ViewModel.SetThemeAsync(theme);
+        if (!isInitializing && sender is ComboBox box && box.SelectedItem is LocalizedChoice<ThemeMode> theme) await ViewModel.SetThemeAsync(theme.Value);
     }
     private async void LanguageChanged(object? sender, SelectionChangedEventArgs e)
     {
@@ -198,7 +202,7 @@ public partial class MainWindow : Window
             try
             {
                 var selected = ViewModel.SelectedProvider;
-                var manualProvider = this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem is ProviderKind provider ? provider : ProviderKind.ChatGpt;
+                var manualProvider = this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem switch { LocalizedChoice<ProviderKind> choice => choice.Value, ProviderKind legacy => legacy, _ => ProviderKind.ChatGpt };
                 var manualWindow = this.FindControl<ComboBox>("ManualWindowBox")!.SelectedItem is LocalizedChoice<QuotaWindowKind> quotaWindow ? quotaWindow.Value : QuotaWindowKind.Weekly;
                 var accountText = this.FindControl<TextBox>("AccountNameBox")!.Text;
                 var usedPercentText = this.FindControl<TextBox>("UsedPercentBox")!.Text;
@@ -207,7 +211,7 @@ public partial class MainWindow : Window
                 var windowFilter = ViewModel.History.WindowFilter;
                 await ViewModel.SetLanguageAsync(language == "日本語" ? UiLanguage.Japanese : UiLanguage.English);
                 ConfigureLists();
-                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = manualProvider;
+                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == manualProvider);
                 this.FindControl<ComboBox>("ManualWindowBox")!.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == manualWindow);
                 this.FindControl<TextBox>("AccountNameBox")!.Text = accountText;
                 this.FindControl<TextBox>("UsedPercentBox")!.Text = usedPercentText;
@@ -241,7 +245,7 @@ public partial class MainWindow : Window
         var validation = this.FindControl<TextBlock>("ManualValidationText");
         var entry = new ManualQuotaEntry
         {
-            Provider = providerBox?.SelectedItem is ProviderKind provider ? provider : ProviderKind.Manual,
+            Provider = providerBox?.SelectedItem is LocalizedChoice<ProviderKind> provider ? provider.Value : providerBox?.SelectedItem is ProviderKind legacyProvider ? legacyProvider : ProviderKind.Manual,
             AccountDisplayName = accountBox?.Text ?? string.Empty,
             Window = windowBox?.SelectedItem is LocalizedChoice<QuotaWindowKind> window ? window.Value : QuotaWindowKind.Weekly,
             UsedPercentText = usedBox?.Text ?? string.Empty,

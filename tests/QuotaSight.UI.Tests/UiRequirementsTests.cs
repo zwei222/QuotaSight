@@ -107,6 +107,9 @@ public sealed class UiRequirementsTests
 
         picker.SelectedItem = chatGpt;
         Assert.True(window.FindControl<Border>("ManualProviderPanel")!.IsVisible);
+        var manualProvider = Assert.IsType<LocalizedChoice<ProviderKind>>(window.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem);
+        Assert.Equal(ProviderKind.ChatGpt, manualProvider.Value);
+        Assert.Equal("ChatGPT", manualProvider.DisplayName);
         picker.SelectedItem = null;
         picker.SelectedItem = chatGpt;
         Assert.True(window.FindControl<Border>("ManualProviderPanel")!.IsVisible);
@@ -147,7 +150,7 @@ public sealed class UiRequirementsTests
             var account = window.FindControl<TextBox>("AccountNameBox")!;
             var percent = window.FindControl<TextBox>("UsedPercentBox")!;
             var reset = window.FindControl<TextBox>("ResetAtBox")!;
-            provider.SelectedItem = ProviderKind.Claude;
+            provider.SelectedItem = UiSettings.ManualProviderChoices(UiLanguage.English).Single(item => item.Value == ProviderKind.Claude);
             quotaWindow.SelectedItem = UiSettings.ManualWindowChoices(UiLanguage.English).Single(item => item.Value == QuotaWindowKind.Monthly);
             account.Text = "Claude account";
             percent.Text = "37";
@@ -157,7 +160,7 @@ public sealed class UiRequirementsTests
             language.SelectedItem = "日本語";
             await Task.Delay(50);
 
-            Assert.Equal(ProviderKind.Claude, Assert.IsType<ProviderKind>(provider.SelectedItem));
+            Assert.Equal(ProviderKind.Claude, Assert.IsType<LocalizedChoice<ProviderKind>>(provider.SelectedItem).Value);
             Assert.Equal<QuotaWindowKind>(QuotaWindowKind.Monthly, ((LocalizedChoice<QuotaWindowKind>)quotaWindow.SelectedItem!).Value);
             Assert.Equal("Claude account", account.Text);
             Assert.Equal("37", percent.Text);
@@ -196,7 +199,7 @@ public sealed class UiRequirementsTests
 
         var row = QuotaPresentationFormatter.Format(snapshot, now, UiLanguage.Japanese);
 
-        Assert.Equal("42% 使用済み・残り 58%", row.PercentText);
+        Assert.Equal("使用済み 42%・残り 58%", row.PercentText);
         Assert.Equal("余裕あり", row.StatusText);
         Assert.Equal("メッセージ", row.Metric);
         Assert.Equal("5分前に更新", row.FreshnessText);
@@ -209,9 +212,9 @@ public sealed class UiRequirementsTests
         var now = DateTimeOffset.UtcNow;
 
         Assert.Equal("リクエスト", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Requests" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("高速枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Fast window" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal("短時間枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Fast window" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("月次", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "monthly" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("週次", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "weekly" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal(string.Empty, QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "weekly" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("Codex主要枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex primary" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("Codex副枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex secondary" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("Custom metric", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Custom metric" }, now, UiLanguage.Japanese).Metric);
@@ -331,6 +334,111 @@ public sealed class UiRequirementsTests
         Assert.Equal("ChatGPT", japanese.Single(item => item.Choice == ProviderConnectionChoice.ChatGpt).DisplayName);
         Assert.Equal("Claude", english.Single(item => item.Choice == ProviderConnectionChoice.Claude).DisplayName);
         Assert.DoesNotContain(japanese, item => item.DisplayName == nameof(ProviderConnectionChoice.ChatGpt));
+    }
+
+    [Fact]
+    public void Japanese_window_and_metric_copy_avoids_duplicate_synonyms_and_localizes_window_terms()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var monthly = QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Window = new(QuotaWindowKind.Monthly, now.AddHours(-1), now.AddHours(1)), Metric = "monthly" }, now, UiLanguage.Japanese);
+        var rolling = QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Window = new(QuotaWindowKind.Rolling, now.AddHours(-1), now.AddHours(1)), Metric = "Fast window" }, now, UiLanguage.Japanese);
+
+        Assert.Equal("月次", monthly.WindowName);
+        Assert.Equal(string.Empty, monthly.Metric);
+        Assert.Equal("monthly", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Window = monthly.Snapshot!.Window, Metric = "monthly" }, now, UiLanguage.English).Metric);
+        Assert.Equal("ローリング枠", rolling.WindowName);
+        Assert.Equal("短時間枠", rolling.Metric);
+    }
+
+    [Fact]
+    public void Japanese_over_limit_and_unknown_usage_copy_are_single_source_of_truth()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var over = QuotaPresentationFormatter.Format(DemoSnapshot(112), now, UiLanguage.Japanese);
+        var unknown = QuotaPresentationFormatter.Format(DemoSnapshot(0) with { Used = null, Limit = null }, now, UiLanguage.Japanese);
+
+        Assert.Equal("使用済み 112%", over.PercentText);
+        Assert.Equal("上限を12%超過", over.StatusText);
+        Assert.Equal("使用量を表示できません", unknown.PercentText);
+        Assert.Equal("未取得", unknown.StatusText);
+        Assert.Contains("。", unknown.ProgressLabel);
+        Assert.DoesNotContain("取得中", unknown.ProgressLabel);
+    }
+
+    [Fact]
+    public void Japanese_copy_localizes_theme_labels_and_notification_threshold()
+    {
+        var choices = UiSettings.ThemeChoices(UiLanguage.Japanese);
+        var copy = new UiCopy(UiLanguage.Japanese);
+
+        Assert.Equal("システム", choices.Single(item => item.Value == ThemeMode.System).DisplayName);
+        Assert.Equal("ライト", choices.Single(item => item.Value == ThemeMode.Light).DisplayName);
+        Assert.Equal("ダーク", choices.Single(item => item.Value == ThemeMode.Dark).DisplayName);
+        Assert.Equal("通知する使用率（%）", copy.OverallThreshold);
+        Assert.Equal("認証状態を確認", copy.CodexConfirm);
+        Assert.Equal("認証状態を確認", copy.Poll);
+        Assert.Equal("GitHub App Client ID（秘密情報ではありません）", copy.GithubClientId);
+    }
+
+    [Fact]
+    public void Japanese_demo_accounts_localize_but_named_organization_does_not()
+    {
+        var vm = new MainViewModel(new DemoDashboardSource());
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains(vm.Cards, card => card.Account == "個人アカウント");
+        Assert.Contains(vm.Cards, card => card.Account == "ワークスペース · デモ");
+        Assert.Contains(vm.Cards, card => card.Account == "Acme Engineering");
+        vm.Language = UiLanguage.English;
+        Assert.Contains(vm.Cards, card => card.Account == "Personal account");
+        Assert.Contains(vm.Cards, card => card.Account == "Workspace · demo");
+    }
+
+    [Fact]
+    public void Theme_and_provider_choice_values_survive_localization()
+    {
+        var theme = UiSettings.ThemeChoices(UiLanguage.Japanese).Single(item => item.Value == ThemeMode.Dark);
+        var provider = UiSettings.ManualProviderChoices(UiLanguage.Japanese).Single(item => item.Value == ProviderKind.Copilot);
+
+        Assert.Equal(ThemeMode.Dark, theme.Value);
+        Assert.Equal("ダーク", theme.DisplayName);
+        Assert.Equal(ProviderKind.Copilot, provider.Value);
+        Assert.Equal("GitHub Copilot", provider.DisplayName);
+    }
+
+    [Fact]
+    public void History_window_display_localizes_without_changing_filter_or_export_identity()
+    {
+        var history = new HistoryState();
+        history.WindowFilter = "Weekly";
+        history.SetLanguage(UiLanguage.Japanese);
+
+        Assert.All(history.Entries, entry => Assert.Equal("週次", entry.WindowDisplay));
+        Assert.Equal("Weekly", history.WindowFilter);
+        Assert.Contains("Weekly", history.ExportCsv(), StringComparison.Ordinal);
+
+        history.SetLanguage(UiLanguage.English);
+        Assert.All(history.Entries, entry => Assert.Equal("Weekly", entry.WindowDisplay));
+    }
+
+    [AvaloniaFact]
+    public async Task Japanese_language_switch_updates_rendered_theme_and_manual_provider_choices()
+    {
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), new UiProviderFacade());
+        window.Show();
+        await window.InitializeAsync();
+
+        window.FindControl<ComboBox>("ThemeBox")!.SelectedItem = UiSettings.ThemeChoices(UiLanguage.English).Single(item => item.Value == ThemeMode.Dark);
+        window.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = UiSettings.ManualProviderChoices(UiLanguage.English).Single(item => item.Value == ProviderKind.Copilot);
+        window.FindControl<ComboBox>("LanguageBox")!.SelectedItem = "日本語";
+        await Task.Delay(50);
+
+        var selectedTheme = Assert.IsType<LocalizedChoice<ThemeMode>>(window.FindControl<ComboBox>("ThemeBox")!.SelectedItem);
+        var selectedProvider = Assert.IsType<LocalizedChoice<ProviderKind>>(window.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem);
+        Assert.Equal(ThemeMode.Dark, selectedTheme.Value);
+        Assert.Equal("ダーク", selectedTheme.DisplayName);
+        Assert.Equal(ProviderKind.Copilot, selectedProvider.Value);
+        Assert.Equal("GitHub Copilot", selectedProvider.DisplayName);
+        window.Close();
     }
 
     [Fact]

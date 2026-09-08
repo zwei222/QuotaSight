@@ -61,13 +61,13 @@ public static class QuotaPresentationFormatter
         var visual = (double)Math.Clamp(numeric, 0m, 100m);
         var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
         var japanese = language == UiLanguage.Japanese;
-        var percentText = percent is null ? (japanese ? "使用量を取得できません" : "Usage unavailable") : japanese ? $"{numeric:0.#}% 使用済み・残り {Math.Max(0m, 100m - numeric):0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
-        var status = percent is null ? (japanese ? "使用量を取得中" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
+        var percentText = percent is null ? (japanese ? "使用量を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用済み {numeric:0.#}%" : $"使用済み {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
+        var status = percent is null ? (japanese ? "未取得" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
         var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now, language) : japanese ? "リセット時刻は不明" : "Reset time unavailable";
         var stale = snapshot.IsStale(now);
         var freshness = stale ? (japanese ? $"データが古い可能性があります（最終更新: {FormatAge(snapshot.Fetched, now, language)}）" : "Stale · last updated " + FormatAge(snapshot.Fetched, now, language)) : (japanese ? $"{FormatAge(snapshot.Fetched, now, language)}に更新" : "Updated " + FormatAge(snapshot.Fetched, now, language));
         var source = japanese ? snapshot.Source switch { QuotaSource.Manual => "手動", QuotaSource.Experimental => "実験的", QuotaSource.Delayed => "遅延", _ => "公式" } : snapshot.Source.ToString();
-        return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, language), visual, percentText, status, reset, source, freshness, stale, $"{percentText}. {status}. {reset}") { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
+        return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, percentText, status, reset, source, freshness, stale, BuildProgressLabel(percentText, status, reset, language)) { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
     }
 
     public static QuotaRowViewModel Relocalize(QuotaRowViewModel row, DateTimeOffset now, UiLanguage language) => row.Snapshot is { } snapshot ? Format(snapshot, now, language) : row;
@@ -93,8 +93,18 @@ public static class QuotaPresentationFormatter
         return language == UiLanguage.Japanese ? minutes < 1 ? "たった今" : minutes < 60 ? $"{minutes}分前" : $"{minutes / 60}時間前" : minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
     }
     private static string FormatJapaneseRelative(TimeSpan delta) => delta.TotalSeconds <= 0 ? "リセット済み" : delta.TotalDays >= 1 ? $"あと{(int)delta.TotalDays}日{(delta.Hours > 0 ? $"{delta.Hours}時間" : string.Empty)}" : delta.TotalHours >= 1 ? $"あと{(int)delta.TotalHours}時間{(delta.Minutes > 0 ? $"{delta.Minutes}分" : string.Empty)}" : $"あと{Math.Max(1, (int)delta.TotalMinutes)}分";
-    private static string LocalizeWindow(QuotaWindowKind kind) => kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "一定時間ごと", _ => "カスタム" };
-    private static string LocalizeMetric(string metric, UiLanguage language) => language != UiLanguage.Japanese ? metric : metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "高速枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codex主要枠", "Codex secondary" => "Codex副枠", _ => metric };
+    public static string LocalizeWindow(QuotaWindowKind kind) => kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "ローリング枠", _ => "カスタム" };
+    private static string LocalizeMetric(string metric, QuotaWindowKind window, UiLanguage language)
+    {
+        if (language != UiLanguage.Japanese) return metric;
+        if (string.Equals(metric, window.ToString(), StringComparison.OrdinalIgnoreCase) ||
+            (window == QuotaWindowKind.Monthly && metric.Equals("monthly", StringComparison.OrdinalIgnoreCase)) ||
+            (window == QuotaWindowKind.Weekly && metric.Equals("weekly", StringComparison.OrdinalIgnoreCase)) ||
+            (window == QuotaWindowKind.Daily && metric.Equals("daily", StringComparison.OrdinalIgnoreCase)) ||
+            (window == QuotaWindowKind.Rolling && metric.Equals("rolling", StringComparison.OrdinalIgnoreCase))) return string.Empty;
+        return metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "短時間枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codex主要枠", "Codex secondary" => "Codex副枠", _ => metric };
+    }
+    private static string BuildProgressLabel(string percentText, string status, string reset, UiLanguage language) => language == UiLanguage.Japanese ? $"{percentText}。{status}。{reset}" : $"{percentText}. {status}. {reset}";
 }
 
 public interface IDashboardSource { bool IsDemo { get; } IReadOnlyList<ProviderCardViewModel> Load(); }
@@ -191,7 +201,10 @@ public sealed class ManualQuotaEntry
     }
 }
 
-public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, string Window, decimal? UsedPercent, DateTimeOffset Observed, QuotaSource Source, QuotaConfidence Confidence);
+public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, string Window, decimal? UsedPercent, DateTimeOffset Observed, QuotaSource Source, QuotaConfidence Confidence)
+{
+    public string WindowDisplay { get; init; } = Window;
+}
 public interface IHistoryUiService { IReadOnlyList<HistoryUiEntry> Read(); bool Delete(Guid id); void DeleteAll(); string ExportJson(); string ExportCsv(); }
 public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
 {
@@ -200,6 +213,7 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     public string? LoadError { get; private set; }
     private string accountFilter = "All accounts";
     private string windowFilter = "All windows";
+    public UiLanguage Language { get; private set; } = UiLanguage.English;
     public string AccountFilter { get => accountFilter; set { if (accountFilter == value) return; accountFilter = value; PropertyChanged?.Invoke(this, new(nameof(AccountFilter))); PropertyChanged?.Invoke(this, new(nameof(FilteredEntries))); PropertyChanged?.Invoke(this, new(nameof(SparklinePoints))); } }
     public string WindowFilter { get => windowFilter; set { if (windowFilter == value) return; windowFilter = value; PropertyChanged?.Invoke(this, new(nameof(WindowFilter))); PropertyChanged?.Invoke(this, new(nameof(FilteredEntries))); PropertyChanged?.Invoke(this, new(nameof(SparklinePoints))); } }
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -209,7 +223,7 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
     {
         persistentHistory = history;
         Entries.CollectionChanged += (_, _) => NotifyDerivedProperties();
-        if (history is null) for (var i = 0; i < 30; i++) Entries.Add(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual));
+        if (history is null) for (var i = 0; i < 30; i++) Entries.Add(CreateEntry(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual)));
     }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -223,13 +237,20 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
                 foreach (var item in await persistentHistory!.ReadEventsAsync(day, cancellationToken))
                 {
                     var snapshot = item.Snapshot;
-                    Entries.Add(new(item.EventId, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence));
+                    Entries.Add(CreateEntry(new(item.EventId, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence)));
                 }
             }
             catch (InvalidDataException) { LoadError = "History data is damaged; showing available entries."; }
         }
     }
     public IReadOnlyList<HistoryUiEntry> Read() => Entries;
+    public void SetLanguage(UiLanguage language)
+    {
+        Language = language;
+        for (var index = 0; index < Entries.Count; index++) Entries[index] = CreateEntry(Entries[index]);
+        PropertyChanged?.Invoke(this, new(nameof(Entries)));
+        PropertyChanged?.Invoke(this, new(nameof(FilteredEntries)));
+    }
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) { var entry = Entries.FirstOrDefault(e => e.Id == id); if (entry is null) return false; if (persistentHistory is not null) await persistentHistory.DeleteEventAsync(id, cancellationToken); return Entries.Remove(entry); }
     public async Task DeleteAllAsync(CancellationToken cancellationToken = default) { if (persistentHistory is not null) await persistentHistory.DeleteAsync(null, cancellationToken); Entries.Clear(); }
     public bool Delete(Guid id) { var entry = Entries.FirstOrDefault(e => e.Id == id); return entry is not null && Entries.Remove(entry); }
@@ -244,6 +265,7 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new(nameof(FilteredEntries)));
         PropertyChanged?.Invoke(this, new(nameof(SparklinePoints)));
     }
+    private HistoryUiEntry CreateEntry(HistoryUiEntry entry) => entry with { WindowDisplay = Language == UiLanguage.Japanese && Enum.TryParse<QuotaWindowKind>(entry.Window, true, out var kind) ? QuotaPresentationFormatter.LocalizeWindow(kind) : entry.Window };
     public string ExportJson() => "[" + string.Join(",", FilteredEntries.Select(e => $"{{\"provider\":\"{EscapeJson(e.Provider)}\",\"account\":\"{EscapeJson(e.Account)}\",\"window\":\"{EscapeJson(e.Window)}\",\"usedPercent\":{(e.UsedPercent is { } p ? p.ToString(CultureInfo.InvariantCulture) : "null")},\"observed\":\"{EscapeJson(e.Observed.ToString("O", CultureInfo.InvariantCulture))}\",\"source\":\"{e.Source}\",\"confidence\":\"{e.Confidence}\"}}")) + "]";
     public string ExportCsv() => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", FilteredEntries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -487,7 +509,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible) }) OnPropertyChanged(name);
     }
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
-    public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; RelocalizeCards(); NotifyLocalizedProperties(); } } }
+    public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); NotifyLocalizedProperties(); } } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
     public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
@@ -730,7 +752,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 {
                     var stale = row.WindowEnd != default && row.WindowEnd <= now || row.FreshUntil is { } expiry && now > expiry;
                     var localized = row.Snapshot is null ? row : QuotaPresentationFormatter.Relocalize(row, now, Language);
-                    return localized with { IsStale = stale, ProgressLabel = $"{localized.PercentText}. {localized.StatusText}. {localized.ResetText}" };
+                    return localized with { IsStale = stale, ProgressLabel = Language == UiLanguage.Japanese ? $"{localized.PercentText}。{localized.StatusText}。{localized.ResetText}" : $"{localized.PercentText}. {localized.StatusText}. {localized.ResetText}" };
                 }).ToList()
             };
         }
@@ -746,7 +768,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var card = Cards[i];
             var state = Language == UiLanguage.Japanese ? card.StateText switch { "Healthy" => "正常", "Needs attention" => "注意", "Over limit" => "超過", "Connected" => "接続済み", "Manual" => "手動", _ => card.StateText } : card.StateText switch { "正常" => "Healthy", "注意" => "Needs attention", "超過" => "Over limit", "接続済み" => "Connected", "手動" => "Manual", _ => card.StateText };
-            Cards[i] = card with { StateText = state, Windows = card.Windows.Select(row => QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList() };
+            Cards[i] = card with { Account = Language == UiLanguage.Japanese ? card.Account switch { "Personal account" => "個人アカウント", "Workspace · demo" => "ワークスペース · デモ", _ => card.Account } : card.Account switch { "個人アカウント" => "Personal account", "ワークスペース · デモ" => "Workspace · demo", _ => card.Account }, StateText = state, Windows = card.Windows.Select(row => QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList() };
         }
         OnPropertyChanged(nameof(Cards));
     }
@@ -773,8 +795,10 @@ public static class UiSettings
         _ => choice.ToString()
     };
     public static IReadOnlyList<LocalizedChoice<string>> HistoryAccountChoices(UiLanguage language) => [new("All accounts", language == UiLanguage.Japanese ? "すべてのアカウント" : "All accounts"), new("Personal", language == UiLanguage.Japanese ? "個人" : "Personal"), new("Work", language == UiLanguage.Japanese ? "仕事" : "Work")];
-    public static IReadOnlyList<LocalizedChoice<string>> HistoryWindowChoices(UiLanguage language) => [new("All windows", language == UiLanguage.Japanese ? "すべての利用枠" : "All windows"), new("Weekly", language == UiLanguage.Japanese ? "週次" : "Weekly")];
-    public static IReadOnlyList<LocalizedChoice<QuotaWindowKind>> ManualWindowChoices(UiLanguage language) => Enum.GetValues<QuotaWindowKind>().Select(kind => new LocalizedChoice<QuotaWindowKind>(kind, language == UiLanguage.Japanese ? kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "一定時間ごと", _ => "カスタム" } : kind.ToString())).ToList();
+    public static IReadOnlyList<LocalizedChoice<string>> HistoryWindowChoices(UiLanguage language) => [new("All windows", language == UiLanguage.Japanese ? "すべての利用枠" : "All windows"), .. Enum.GetValues<QuotaWindowKind>().Select(kind => new LocalizedChoice<string>(kind.ToString(), language == UiLanguage.Japanese ? QuotaPresentationFormatter.LocalizeWindow(kind) : kind.ToString()))];
+    public static IReadOnlyList<LocalizedChoice<QuotaWindowKind>> ManualWindowChoices(UiLanguage language) => Enum.GetValues<QuotaWindowKind>().Select(kind => new LocalizedChoice<QuotaWindowKind>(kind, language == UiLanguage.Japanese ? QuotaPresentationFormatter.LocalizeWindow(kind) : kind.ToString())).ToList();
+    public static IReadOnlyList<LocalizedChoice<ProviderKind>> ManualProviderChoices(UiLanguage language) => new[] { ProviderKind.ChatGpt, ProviderKind.Claude, ProviderKind.Copilot }.Select(provider => new LocalizedChoice<ProviderKind>(provider, provider switch { ProviderKind.ChatGpt => "ChatGPT", ProviderKind.Copilot => "GitHub Copilot", _ => provider.ToString() })).ToList();
+    public static IReadOnlyList<LocalizedChoice<ThemeMode>> ThemeChoices(UiLanguage language) => Enum.GetValues<ThemeMode>().Select(theme => new LocalizedChoice<ThemeMode>(theme, theme switch { ThemeMode.System => language == UiLanguage.Japanese ? "システム" : "System", ThemeMode.Light => language == UiLanguage.Japanese ? "ライト" : "Light", _ => language == UiLanguage.Japanese ? "ダーク" : "Dark" })).ToList();
     public static string AutostartStatus => "Unsupported · platform backend not installed";
     public static bool IsRefreshIntervalValid(TimeSpan interval) => interval >= TimeSpan.FromMinutes(5) && interval <= TimeSpan.FromMinutes(15);
     public static ThemeVariant? AppliedTheme { get; private set; }
