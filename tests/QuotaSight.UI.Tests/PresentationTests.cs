@@ -10,6 +10,7 @@ using QuotaSight.Core;
 using QuotaSight.UI;
 
 [assembly: AvaloniaTestApplication(typeof(App))]
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
 
 namespace QuotaSight.UI.Tests;
 
