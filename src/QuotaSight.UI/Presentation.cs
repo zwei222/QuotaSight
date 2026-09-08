@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Avalonia;
 using Avalonia.Styling;
+
 using Avalonia.Threading;
 using QuotaSight.Core;
 using QuotaSight.Application;
@@ -17,8 +18,19 @@ public enum ThemeMode { System, Light, Dark }
 public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
 public enum CodexAuthorizationState { Disconnected, AwaitingAuthorization, Pending, Connected, Error }
+public enum ProviderConnectionChoice { ChatGpt, Claude, Codex, OpenCode, Copilot }
+public enum CopilotUiState { Idle, Started, Completed, Failed, GhProbe }
+public enum UsageBand { Normal, Attention, Danger, OverLimit }
+public sealed record LocalizedChoice<T>(T Value, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
+public sealed record ProviderChoiceViewModel(ProviderConnectionChoice Choice, string DisplayName)
+{
+    public override string ToString() => DisplayName;
+}
 public sealed record CodexAuthorizationPrompt(string UserCode, Uri VerificationUri, DateTimeOffset ExpiresAt);
-public sealed record CodexUiResult(bool Success, CodexAuthorizationState State, string Message, CodexAuthorizationPrompt? Prompt = null, TimeSpan? RetryAfter = null);
+public sealed record CodexUiResult(bool Success, CodexAuthorizationState State, string Message, CodexAuthorizationPrompt? Prompt = null, TimeSpan? RetryAfter = null, FetchStatus Status = FetchStatus.Success);
 
 public sealed record QuotaRowViewModel(string WindowName, string Metric, double VisualPercent, string PercentText, string StatusText, string ResetText, string SourceBadge, string FreshnessText, bool IsStale, string ProgressLabel)
 {
@@ -26,6 +38,14 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public DateTimeOffset WindowEnd { get; init; }
     public DateTimeOffset? FreshUntil { get; init; }
     public DateTimeOffset? ResetAt { get; init; }
+    public decimal? UsedPercent { get; init; }
+    public QuotaSource Source { get; init; }
+    public QuotaWindowKind WindowKind { get; init; }
+    public UsageBand Band { get; init; }
+    public bool IsAttention => Band == UsageBand.Attention;
+    public bool IsDanger => Band == UsageBand.Danger;
+    public bool IsOverLimit => Band == UsageBand.OverLimit;
+    public QuotaSnapshot? Snapshot { get; init; }
 }
 public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, string Account, string Accent, string StateText, bool IsDemo, IReadOnlyList<QuotaRowViewModel> Windows)
 {
@@ -34,32 +54,47 @@ public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, s
 
 public static class QuotaPresentationFormatter
 {
-    public static QuotaRowViewModel Format(QuotaSnapshot snapshot, DateTimeOffset now)
+    public static QuotaRowViewModel Format(QuotaSnapshot snapshot, DateTimeOffset now, UiLanguage language = UiLanguage.English)
     {
         var percent = snapshot.EffectivePercent;
         var numeric = percent ?? 0m;
         var visual = (double)Math.Clamp(numeric, 0m, 100m);
-        var percentText = percent is null ? "Usage unavailable" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
-        var status = numeric > 100m ? $"Over limit by {numeric - 100m:0.#}%" : percent is null ? "Waiting for quota data" : numeric >= 80m ? "Approaching limit" : "Within limit";
-        var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now) : "Reset time unavailable";
+        var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
+        var japanese = language == UiLanguage.Japanese;
+        var percentText = percent is null ? (japanese ? "使用量を取得できません" : "Usage unavailable") : japanese ? $"{numeric:0.#}% 使用済み・残り {Math.Max(0m, 100m - numeric):0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
+        var status = percent is null ? (japanese ? "使用量を取得中" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
+        var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now, language) : japanese ? "リセット時刻は不明" : "Reset time unavailable";
         var stale = snapshot.IsStale(now);
-        var freshness = stale ? "Stale · last updated " + FormatAge(snapshot.Fetched, now) : "Updated " + FormatAge(snapshot.Fetched, now);
-        return new QuotaRowViewModel(snapshot.Window.Kind.ToString(), snapshot.Metric, visual, percentText, status, reset, snapshot.Source.ToString(), freshness, stale, $"{percentText}. {status}. {reset}") { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt };
+        var freshness = stale ? (japanese ? $"データが古い可能性があります（最終更新: {FormatAge(snapshot.Fetched, now, language)}）" : "Stale · last updated " + FormatAge(snapshot.Fetched, now, language)) : (japanese ? $"{FormatAge(snapshot.Fetched, now, language)}に更新" : "Updated " + FormatAge(snapshot.Fetched, now, language));
+        var source = japanese ? snapshot.Source switch { QuotaSource.Manual => "手動", QuotaSource.Experimental => "実験的", QuotaSource.Delayed => "遅延", _ => "公式" } : snapshot.Source.ToString();
+        return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, language), visual, percentText, status, reset, source, freshness, stale, $"{percentText}. {status}. {reset}") { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
     }
 
-    public static string FormatReset(DateTimeOffset resetAt, DateTimeOffset now)
+    public static QuotaRowViewModel Relocalize(QuotaRowViewModel row, DateTimeOffset now, UiLanguage language) => row.Snapshot is { } snapshot ? Format(snapshot, now, language) : row;
+
+    public static string FormatReset(DateTimeOffset resetAt, DateTimeOffset now, UiLanguage language = UiLanguage.English)
     {
-        var local = resetAt.ToLocalTime().ToString("ddd, MMM d · h:mm tt", CultureInfo.InvariantCulture);
         var delta = resetAt - now;
-        var relative = delta.TotalSeconds <= 0 ? "ended" : delta.TotalDays >= 1 ? $"in {(int)delta.TotalDays}d {delta.Hours}h" : delta.TotalHours >= 1 ? $"in {(int)delta.TotalHours}h {delta.Minutes}m" : $"in {Math.Max(1, (int)delta.TotalMinutes)}m";
-        return $"Resets {local} ({relative})";
+        if (language == UiLanguage.Japanese)
+        {
+            var local = resetAt.ToLocalTime().ToString("M月d日(ddd) HH:mm", CultureInfo.GetCultureInfo("ja-JP"));
+            var relative = FormatJapaneseRelative(delta);
+            return $"{local}にリセット（{relative}）";
+        }
+
+        var englishLocal = resetAt.ToLocalTime().ToString("ddd, MMM d · h:mm tt", CultureInfo.InvariantCulture);
+        var englishRelative = delta.TotalSeconds <= 0 ? "ended" : delta.TotalDays >= 1 ? $"in {(int)delta.TotalDays}d {delta.Hours}h" : delta.TotalHours >= 1 ? $"in {(int)delta.TotalHours}h {delta.Minutes}m" : $"in {Math.Max(1, (int)delta.TotalMinutes)}m";
+        return $"Resets {englishLocal} ({englishRelative})";
     }
 
-    private static string FormatAge(DateTimeOffset fetched, DateTimeOffset now)
+    private static string FormatAge(DateTimeOffset fetched, DateTimeOffset now, UiLanguage language)
     {
         var minutes = Math.Max(0, (int)(now - fetched).TotalMinutes);
-        return minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
+        return language == UiLanguage.Japanese ? minutes < 1 ? "たった今" : minutes < 60 ? $"{minutes}分前" : $"{minutes / 60}時間前" : minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
     }
+    private static string FormatJapaneseRelative(TimeSpan delta) => delta.TotalSeconds <= 0 ? "リセット済み" : delta.TotalDays >= 1 ? $"あと{(int)delta.TotalDays}日{(delta.Hours > 0 ? $"{delta.Hours}時間" : string.Empty)}" : delta.TotalHours >= 1 ? $"あと{(int)delta.TotalHours}時間{(delta.Minutes > 0 ? $"{delta.Minutes}分" : string.Empty)}" : $"あと{Math.Max(1, (int)delta.TotalMinutes)}分";
+    private static string LocalizeWindow(QuotaWindowKind kind) => kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "一定時間ごと", _ => "カスタム" };
+    private static string LocalizeMetric(string metric, UiLanguage language) => language != UiLanguage.Japanese ? metric : metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "高速枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codex主要枠", "Codex secondary" => "Codex副枠", _ => metric };
 }
 
 public interface IDashboardSource { bool IsDemo { get; } IReadOnlyList<ProviderCardViewModel> Load(); }
@@ -77,19 +112,20 @@ public sealed class PersistentDashboardSource(IQuotaHistory history, TimeProvide
     {
         var snapshots = new List<QuotaSnapshot>(); var today = DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime);
         for (var i = 0; i < 30; i++) { try { snapshots.AddRange(await history.ReadAsync(today.AddDays(-i), cancellationToken)); } catch (InvalidDataException) { break; } }
-        return DashboardAggregation.ToCards(snapshots, clock.GetUtcNow());
+        return DashboardAggregation.ToCards(snapshots, clock.GetUtcNow(), UiLanguage.English);
     }
 }
 public static class DashboardAggregation
 {
-    public static IReadOnlyList<ProviderCardViewModel> ToCards(IEnumerable<QuotaSnapshot> snapshots, DateTimeOffset now)
+    public static IReadOnlyList<ProviderCardViewModel> ToCards(IEnumerable<QuotaSnapshot> snapshots, DateTimeOffset now, UiLanguage language = UiLanguage.English)
     {
         return snapshots.GroupBy(s => (s.Provider, s.Account)).Select(group =>
         {
             var windows = group.GroupBy(s => (s.Window.Kind, s.Metric)).Select(w => w.OrderByDescending(s => s.Observed).First()).ToList();
             var representative = QuotaSnapshot.MostConstrained(windows);
-            var card = new ProviderCardViewModel(group.Key.Provider, representative?.DisplayName.Length > 0 ? representative.DisplayName : group.Key.Provider.ToString(), group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? "Stale · refresh failed" : "Connected", false,
-                windows.OrderByDescending(s => s.EffectivePercent ?? decimal.MinValue).Select(s => QuotaPresentationFormatter.Format(s, now)).ToList());
+            var japanese = language == UiLanguage.Japanese;
+            var card = new ProviderCardViewModel(group.Key.Provider, representative?.DisplayName.Length > 0 ? representative.DisplayName : group.Key.Provider.ToString(), group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? (japanese ? "更新できませんでした" : "Stale · refresh failed") : (japanese ? "接続済み" : "Connected"), false,
+                windows.OrderByDescending(s => s.EffectivePercent ?? decimal.MinValue).Select(s => QuotaPresentationFormatter.Format(s, now, language)).ToList());
             return (card, percent: representative?.EffectivePercent ?? decimal.MinValue);
         }).OrderByDescending(item => item.percent).Select(item => item.card).ToList();
     }
@@ -236,14 +272,15 @@ public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
 public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
 public sealed class InAppNotificationService : IInAppNotificationService, INotificationSink, INotifyPropertyChanged
 {
+    public UiLanguage Language { get; set; } = UiLanguage.English;
     public string BannerText { get; private set; } = string.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
     public void Notify(string title, string reason) { BannerText = $"{title}: {reason}"; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
     public void Clear() { if (BannerText.Length == 0) return; BannerText = string.Empty; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
-    public ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken) { Notify($"{snapshot.Provider} quota threshold", $"{snapshot.EffectivePercent:0.#}% used"); return ValueTask.CompletedTask; }
+    public ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken) { if (snapshot.EffectivePercent is not { } percent) return ValueTask.CompletedTask; var copy = new UiCopy(Language); Notify(copy.QuotaThresholdTitle(snapshot.Provider), copy.QuotaThresholdReason(percent)); return ValueTask.CompletedTask; }
 }
 
-public sealed record ProviderConnectionResult(bool Success, string Message);
+public sealed record ProviderConnectionResult(bool Success, string Message, FetchStatus Status = FetchStatus.Success);
 public interface IGitHubClientFactory { GitHubDeviceFlowClient Create(string clientId); }
 public sealed class GitHubClientFactory(HttpClient client) : IGitHubClientFactory
 {
@@ -287,16 +324,16 @@ public sealed class UiProviderFacade : IProviderUiService
     }
     public async ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string sessionApiKey, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(sessionApiKey)) return new(false, "Enter an API key.");
+        if (string.IsNullOrWhiteSpace(sessionApiKey)) return new(false, "Enter an API key.", FetchStatus.Unauthorized);
         var result = await openCodeAdapterFactory(sessionApiKey).FetchAsync("OpenCode Go", cancellationToken);
-        if (!result.IsSuccess) return new(false, result.Status switch
+        if (!result.IsSuccess) return result.Status switch
         {
-            FetchStatus.Unauthorized => "OpenCode rejected the API key (401).",
-            FetchStatus.Forbidden => "OpenCode denied access (403).",
-            FetchStatus.Unsupported => "OpenCode usage endpoint was not found (404).",
-            FetchStatus.RateLimited => "OpenCode rate limit reached (429). Try again later.",
-            _ => "OpenCode returned a server or malformed response."
-        });
+            FetchStatus.Unauthorized => new(false, "OpenCode rejected the API key (401).", FetchStatus.Unauthorized),
+            FetchStatus.Forbidden => new(false, "OpenCode denied access (403).", FetchStatus.Forbidden),
+            FetchStatus.Unsupported => new(false, "OpenCode usage endpoint was not found (404).", FetchStatus.Unsupported),
+            FetchStatus.RateLimited => new(false, "OpenCode rate limit reached (429). Try again later.", FetchStatus.RateLimited),
+            _ => new(false, "OpenCode returned a server or malformed response.", FetchStatus.TransientFailure)
+        };
         if (credentialStore is not null)
         {
             try { await credentialStore.SetAsync("OpenCode Go", sessionApiKey, cancellationToken); }
@@ -308,7 +345,7 @@ public sealed class UiProviderFacade : IProviderUiService
         if (openCodeSuccess is not null && result.Value is not null) await openCodeSuccess(result.Value);
         var name = result.Value?.FirstOrDefault()?.DisplayName;
         var storage = CredentialAvailability is CredentialStoreAvailability.SecureStore ? "secure store" : "session-only fallback";
-        return new(true, $"Connected to {name ?? "OpenCode Go"}; credential stored in {storage}.");
+        return new(true, $"Connected to {name ?? "OpenCode Go"}; credential stored in {storage}.", FetchStatus.Success);
     }
     public async ValueTask<string> ProbeGitHubCliAsync(CancellationToken cancellationToken)
     {
@@ -327,7 +364,7 @@ public sealed class UiProviderFacade : IProviderUiService
 
     public async ValueTask<CodexUiResult> StartCodexAsync(CancellationToken cancellationToken)
     {
-        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.", Status: FetchStatus.Unsupported);
         var result = await codexSessionManager.StartAsync(cancellationToken);
         if (!result.IsSuccess || result.Value is not { } authorization) return CodexFailure(result.Status, result.RetryAfter);
         codexAuthorization = authorization;
@@ -337,10 +374,10 @@ public sealed class UiProviderFacade : IProviderUiService
 
     public async ValueTask<CodexUiResult> PollCodexAsync(CancellationToken cancellationToken)
     {
-        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
-        if (codexAuthorization is not { } authorization) return new(false, CodexAuthorizationState.Disconnected, "Start Codex authorization first.");
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.", Status: FetchStatus.Unsupported);
+        if (codexAuthorization is not { } authorization) return new(false, CodexAuthorizationState.Disconnected, "Start Codex authorization first.", Status: FetchStatus.Unsupported);
         var now = timeProvider.GetUtcNow();
-        if (now < nextCodexPollAt) return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), nextCodexPollAt - now);
+        if (now < nextCodexPollAt) return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), nextCodexPollAt - now, FetchStatus.RateLimited);
         var result = await codexSessionManager.PollAndStoreAsync(authorization, cancellationToken);
         if (result.IsSuccess)
         {
@@ -350,7 +387,7 @@ public sealed class UiProviderFacade : IProviderUiService
         if (result.RetryAfter is { } retry)
         {
             nextCodexPollAt = timeProvider.GetUtcNow().Add(retry);
-            return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retry);
+            return new(false, CodexAuthorizationState.Pending, "Still waiting for authorization. Try again shortly.", new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retry, FetchStatus.RateLimited);
         }
         return CodexFailure(result.Status, result.RetryAfter, authorization);
     }
@@ -358,13 +395,13 @@ public sealed class UiProviderFacade : IProviderUiService
     public async ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken cancellationToken)
     {
         codexAuthorization = null;
-        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.");
+        if (codexSessionManager is null) return new(false, CodexAuthorizationState.Error, "Codex authorization is unavailable.", Status: FetchStatus.Unsupported);
         try
         {
             await codexSessionManager.LogoutAsync(cancellationToken);
             return new(true, CodexAuthorizationState.Disconnected, "Codex disconnected.");
         }
-        catch { return new(false, CodexAuthorizationState.Error, "Unable to disconnect Codex."); }
+        catch { return new(false, CodexAuthorizationState.Error, "Unable to disconnect Codex.", Status: FetchStatus.TransientFailure); }
     }
     public ValueTask<bool> HasCodexCredentialAsync(CancellationToken cancellationToken) => codexSessionManager?.HasCredentialAsync(cancellationToken) ?? ValueTask.FromResult(false);
 
@@ -375,7 +412,7 @@ public sealed class UiProviderFacade : IProviderUiService
             FetchStatus.Forbidden => "Codex authorization was not permitted.",
             FetchStatus.RateLimited => "Codex authorization is temporarily rate-limited.",
             _ => "Codex authorization is temporarily unavailable."
-        }, authorization is null ? null : new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retryAfter);
+        }, authorization is null ? null : new(authorization.UserCode, authorization.VerificationUri, authorization.ExpiresAt), retryAfter, status);
 }
 
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
@@ -404,15 +441,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void SetCredentialAvailability(CredentialStoreAvailability availability) { credentialAvailability = availability; OnPropertyChanged(nameof(OpenCodeCredentialNotice)); }
     public string PersistentStateForTests => Settings.GithubOAuthClientId;
     public string CopilotNotice => CopyText.CopilotDescription;
-    public string CopilotDeviceResult { get; private set; } = "No device flow started.";
+    public IReadOnlyList<ProviderChoiceViewModel> ProviderChoices => UiSettings.ProviderChoices(Language);
+    private CopilotUiState copilotState = CopilotUiState.Idle;
+    private string copilotVerificationUrl = string.Empty;
+    private string copilotUserCode = string.Empty;
+    public string CopilotDeviceResult => copilotState == CopilotUiState.Started
+        ? Language == UiLanguage.Japanese
+            ? $"認証URL: {copilotVerificationUrl}\nユーザーコード: {copilotUserCode}\n操作: コピー · 開く · 確認"
+            : $"Verification URL: {copilotVerificationUrl}\nUser code: {copilotUserCode}\nActions: Copy · Open · Poll"
+        : CopyText.CopilotStatus(copilotState);
     private CodexUiResult codexResult = new(false, CodexAuthorizationState.Disconnected, "Codex is not connected.");
+    private bool providerSelectionMade;
     private bool hasCodexCredential;
     public CodexAuthorizationState CodexState => codexResult.State;
-    public string CodexStatusText => codexResult.Message;
+    public string CodexStatusText => Language == UiLanguage.Japanese ? CopyText.CodexStatus(codexResult.State, codexResult.Success, codexResult.Status) : codexResult.Message;
     public string CodexUserCode => codexResult.Prompt?.UserCode ?? string.Empty;
     public Uri? CodexVerificationUri => codexResult.Prompt?.VerificationUri;
     public string CodexVerificationUriText => codexResult.Prompt?.VerificationUri.ToString() ?? string.Empty;
-    public string CodexExpiresText => codexResult.Prompt is { } prompt ? $"{CopyText.CodexExpires}: {prompt.ExpiresAt.ToLocalTime():g}" : string.Empty;
+    public string CodexExpiresText => codexResult.Prompt is { } prompt ? $"{CopyText.CodexExpires}: {prompt.ExpiresAt.ToLocalTime().ToString(Language == UiLanguage.Japanese ? "g" : "g", Language == UiLanguage.Japanese ? CultureInfo.GetCultureInfo("ja-JP") : CultureInfo.InvariantCulture)}" : string.Empty;
     public bool IsCodexPromptVisible => codexResult.Prompt is not null && codexResult.State is CodexAuthorizationState.AwaitingAuthorization or CodexAuthorizationState.Pending;
     public bool IsCodexConnected => codexResult.State == CodexAuthorizationState.Connected;
     public bool IsCodexDisconnected => codexResult.State == CodexAuthorizationState.Disconnected;
@@ -427,8 +473,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var name in new[] { nameof(CodexState), nameof(CodexStatusText), nameof(CodexUserCode), nameof(CodexVerificationUriText), nameof(CodexExpiresText), nameof(IsCodexPromptVisible), nameof(IsCodexConnected), nameof(IsCodexDisconnected), nameof(IsCodexError), nameof(IsCodexLogoutVisible) }) OnPropertyChanged(name);
     }
     public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
+    public bool IsProviderFlowOpen { get; private set; }
+    public ProviderConnectionChoice SelectedProvider { get; private set; } = ProviderConnectionChoice.ChatGpt;
+    public bool IsManualProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude;
+    public bool IsCodexProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Codex;
+    public bool IsOpenCodeProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.OpenCode;
+    public bool IsCopilotProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Copilot;
+    public void OpenProviderFlow() { IsProviderFlowOpen = true; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void CloseProviderFlow() { IsProviderFlowOpen = false; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void SelectProvider(ProviderConnectionChoice provider) { SelectedProvider = provider; providerSelectionMade = true; IsProviderFlowOpen = true; NotifyProviderFlow(); }
+    private void NotifyProviderFlow()
+    {
+        foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible) }) OnPropertyChanged(name);
+    }
     public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
-    public UiLanguage Language { get => language; set { if (Set(ref language, value)) NotifyLocalizedProperties(); } }
+    public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; RelocalizeCards(); NotifyLocalizedProperties(); } } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
     public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
@@ -468,7 +527,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         await quotaHistory.PruneAsync(DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30), cancellationToken);
         await History.InitializeAsync(cancellationToken);
-        if (History.LoadError is not null) notificationService.Notify("History", History.LoadError);
+        if (History.LoadError is not null) notificationService.Notify(CopyText.HistoryNotificationTitle, CopyText.HistoryCorrupt);
 
         var snapshots = new List<QuotaSnapshot>();
         var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
@@ -480,7 +539,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (snapshots.Count > 0) lastKnownSnapshots.Clear();
         if (snapshots.Count > 0) lastKnownSnapshots.AddRange(snapshots);
-        ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow()) : source.Load());
+        ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow(), Language) : source.Load());
     }
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
@@ -571,7 +630,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     private void ApplyManualSnapshotUi(QuotaSnapshot snapshot)
     {
-        var row = QuotaPresentationFormatter.Format(snapshot, DateTimeOffset.Now);
+        var row = QuotaPresentationFormatter.Format(snapshot, timeProvider.GetUtcNow(), Language);
         var existing = Cards.FirstOrDefault(card => card.Provider == snapshot.Provider && card.Account == snapshot.Account);
         if (existing is not null)
         {
@@ -584,7 +643,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else
         {
-            Cards.Add(new ProviderCardViewModel(snapshot.Provider, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, "#405DE6", "Manual", false, [row]));
+            Cards.Add(new ProviderCardViewModel(snapshot.Provider, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, "#405DE6", Language == UiLanguage.Japanese ? "手動" : "Manual", false, [row]));
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
@@ -600,14 +659,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var snapshot in snapshots)
         {
-            var row = QuotaPresentationFormatter.Format(snapshot, now);
+            var row = QuotaPresentationFormatter.Format(snapshot, now, Language);
             var matches = Cards
                 .Select((card, index) => (card, index))
                 .Where(item => item.card.Provider == snapshot.Provider && item.card.Account == snapshot.Account)
                 .ToList();
             if (matches.Count == 0)
             {
-                Cards.Add(DashboardAggregation.ToCards([snapshot], now)[0]);
+                Cards.Add(DashboardAggregation.ToCards([snapshot], now, Language)[0]);
                 continue;
             }
 
@@ -634,7 +693,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (Cards[index].Provider == ProviderKind.ChatGpt && Cards[index].Name.Contains("Codex", StringComparison.OrdinalIgnoreCase)) Cards.RemoveAt(index);
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
-    public void SetCopilotDeviceResult(string url, string code) { CopilotDeviceResult = Language == UiLanguage.Japanese ? $"認証URL: {url}\nユーザーコード: {code}\n操作: コピー · 開く · 確認" : $"Verification URL: {url}\nUser code: {code}\nActions: Copy · Open · Poll"; OnPropertyChanged(nameof(CopilotDeviceResult)); }
+    public void SetCopilotDeviceResult(string url, string code, CopilotUiState state = CopilotUiState.Started)
+    {
+        copilotState = state;
+        if (state == CopilotUiState.Started && Uri.TryCreate(url, UriKind.Absolute, out var verificationUri) && verificationUri.Scheme is "https" or "http")
+        {
+            copilotVerificationUrl = verificationUri.ToString();
+            copilotUserCode = code;
+        }
+        else
+        {
+            copilotVerificationUrl = string.Empty;
+            copilotUserCode = string.Empty;
+        }
+        OnPropertyChanged(nameof(CopilotDeviceResult));
+    }
     private void LoadCards()
     {
         Cards.Clear();
@@ -656,9 +729,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 Windows = card.Windows.Select(row =>
                 {
                     var stale = row.WindowEnd != default && row.WindowEnd <= now || row.FreshUntil is { } expiry && now > expiry;
-                    var freshness = stale ? "Stale · last updated " + FormatAge(row.FetchedAt, now) : "Updated " + FormatAge(row.FetchedAt, now);
-                    var reset = row.ResetAt is { } resetAt ? QuotaPresentationFormatter.FormatReset(resetAt, now) : row.ResetText;
-                    return row with { IsStale = stale, FreshnessText = freshness, ResetText = reset, ProgressLabel = $"{row.PercentText}. {row.StatusText}. {reset}" };
+                    var localized = row.Snapshot is null ? row : QuotaPresentationFormatter.Relocalize(row, now, Language);
+                    return localized with { IsStale = stale, ProgressLabel = $"{localized.PercentText}. {localized.StatusText}. {localized.ResetText}" };
                 }).ToList()
             };
         }
@@ -668,9 +740,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var minutes = Math.Max(0, (int)(now - fetched).TotalMinutes);
         return minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
     }
+    private void RelocalizeCards()
+    {
+        for (var i = 0; i < Cards.Count; i++)
+        {
+            var card = Cards[i];
+            var state = Language == UiLanguage.Japanese ? card.StateText switch { "Healthy" => "正常", "Needs attention" => "注意", "Over limit" => "超過", "Connected" => "接続済み", "Manual" => "手動", _ => card.StateText } : card.StateText switch { "正常" => "Healthy", "注意" => "Needs attention", "超過" => "Over limit", "接続済み" => "Connected", "手動" => "Manual", _ => card.StateText };
+            Cards[i] = card with { StateText = state, Windows = card.Windows.Select(row => QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList() };
+        }
+        OnPropertyChanged(nameof(Cards));
+    }
+
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexExpiresText) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); } return true; }
     private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new(name));
@@ -679,6 +762,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 public static class UiSettings
 {
     public static IReadOnlyList<string> SupportedLanguages { get; } = ["English", "日本語"];
+    public static IReadOnlyList<ProviderChoiceViewModel> ProviderChoices(UiLanguage language) => Enum.GetValues<ProviderConnectionChoice>().Select(choice => new ProviderChoiceViewModel(choice, ProviderDisplayName(choice, language))).ToList();
+    private static string ProviderDisplayName(ProviderConnectionChoice choice, UiLanguage language) => choice switch
+    {
+        ProviderConnectionChoice.ChatGpt => "ChatGPT",
+        ProviderConnectionChoice.Claude => "Claude",
+        ProviderConnectionChoice.Codex => language == UiLanguage.Japanese ? "OpenAI Codex" : "OpenAI Codex",
+        ProviderConnectionChoice.OpenCode => "OpenCode Go",
+        ProviderConnectionChoice.Copilot => "GitHub Copilot",
+        _ => choice.ToString()
+    };
+    public static IReadOnlyList<LocalizedChoice<string>> HistoryAccountChoices(UiLanguage language) => [new("All accounts", language == UiLanguage.Japanese ? "すべてのアカウント" : "All accounts"), new("Personal", language == UiLanguage.Japanese ? "個人" : "Personal"), new("Work", language == UiLanguage.Japanese ? "仕事" : "Work")];
+    public static IReadOnlyList<LocalizedChoice<string>> HistoryWindowChoices(UiLanguage language) => [new("All windows", language == UiLanguage.Japanese ? "すべての利用枠" : "All windows"), new("Weekly", language == UiLanguage.Japanese ? "週次" : "Weekly")];
+    public static IReadOnlyList<LocalizedChoice<QuotaWindowKind>> ManualWindowChoices(UiLanguage language) => Enum.GetValues<QuotaWindowKind>().Select(kind => new LocalizedChoice<QuotaWindowKind>(kind, language == UiLanguage.Japanese ? kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "一定時間ごと", _ => "カスタム" } : kind.ToString())).ToList();
     public static string AutostartStatus => "Unsupported · platform backend not installed";
     public static bool IsRefreshIntervalValid(TimeSpan interval) => interval >= TimeSpan.FromMinutes(5) && interval <= TimeSpan.FromMinutes(15);
     public static ThemeVariant? AppliedTheme { get; private set; }

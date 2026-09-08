@@ -145,13 +145,16 @@ public sealed class CodexUiTests
     [Fact]
     public void Codex_copy_explicitly_explains_cli_free_device_login_and_manual_browser_fallback_in_both_languages()
     {
-        foreach (var copy in new[] { new UiCopy(UiLanguage.Japanese), new UiCopy(UiLanguage.English) })
-        {
-            Assert.Contains("CLI", copy.CodexDescription, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("device", copy.CodexDescription, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("URL", copy.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains(copy.IsJapanese ? "コード" : "code", copy.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
-        }
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+        Assert.Contains("CLI", japanese.CodexDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("デバイス認証", japanese.CodexDescription, StringComparison.Ordinal);
+        Assert.Contains("CLI", english.CodexDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("device", english.CodexDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("URL", japanese.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("コード", japanese.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("URL", english.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("code", english.CodexBrowserFailed, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

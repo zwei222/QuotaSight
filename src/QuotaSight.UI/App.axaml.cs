@@ -86,7 +86,7 @@ public partial class App : Avalonia.Application
                 TrayIcon.SetIcons(this, new TrayIcons { nativeTray });
                 window.TrayAvailable = Tray.IsNativeBackendAvailable;
             }
-            catch (Exception exception) { window.TrayAvailable = false; window.ViewModel.Notify("Tray unavailable", exception.GetType().Name); }
+            catch { window.TrayAvailable = false; window.ViewModel.Notify(window.ViewModel.CopyText.TrayUnavailableTitle, window.ViewModel.CopyText.TrayUnavailable); }
             desktop.Exit += (_, _) => { refreshLifetime?.Cancel(); refreshScheduler?.Dispose(); refreshLifetime?.Dispose(); window.ViewModel.Dispose(); nativeTray?.Dispose(); nativeTray = null; ExitRequested = true; };
         }
         base.OnFrameworkInitializationCompleted();

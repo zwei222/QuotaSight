@@ -9,22 +9,28 @@ using QuotaSight.Infrastructure;
 
 namespace QuotaSight.UI;
 
+public interface IClipboardService { Task SetTextAsync(string text); }
+
 public partial class MainWindow : Window
 {
     public MainViewModel ViewModel { get; }
     private readonly IProviderUiService providerService;
+    private readonly IClipboardService? clipboardService;
     public bool TrayAvailable { get; set; }
     private bool isInitializing = true;
+    private bool isConfiguringLists;
     private bool? appliedCompactLayout;
     private Task? initializationTask;
     public bool IsCompactLayout => Width > 0 && Width < 760;
     public MainWindow() : this(CompositionRoot.CreateMainWindowParts()) { }
     public MainWindow((MainViewModel ViewModel, IProviderUiService Provider) parts) : this(parts.ViewModel, parts.Provider) { }
-    public MainWindow(MainViewModel viewModel) : this(viewModel, new UiProviderFacade()) { }
-    public MainWindow(MainViewModel viewModel, IProviderUiService providerService)
+    public MainWindow(MainViewModel viewModel) : this(viewModel, new UiProviderFacade(), null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService) : this(viewModel, providerService, null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService)
     {
         ViewModel = viewModel;
         this.providerService = providerService;
+        this.clipboardService = clipboardService;
         InitializeComponent();
         DataContext = ViewModel;
         if (providerService is UiProviderFacade facade)
@@ -58,28 +64,46 @@ public partial class MainWindow : Window
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
     private void ConfigureLists()
     {
-        var provider = this.FindControl<ComboBox>("ManualProviderBox")!;
-        var window = this.FindControl<ComboBox>("ManualWindowBox")!;
-        var theme = this.FindControl<ComboBox>("ThemeBox")!;
-        var language = this.FindControl<ComboBox>("LanguageBox")!;
-        var accountFilter = this.FindControl<ComboBox>("HistoryAccountFilter")!;
-        var windowFilter = this.FindControl<ComboBox>("HistoryWindowFilter")!;
-        provider.ItemsSource = new[] { ProviderKind.ChatGpt, ProviderKind.Claude, ProviderKind.Copilot };
-        window.ItemsSource = Enum.GetValues<QuotaWindowKind>();
-        theme.ItemsSource = Enum.GetValues<ThemeMode>();
-        language.ItemsSource = UiSettings.SupportedLanguages;
-        accountFilter.ItemsSource = new[] { "All accounts", "Personal", "Work" };
-        windowFilter.ItemsSource = new[] { "All windows", "Weekly" };
-        provider.SelectedIndex = 0;
-        window.SelectedItem = QuotaWindowKind.Weekly;
-        theme.SelectedItem = ViewModel.Settings.Theme;
-        language.SelectedIndex = ViewModel.Language == UiLanguage.Japanese ? 1 : 0;
-        this.FindControl<NumericUpDown>("RefreshMinutesBox")!.Value = ViewModel.Settings.RefreshMinutes;
-        this.FindControl<NumericUpDown>("ThresholdBox")!.Value = ViewModel.Settings.OverallThreshold;
-        this.FindControl<CheckBox>("NotificationsBox")!.IsChecked = ViewModel.Settings.NotificationsEnabled;
-        this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
-        accountFilter.SelectedIndex = 0;
-        windowFilter.SelectedIndex = 0;
+        var wasConfiguringLists = isConfiguringLists;
+        isConfiguringLists = true;
+        try
+        {
+            var provider = this.FindControl<ComboBox>("ManualProviderBox")!;
+            var window = this.FindControl<ComboBox>("ManualWindowBox")!;
+            var account = this.FindControl<TextBox>("AccountNameBox")!;
+            var usedPercent = this.FindControl<TextBox>("UsedPercentBox")!;
+            var resetAt = this.FindControl<TextBox>("ResetAtBox")!;
+            var theme = this.FindControl<ComboBox>("ThemeBox")!;
+            var language = this.FindControl<ComboBox>("LanguageBox")!;
+            var accountFilter = this.FindControl<ComboBox>("HistoryAccountFilter")!;
+            var windowFilter = this.FindControl<ComboBox>("HistoryWindowFilter")!;
+            var selectedProvider = provider.SelectedItem is ProviderKind currentProvider ? currentProvider : ProviderKind.ChatGpt;
+            var selectedWindow = window.SelectedItem is LocalizedChoice<QuotaWindowKind> currentWindow ? currentWindow.Value : QuotaWindowKind.Weekly;
+            var accountText = account.Text;
+            var usedPercentText = usedPercent.Text;
+            var resetAtText = resetAt.Text;
+            provider.ItemsSource = new[] { ProviderKind.ChatGpt, ProviderKind.Claude, ProviderKind.Copilot };
+            window.ItemsSource = UiSettings.ManualWindowChoices(ViewModel.Language);
+            theme.ItemsSource = Enum.GetValues<ThemeMode>();
+            language.ItemsSource = UiSettings.SupportedLanguages;
+            accountFilter.ItemsSource = UiSettings.HistoryAccountChoices(ViewModel.Language);
+            windowFilter.ItemsSource = UiSettings.HistoryWindowChoices(ViewModel.Language);
+            provider.SelectedItem = selectedProvider;
+            this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(item => item.Choice == ViewModel.SelectedProvider);
+            window.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == selectedWindow);
+            account.Text = accountText;
+            usedPercent.Text = usedPercentText;
+            resetAt.Text = resetAtText;
+            theme.SelectedItem = ViewModel.Settings.Theme;
+            language.SelectedIndex = ViewModel.Language == UiLanguage.Japanese ? 1 : 0;
+            this.FindControl<NumericUpDown>("RefreshMinutesBox")!.Value = ViewModel.Settings.RefreshMinutes;
+            this.FindControl<NumericUpDown>("ThresholdBox")!.Value = ViewModel.Settings.OverallThreshold;
+            this.FindControl<CheckBox>("NotificationsBox")!.IsChecked = ViewModel.Settings.NotificationsEnabled;
+            this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
+            accountFilter.SelectedIndex = 0;
+            windowFilter.SelectedIndex = 0;
+        }
+        finally { isConfiguringLists = wasConfiguringLists; }
     }
 
     private void ApplyResponsiveLayout()
@@ -129,6 +153,35 @@ public partial class MainWindow : Window
         }
     }
 
+    public async Task CopyCodexCodeAsync()
+    {
+        var code = ViewModel.CodexUserCode;
+        if (string.IsNullOrWhiteSpace(code)) return;
+        if (clipboardService is not null) { await clipboardService.SetTextAsync(code); return; }
+        await (TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(code) ?? Task.CompletedTask);
+    }
+    private void AddProviderClick(object? sender, RoutedEventArgs e)
+    {
+        ViewModel.OpenProviderFlow();
+        this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = null;
+    }
+    private void CloseProviderClick(object? sender, RoutedEventArgs e)
+    {
+        ViewModel.CloseProviderFlow();
+        this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = null;
+    }
+    private void ProviderSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (isInitializing || isConfiguringLists) return;
+        if (sender is ComboBox { SelectedItem: ProviderChoiceViewModel choice })
+        {
+            ViewModel.SelectProvider(choice.Choice);
+            if (choice.Choice is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude)
+                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = choice.Choice == ProviderConnectionChoice.ChatGpt ? ProviderKind.ChatGpt : ProviderKind.Claude;
+        }
+    }
+    private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();
+
     private void DashboardClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Dashboard);
     private void HistoryClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.History);
     private void SettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
@@ -139,7 +192,32 @@ public partial class MainWindow : Window
     }
     private async void LanguageChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (!isInitializing && sender is ComboBox box && box.SelectedItem is string language) await ViewModel.SetLanguageAsync(language == "日本語" ? UiLanguage.Japanese : UiLanguage.English);
+        if (!isInitializing && sender is ComboBox box && box.SelectedItem is string language)
+        {
+            isConfiguringLists = true;
+            try
+            {
+                var selected = ViewModel.SelectedProvider;
+                var manualProvider = this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem is ProviderKind provider ? provider : ProviderKind.ChatGpt;
+                var manualWindow = this.FindControl<ComboBox>("ManualWindowBox")!.SelectedItem is LocalizedChoice<QuotaWindowKind> quotaWindow ? quotaWindow.Value : QuotaWindowKind.Weekly;
+                var accountText = this.FindControl<TextBox>("AccountNameBox")!.Text;
+                var usedPercentText = this.FindControl<TextBox>("UsedPercentBox")!.Text;
+                var resetAtText = this.FindControl<TextBox>("ResetAtBox")!.Text;
+                var accountFilter = ViewModel.History.AccountFilter;
+                var windowFilter = ViewModel.History.WindowFilter;
+                await ViewModel.SetLanguageAsync(language == "日本語" ? UiLanguage.Japanese : UiLanguage.English);
+                ConfigureLists();
+                this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = manualProvider;
+                this.FindControl<ComboBox>("ManualWindowBox")!.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == manualWindow);
+                this.FindControl<TextBox>("AccountNameBox")!.Text = accountText;
+                this.FindControl<TextBox>("UsedPercentBox")!.Text = usedPercentText;
+                this.FindControl<TextBox>("ResetAtBox")!.Text = resetAtText;
+                this.FindControl<ComboBox>("HistoryAccountFilter")!.SelectedItem = UiSettings.HistoryAccountChoices(ViewModel.Language).Single(item => item.Value == accountFilter);
+                this.FindControl<ComboBox>("HistoryWindowFilter")!.SelectedItem = UiSettings.HistoryWindowChoices(ViewModel.Language).Single(item => item.Value == windowFilter);
+                this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(item => item.Choice == selected);
+            }
+            finally { isConfiguringLists = false; }
+        }
     }
     private async void RefreshMinutesChanged(object? sender, NumericUpDownValueChangedEventArgs e) { if (!isInitializing && e.NewValue is { } value) await ViewModel.SetRefreshMinutesAsync((int)value); }
     private async void NotificationsChanged(object? sender, RoutedEventArgs e) { if (!isInitializing && sender is CheckBox box) await ViewModel.SetNotificationsAsync(box.IsChecked == true); }
@@ -151,8 +229,8 @@ public partial class MainWindow : Window
         await ViewModel.SetGithubClientIdAsync(clientId);
         if (providerService is UiProviderFacade facade) facade.UpdateGitHubClientId(clientId);
     }
-    private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox box && box.SelectedItem is string value) ViewModel.History.AccountFilter = value; }
-    private void HistoryWindowFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox box && box.SelectedItem is string value) ViewModel.History.WindowFilter = value; }
+    private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.AccountFilter = choice.Value; }
+    private void HistoryWindowFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.WindowFilter = choice.Value; }
     private async void AddManualClick(object? sender, RoutedEventArgs e)
     {
         var providerBox = this.FindControl<ComboBox>("ManualProviderBox");
@@ -165,7 +243,7 @@ public partial class MainWindow : Window
         {
             Provider = providerBox?.SelectedItem is ProviderKind provider ? provider : ProviderKind.Manual,
             AccountDisplayName = accountBox?.Text ?? string.Empty,
-            Window = windowBox?.SelectedItem is QuotaWindowKind window ? window : QuotaWindowKind.Weekly,
+            Window = windowBox?.SelectedItem is LocalizedChoice<QuotaWindowKind> window ? window.Value : QuotaWindowKind.Weekly,
             UsedPercentText = usedBox?.Text ?? string.Empty,
             ResetLocalText = resetBox?.Text ?? string.Empty
         };
@@ -181,21 +259,21 @@ public partial class MainWindow : Window
         var result = await providerService.TestOpenCodeAsync(key, CancellationToken.None);
         if (this.FindControl<TextBox>("OpenCodeKeyBox") is { } keyBox) keyBox.Text = string.Empty;
         var validation = this.FindControl<TextBlock>("ManualValidationText");
-        if (validation is not null) validation.Text = result.Message;
+        if (validation is not null) validation.Text = ViewModel.CopyText.OpenCodeStatus(result);
     }
     private DeviceAuthorizationStart? githubAuthorization;
     private async void CopilotStartClick(object? sender, RoutedEventArgs e)
     {
         var result = await providerService.StartGitHubDeviceFlowAsync(CancellationToken.None);
-        if (result.IsSuccess && result.Value is { } auth) { githubAuthorization = auth; ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode); }
-        else ViewModel.SetCopilotDeviceResult(string.Empty, result.Error ?? "GitHub device flow unavailable.");
+        if (result.IsSuccess && result.Value is { } auth) { githubAuthorization = auth; ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started); }
+        else ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotUiState.Failed);
     }
-    private async void CopilotProbeClick(object? sender, RoutedEventArgs e) => ViewModel.SetCopilotDeviceResult(string.Empty, await providerService.ProbeGitHubCliAsync(CancellationToken.None));
+    private async void CopilotProbeClick(object? sender, RoutedEventArgs e) { await providerService.ProbeGitHubCliAsync(CancellationToken.None); ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotUiState.GhProbe); }
     private async void CopilotPollClick(object? sender, RoutedEventArgs e)
     {
         if (githubAuthorization is not { } auth) return;
         var result = await providerService.PollGitHubDeviceFlowAsync(auth, CancellationToken.None);
-        ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), result.IsSuccess ? "GitHub authorization completed; token stored securely." : result.Error ?? "GitHub authorization failed.");
+        ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.IsSuccess ? CopilotUiState.Completed : CopilotUiState.Failed);
     }
     private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = Launcher.LaunchUriAsync(auth.VerificationUri); }
     private void CopilotCopyClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(auth.UserCode); }
@@ -241,13 +319,13 @@ public partial class MainWindow : Window
         }
         catch
         {
-            ViewModel.Notify("History", "Unable to delete this history entry.");
+            ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteFailure);
         }
     }
     private async void DeleteAllHistoryClick(object? sender, RoutedEventArgs e)
     {
         try { await ViewModel.History.DeleteAllAsync(); }
-        catch { ViewModel.Notify("History", "Unable to delete history."); }
+        catch { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteAllFailure); }
     }
     private async void ExportCsvClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.csv", "text/csv", ViewModel.History.ExportCsv());
     private async void ExportJsonClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.json", "application/json", ViewModel.History.ExportJson());

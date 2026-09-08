@@ -168,6 +168,40 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
+    public async Task Japanese_history_corruption_notification_is_localized_and_safe()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var now = DateTimeOffset.UtcNow;
+        try
+        {
+            using var history = new JsonlQuotaHistory(root);
+            var today = DateOnly.FromDateTime(now.UtcDateTime);
+            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
+            var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            vm.Language = UiLanguage.Japanese;
+
+            await vm.InitializeAsync();
+
+            Assert.Equal("履歴: 履歴データが破損しています。読み込める項目を表示しています。", vm.NotificationBannerText);
+            Assert.DoesNotContain("InvalidDataException", vm.NotificationBannerText, StringComparison.Ordinal);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Japanese_quota_threshold_notification_is_localized_and_safe()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = Snapshot(90) with { Provider = ProviderKind.ChatGpt, DisplayName = "ChatGPT Plus", Fetched = now, Observed = now, FreshUntil = now.AddHours(1) };
+        var service = new InAppNotificationService { Language = UiLanguage.Japanese };
+
+        await service.NotifyAsync(snapshot, CancellationToken.None);
+
+        Assert.Equal("ChatGPTの利用枠のしきい値: 使用率 90%", service.BannerText);
+        Assert.DoesNotContain("Token", service.BannerText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task History_csv_export_keeps_comma_quote_and_newline_account_as_one_literal_field()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

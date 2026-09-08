@@ -15,6 +15,11 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#8B4D08"/>
           <SolidColorBrush x:Key="WarningForegroundBrush" Color="#FFFFFF"/>
           <SolidColorBrush x:Key="DisabledBrush" Color="#8993A3"/>
+          <SolidColorBrush x:Key="GaugeTrackBrush" Color="#D5DCE8"/>
+          <SolidColorBrush x:Key="GaugeNormalBrush" Color="#2457D6"/>
+          <SolidColorBrush x:Key="GaugeAttentionBrush" Color="#9A5B00"/>
+          <SolidColorBrush x:Key="GaugeDangerBrush" Color="#B3261E"/>
+          <SolidColorBrush x:Key="GaugeOverBrush" Color="#7A1FA2"/>
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="ContentBackgroundBrush" Color="#0F131B"/>
@@ -29,6 +34,11 @@
           <SolidColorBrush x:Key="WarningBrush" Color="#FFC078"/>
           <SolidColorBrush x:Key="WarningForegroundBrush" Color="#1F160B"/>
           <SolidColorBrush x:Key="DisabledBrush" Color="#7D8798"/>
+          <SolidColorBrush x:Key="GaugeTrackBrush" Color="#56647A"/>
+          <SolidColorBrush x:Key="GaugeNormalBrush" Color="#8EA7FF"/>
+          <SolidColorBrush x:Key="GaugeAttentionBrush" Color="#FFD166"/>
+          <SolidColorBrush x:Key="GaugeDangerBrush" Color="#FF8A80"/>
+          <SolidColorBrush x:Key="GaugeOverBrush" Color="#E0A0FF"/>
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
