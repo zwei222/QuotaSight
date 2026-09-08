@@ -17,6 +17,7 @@ public sealed class UiCopy
     public string History => IsJapanese ? "履歴" : "History";
     public string Settings => IsJapanese ? "設定" : "Settings";
     public string Refresh => IsJapanese ? "更新" : "Refresh";
+    public string QuotaRefreshing => IsJapanese ? "利用枠データを更新しています…" : "Refreshing quota data…";
     public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
     public string Subtitle => IsJapanese ? "次回のリセットまでの利用状況を確認できます。" : "A calm view of what is left before your next reset.";
     public string EmptyTitle => IsJapanese ? "利用枠データがありません" : "No quota data yet";

@@ -454,6 +454,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string NavHistoryText => CopyText.History;
     public string NavSettingsText => CopyText.Settings;
     public string RefreshText => CopyText.Refresh;
+    public string QuotaStatusText => IsQuotaDataBusy ? CopyText.QuotaRefreshing : string.Empty;
+    public bool IsQuotaDataBusy => quotaDataBusy;
+    public bool CanRefresh => !IsQuotaDataBusy;
     public string HeaderTitle => CurrentPage switch { AppPage.History => CopyText.History, AppPage.Settings => CopyText.Settings, _ => CopyText.Dashboard };
     public string SubtitleText => CopyText.Subtitle;
     public string EmptyStateText => CopyText.EmptyTitle;
@@ -535,6 +538,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly NotificationDeduplicator notificationDeduplicator;
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
     private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private bool quotaDataBusy;
 
     public void Dispose()
     {
@@ -544,24 +548,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (settingsStore is not null) SetSettings(await settingsStore.LoadAsync(cancellationToken), persist: false);
-        if (quotaHistory is null) return;
-
-        await quotaHistory.PruneAsync(DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30), cancellationToken);
-        await History.InitializeAsync(cancellationToken);
-        if (History.LoadError is not null) notificationService.Notify(CopyText.HistoryNotificationTitle, CopyText.HistoryCorrupt);
-
-        var snapshots = new List<QuotaSnapshot>();
-        var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
-        for (var dayOffset = 0; dayOffset < 30; dayOffset++)
+        SetQuotaDataBusy(true);
+        try
         {
-            try { snapshots.AddRange(await quotaHistory.ReadAsync(today.AddDays(-dayOffset), cancellationToken)); }
-            catch (InvalidDataException) { }
-        }
+            if (settingsStore is not null) SetSettings(await settingsStore.LoadAsync(cancellationToken), persist: false);
+            if (quotaHistory is null) return;
 
-        if (snapshots.Count > 0) lastKnownSnapshots.Clear();
-        if (snapshots.Count > 0) lastKnownSnapshots.AddRange(snapshots);
-        ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow(), Language) : source.Load());
+            await quotaHistory.PruneAsync(DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30), cancellationToken);
+            await History.InitializeAsync(cancellationToken);
+            if (History.LoadError is not null) notificationService.Notify(CopyText.HistoryNotificationTitle, CopyText.HistoryCorrupt);
+
+            var snapshots = new List<QuotaSnapshot>();
+            var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
+            for (var dayOffset = 0; dayOffset < 30; dayOffset++)
+            {
+                try { snapshots.AddRange(await quotaHistory.ReadAsync(today.AddDays(-dayOffset), cancellationToken)); }
+                catch (InvalidDataException) { }
+            }
+
+            if (snapshots.Count > 0) lastKnownSnapshots.Clear();
+            if (snapshots.Count > 0) lastKnownSnapshots.AddRange(snapshots);
+            ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow(), Language) : source.Load());
+        }
+        finally { SetQuotaDataBusy(false); }
     }
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
@@ -579,6 +588,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
         await refreshGate.WaitAsync(cancellationToken);
+        SetQuotaDataBusy(true);
         try
         {
             PresentationState = PresentationState.Loading;
@@ -621,7 +631,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (OperationCanceledException) { throw; }
         catch { ReevaluateCards(timeProvider.GetUtcNow()); PresentationState = PresentationState.Error; }
-        finally { refreshGate.Release(); }
+        finally { SetQuotaDataBusy(false); refreshGate.Release(); }
     }
     public async ValueTask ApplyProviderSnapshotsAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken = default)
     {
@@ -773,9 +783,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(Cards));
     }
 
+    private void SetQuotaDataBusy(bool value)
+    {
+        if (quotaDataBusy == value) return;
+        quotaDataBusy = value;
+        OnPropertyChanged(nameof(IsQuotaDataBusy));
+        OnPropertyChanged(nameof(CanRefresh));
+        OnPropertyChanged(nameof(QuotaStatusText));
+    }
+
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); } return true; }
     private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new(name));

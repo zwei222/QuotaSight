@@ -261,6 +261,87 @@ public sealed class RealFeatureTests
     private static QuotaSnapshot Snapshot(decimal percent) => new(ProviderKind.OpenCode, "acct", "usage", new(QuotaWindowKind.Rolling, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)), percent, 100, null, "requests", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official, QuotaConfidence.Official, DateTimeOffset.UtcNow.AddHours(1), "OpenCode Go");
     private sealed class JsonHandler(string json) : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }); }
     private sealed class FixedDashboardSource(QuotaSnapshot snapshot) : IDashboardSource { public bool IsDemo => false; public IReadOnlyList<ProviderCardViewModel> Load() => DashboardAggregation.ToCards([snapshot], DateTimeOffset.UtcNow); }
+    [Fact]
+    public async Task Quota_refresh_exposes_busy_copy_blocks_duplicates_and_releases_after_completion()
+    {
+        var application = new BlockingRefreshApplication();
+        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
+
+        var first = viewModel.RefreshAsync();
+        await application.Started.Task;
+
+        Assert.True(viewModel.IsQuotaDataBusy);
+        Assert.Equal("Refreshing quota data…", viewModel.QuotaStatusText);
+
+        viewModel.Language = UiLanguage.Japanese;
+        Assert.Equal("利用枠データを更新しています…", viewModel.QuotaStatusText);
+
+        var second = viewModel.RefreshAsync();
+        await Task.Delay(25);
+        Assert.False(viewModel.CanRefresh);
+        Assert.Equal(1, application.Calls);
+
+        application.Release.TrySetResult(true);
+        await Task.WhenAll(first, second);
+        Assert.False(viewModel.IsQuotaDataBusy);
+        Assert.Equal(2, application.Calls);
+    }
+
+    [Fact]
+    public async Task Quota_initialization_exposes_busy_copy_and_releases_after_history_load()
+    {
+        var history = new BlockingHistory();
+        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+
+        var initialization = viewModel.InitializeAsync();
+        await history.Started.Task;
+
+        Assert.True(viewModel.IsQuotaDataBusy);
+        Assert.Equal("Refreshing quota data…", viewModel.QuotaStatusText);
+
+        viewModel.Language = UiLanguage.Japanese;
+        Assert.Equal("利用枠データを更新しています…", viewModel.QuotaStatusText);
+
+        history.Release.TrySetResult(true);
+        await initialization;
+        Assert.False(viewModel.IsQuotaDataBusy);
+    }
+
+    private sealed class BlockingHistory : IQuotaHistory
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public async ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken)
+        {
+            Started.TrySetResult(true);
+            await Release.Task.WaitAsync(cancellationToken);
+            return [];
+        }
+        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]);
+        public ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask PruneAsync(DateOnly before, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask DeleteAsync(DateOnly? day, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask ExportJsonAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
+    private sealed class BlockingRefreshApplication : IQuotaApplication
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Calls { get; private set; }
+
+        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            Started.TrySetResult(true);
+            await Release.Task.WaitAsync(cancellationToken);
+            return new QuotaRefreshResult([], []);
+        }
+    }
+
     private sealed class StubApplication(IReadOnlyList<QuotaSnapshot> result) : IQuotaApplication
     {
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>

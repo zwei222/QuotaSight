@@ -1,10 +1,12 @@
 using Avalonia.Controls;
+using Avalonia.Automation;
 using Avalonia.Interactivity;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
 using Avalonia.VisualTree;
 
 using QuotaSight.Core;
+using QuotaSight.Application;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
 using Xunit;
@@ -129,6 +131,28 @@ public sealed class UiRequirementsTests
 
         Assert.False(window.ViewModel.IsProviderFlowOpen);
         Assert.False(window.FindControl<ComboBox>("ProviderPicker")!.IsVisible);
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task Quota_refresh_status_is_visible_disables_refresh_and_is_announced_until_done()
+    {
+        var application = new BlockingRefreshApplication();
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource(), quotaApplication: application), new UiProviderFacade());
+        window.Show();
+
+        var refresh = window.ViewModel.RefreshAsync();
+        await application.Started.Task;
+
+        var status = window.FindControl<Border>("QuotaRefreshStatus")!;
+        Assert.True(status.IsVisible);
+        Assert.True(window.FindControl<ProgressBar>("QuotaRefreshProgressBar")!.IsIndeterminate);
+        Assert.False(window.FindControl<Button>("RefreshButton")!.IsEnabled);
+        Assert.Equal(window.ViewModel.QuotaStatusText, AutomationProperties.GetName(status));
+
+        application.Release.TrySetResult(true);
+        await refresh;
+        Assert.False(status.IsVisible);
         window.Close();
     }
 
@@ -473,7 +497,7 @@ public sealed class UiRequirementsTests
                 [UsageBand.OverLimit] = theme == ThemeMode.Light ? Color.Parse("#7A1FA2") : Color.Parse("#E0A0FF")
             };
 
-            var bars = window.GetVisualDescendants().OfType<ProgressBar>().ToList();
+            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate).ToList();
             Assert.Equal(8, bars.Count);
             foreach (var bar in bars)
             {
@@ -493,5 +517,18 @@ public sealed class UiRequirementsTests
         public string? LastText { get; private set; }
         public int CopyCount { get; private set; }
         public Task SetTextAsync(string text) { CopyCount++; LastText = text; return Task.CompletedTask; }
+    }
+
+    private sealed class BlockingRefreshApplication : IQuotaApplication
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            Started.TrySetResult(true);
+            await Release.Task.WaitAsync(cancellationToken);
+            return new QuotaRefreshResult([], []);
+        }
     }
 }
