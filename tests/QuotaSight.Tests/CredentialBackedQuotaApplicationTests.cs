@@ -33,6 +33,71 @@ public sealed class CredentialBackedQuotaApplicationTests
     }
 
     [Fact]
+    public async Task Refresh_starts_codex_while_opencode_is_stalled_and_returns_codex_snapshot_after_provider_timeout()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var codexStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var credentials = new InMemoryCredentialStore();
+        await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
+        await credentials.SetAsync("OpenCode Go", "open-code-key", default);
+        var history = new RecordingHistory();
+        var application = new CredentialBackedQuotaApplication(
+            _ => new StallingAdapter(),
+            credentials,
+            history,
+            null,
+            CreateCodex(credentials, onRequest: () => codexStarted.TrySetResult()),
+            TimeSpan.FromMilliseconds(50));
+
+        var refresh = application.RefreshAsync(cancellation.Token).AsTask();
+        try
+        {
+            await codexStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Single(result.Snapshots);
+            Assert.Equal(ProviderKind.ChatGpt, result.Snapshots[0].Provider);
+            var failure = Assert.Single(result.Failures);
+            Assert.Equal(ProviderKind.OpenCode, failure.Provider);
+            Assert.Equal(FetchStatus.TransientFailure, failure.Status);
+            Assert.Equal(1, history.AppendCount);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try { await refresh; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task Refresh_returns_opencode_when_codex_is_stalled_until_provider_timeout()
+    {
+        var credentials = new InMemoryCredentialStore();
+        await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
+        await credentials.SetAsync("OpenCode Go", "open-code-key", default);
+        var history = new RecordingHistory();
+        var codex = new CodexSessionManager(
+            new CodexOAuthClient(new HttpClient(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK))), credentials),
+            new HttpClient(new BlockingHandler()));
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(OpenCodeSnapshot()),
+            credentials,
+            history,
+            null,
+            codex,
+            TimeSpan.FromMilliseconds(50));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Single(result.Snapshots);
+        Assert.Equal(ProviderKind.OpenCode, result.Snapshots[0].Provider);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal(ProviderKind.ChatGpt, failure.Provider);
+        Assert.Equal(FetchStatus.TransientFailure, failure.Status);
+        Assert.Equal(1, history.AppendCount);
+    }
+
+    [Fact]
     public async Task Refresh_merges_successful_sources_and_appends_once()
     {
         var credentials = new InMemoryCredentialStore();
@@ -131,14 +196,14 @@ public sealed class CredentialBackedQuotaApplicationTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => application.RefreshAsync(cancellation.Token).AsTask());
     }
 
-    private static CodexSessionManager CreateCodex(InMemoryCredentialStore credentials, HttpStatusCode status = HttpStatusCode.OK)
+    private static CodexSessionManager CreateCodex(InMemoryCredentialStore credentials, HttpStatusCode status = HttpStatusCode.OK, Action? onRequest = null)
     {
         var responseFactory = status == HttpStatusCode.OK
             ? new Func<HttpResponseMessage>(() => Json("{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1788696000,\"limit_window_seconds\":18000}}}"))
             : new Func<HttpResponseMessage>(() => new HttpResponseMessage(status));
         return new CodexSessionManager(
             new CodexOAuthClient(new HttpClient(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK))), credentials),
-            new HttpClient(new Handler(_ => responseFactory())));
+            new HttpClient(new Handler(_ => { onRequest?.Invoke(); return responseFactory(); })));
     }
 
     private static QuotaSnapshot OpenCodeSnapshot() => new(
@@ -170,6 +235,25 @@ public sealed class CredentialBackedQuotaApplicationTests
     {
         public ProviderKind Provider => ProviderKind.OpenCode;
         public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(FetchResult<IReadOnlyList<QuotaSnapshot>>.Success(snapshots));
+    }
+
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+    }
+
+    private sealed class StallingAdapter : IQuotaAdapter
+    {
+        public ProviderKind Provider => ProviderKind.OpenCode;
+        public async ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return FetchResult<IReadOnlyList<QuotaSnapshot>>.Success([]);
+        }
     }
 
     private sealed class CancellableAdapter(CancellationToken token) : IQuotaAdapter

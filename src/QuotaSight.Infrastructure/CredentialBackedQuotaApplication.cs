@@ -9,6 +9,7 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     private readonly ICredentialStore credentials;
     private readonly IQuotaHistory history;
     private readonly CodexSessionManager? codexSessionManager;
+    private readonly TimeSpan providerTimeout;
 
     public CredentialBackedQuotaApplication(
         Func<string, IQuotaAdapter> adapterFactory,
@@ -41,19 +42,24 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
         ICredentialStore credentials,
         IQuotaHistory history,
         TimeProvider? timeProvider,
-        CodexSessionManager? codexSessionManager)
+        CodexSessionManager? codexSessionManager,
+        TimeSpan? providerTimeout = null)
     {
         this.adapterFactory = adapterFactory;
         this.credentials = credentials;
         this.history = history;
         this.codexSessionManager = codexSessionManager;
         _ = timeProvider;
+        this.providerTimeout = providerTimeout ?? TimeSpan.FromSeconds(30);
     }
 
     public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
     {
-        var openCode = await FetchOpenCodeAsync(cancellationToken);
-        var codex = await FetchCodexAsync(cancellationToken);
+        var openCodeTask = FetchOpenCodeAsync(cancellationToken).AsTask();
+        var codexTask = FetchCodexAsync(cancellationToken).AsTask();
+        await Task.WhenAll(openCodeTask, codexTask);
+        var openCode = await openCodeTask;
+        var codex = await codexTask;
         var results = new[] { openCode, codex };
         var snapshots = results.SelectMany(result => result.Snapshots).ToArray();
         var failures = results.SelectMany(result => result.Failures).ToArray();
@@ -65,12 +71,15 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
 
     private async ValueTask<QuotaRefreshResult> FetchOpenCodeAsync(CancellationToken cancellationToken)
     {
+        using var providerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        providerCancellation.CancelAfter(providerTimeout);
+        var providerToken = providerCancellation.Token;
         try
         {
-            var key = await credentials.GetAsync("OpenCode Go", cancellationToken);
+            var key = await credentials.GetAsync("OpenCode Go", providerToken);
             if (string.IsNullOrWhiteSpace(key)) return Empty(ProviderKind.OpenCode);
 
-            var result = await adapterFactory(key).FetchAsync("OpenCode Go", cancellationToken);
+            var result = await adapterFactory(key).FetchAsync("OpenCode Go", providerToken);
             return ToRefreshResult(ProviderKind.OpenCode, result);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -87,10 +96,13 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     {
         if (codexSessionManager is null) return Empty(ProviderKind.ChatGpt);
 
+        using var providerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        providerCancellation.CancelAfter(providerTimeout);
+        var providerToken = providerCancellation.Token;
         try
         {
-            if (!await codexSessionManager.HasCredentialAsync(cancellationToken)) return Empty(ProviderKind.ChatGpt);
-            var result = await codexSessionManager.FetchAsync(cancellationToken);
+            if (!await codexSessionManager.HasCredentialAsync(providerToken)) return Empty(ProviderKind.ChatGpt);
+            var result = await codexSessionManager.FetchAsync(providerToken);
             return ToRefreshResult(ProviderKind.ChatGpt, result);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
