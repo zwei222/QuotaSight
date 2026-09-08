@@ -317,8 +317,9 @@ public sealed class UiRequirementsTests
         var reset = new DateTimeOffset(2026, 9, 8, 14, 30, 0, TimeSpan.FromHours(9));
 
         var text = QuotaPresentationFormatter.FormatReset(reset, now, UiLanguage.Japanese);
+        var localReset = reset.ToLocalTime().ToString("M月d日(ddd) HH:mm", System.Globalization.CultureInfo.GetCultureInfo("ja-JP"));
 
-        Assert.Equal("9月8日(火) 14:30にリセット（あと2日）", text);
+        Assert.Equal($"{localReset}にリセット（あと2日）", text);
     }
 
     [Fact]
