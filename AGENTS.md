@@ -72,8 +72,8 @@ Windows Native AOTはWindows runner、Linux Native AOTはLinux runnerでpublish�
 - Claude Proは、対応する公開契約が存在するまで、利用率/resetの手動入力と公式Usageページへのリンクを使用します。
 - OpenAI Codexのaccess/refresh/id tokenはOS資格情報ストアだけへ永続化し、利用不能時はsession-memoryに限定します。refresh token rotationは排他し、logout時に専用資格情報を削除してください。`used_percent`、`reset_at`、`limit_window_seconds`だけを写像し、`used`/`limit`を推測せず、primary/secondary windowと100%超の値を保持してください。
 - OpenCode Goは明示的に入力されたAPI keyとusage endpoint adapterを使用します。OpenCode内部の認証ファイルを読み取ってはいけません。
-- GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight OAuth Appのdevice flowを使用できます。認証成功は利用枠の参照可否を保証しません。組織利用枠を取得できない場合は手動入力へfallbackします。
-- GitHub OAuth Client IDは実行時設定です。デスクトップアプリにclient secretを要求または埋め込んではいけません。
+- GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight用GitHub AppのDevice Flowを使用できます。認証成功は利用枠の参照可否を保証しません。組織利用枠を取得できない場合は手動入力へfallbackします。
+- GitHub App Client IDは実行時設定です。App IDと混同せず、デスクトップアプリにclient secretやprivate keyを要求または埋め込んではいけません。
 - その他のプランはcapability detectionに基づくbest effort対応です。上限を推測せず、非対応状態を表示してください。
 
 ## 秘密情報とプライバシー

@@ -1,37 +1,45 @@
 # QuotaSight
 
-QuotaSight は API 請求額ではなく、subscription quota（契約プランの利用枠）を一つの dashboard で確認する Windows/Linux デスクトップアプリです。取得できない値は推測せず、取得方式と確度を表示します。
+[English](README.md) | [日本語](README.ja.md)
 
-## 実装済み
+QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is not an API billing, token-billing, or pay-as-you-go cost tracker. It shows observed quota values together with their source and confidence; it does not turn estimates, stale data, manual entries, or experimental endpoints into authoritative real-time usage.
 
-- Demo mode による安全なサンプル dashboard。
-- dashboard、history、settings のAvalonia UI。日本語/英語の実行時切替と狭幅レイアウトに対応。
-- tray常駐と、native通知が利用できない場合のin-app通知fallback。trayが利用できない環境では通常のウィンドウ終了を維持。
-- 30 日分の quota snapshot を JSONL で保持。
-- Windows Credential Manager、Linux `secret-tool`/Secret Service、利用不能時の session-only credential storage。
-- telemetry なし。token、平文 credential、生 response は保存・表示しません。
+## Current capabilities
 
-## Provider の取得方式と限界
+- Safe demo mode with sample dashboard data.
+- Avalonia dashboard, history, and settings screens.
+- Runtime English/Japanese switching and a narrow-width layout.
+- Tray support and in-app notification fallback when native notifications are unavailable. If the tray is unavailable, the normal application window remains usable.
+- Thirty days of quota snapshots stored as daily JSONL history.
+- Windows Credential Manager and Linux Secret Service/`secret-tool` integration, with session-only credential storage when a secure store is unavailable.
+- No telemetry. Tokens, plaintext credentials, and raw provider responses are not stored or displayed.
+- Theme selection (System, Light, Dark), refresh interval, notification preferences, thresholds, and a runtime GitHub App Client ID in settings. The Client ID is not a secret.
 
-| Provider | 方式 | 表示上の限界 |
+## Provider matrix and limits
+
+| Provider | Current method | What it does and does not promise |
 |---|---|---|
-| ChatGPT Codex | OpenAI device OAuth + Undocumented/Experimental `wham/usage` | ChatGPT Plus/Pro全体ではなくCodex枠のみ。public client IDとdevice endpointは公式Codex実装で確認できるが、第三者アプリ向け公開安定契約・client ID流用許諾は未確認。失敗時はmanual + 公式ChatGPTサブスクリプションページ。live loginは未検証。 |
-| Claude | manual + official URL | quota は公式 URL を開いて手動入力。請求額 API ではない。 |
-| OpenCode Go | API key + usage endpoint | usage endpoint の返す subscription quota の範囲のみ。応答が遅延・未提供なら stale/unknown。 |
-| Copilot | `gh auth`/device flow | GitHub CLI 認証は使えるが、quota endpoint が利用できない場合は manual。請求額 API ではない。 |
+| ChatGPT Codex | QuotaSight's OpenAI device OAuth and undocumented/experimental `wham/usage` endpoint | Covers the Codex allowance for one ChatGPT account, not all ChatGPT Plus/Pro usage. The public client ID and endpoints are visible in the official Codex implementation, but a stable third-party contract and permission to reuse that client ID have not been confirmed. It is therefore never labeled Official; live login is unverified. Failures fall back to manual entry and the official ChatGPT subscription page. |
+| Claude Pro | Manual entry plus the official URL | The user enters quota and reset information from the official page. QuotaSight does not call a billing API. |
+| OpenCode Go | Explicit API key plus a usage endpoint | Shows only the subscription quota returned by that endpoint. Delayed or missing responses are represented as stale/unknown rather than guessed. QuotaSight does not read OpenCode's internal credential files. |
+| GitHub Copilot | `gh auth status` probe or GitHub App Device Flow | Current implementation authenticates/checks status only. `CopilotAdapter` returns Unsupported for quota retrieval, so Copilot uses manual fallback. Successful GitHub login is not successful quota API retrieval. See the [GitHub App setup guide](docs/github-app-setup.md). |
 
-CodexのOAuth public client ID、device endpoints、`wham/usage`は公式Codex実装で確認できるものの、第三者アプリ向けの公開安定契約やclient ID流用許諾は確認できないため、Officialとは扱いません。QuotaSight自身がdevice OAuthを実行し、client secretは要求・保持せず、Hermes/Codexのcredentialファイルも読みません。Codexは単一アカウントのCodex枠だけを対象にし、失敗時はmanual + 公式ChatGPTサブスクリプションページへfallbackします。未検証の実サービス応答およびlive loginを、実装済み・保証済みとは扱いません。provider の状態は manual / official / delayed / experimental のtruthfulnessを維持します。
+For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex credential files, does not request or retain a client secret, and stores tokens only in the OS secure store or session memory. Provider states remain distinguishable as Manual, Official, Delayed, or Experimental.
 
-## 必要条件
+### Copilot terminology and manual fallback
 
-- .NET SDK 10.0.x
-- Windows x64 または Linux x64
-- Linux GUI/tray/notification: 実行環境に応じた GTK、D-Bus、notification daemon、Secret Service（任意。無い場合は fallback）。
-- Copilot の既存 CLI 認証を確認する場合は `gh`。device flow を使う場合はブラウザ。
+Copilot seats, organization metrics, and AI-credit usage are not the same thing as an individual's real-time remaining quota. Business credits are a shared pool; QuotaSight must not hardcode a fixed personal allowance. Until an official Copilot data contract is implemented, enter the relevant value manually and keep its source and freshness explicit.
 
-GitHub OAuth App の Client ID は現時点で提供されていないため hardcode していません。利用時に Settings へ runtime 設定します。client secret は不要です。
+The GitHub App guide explains installation, owner approval, organization access, SAML SSO approval, and the security boundary. The app currently needs only the Client ID for Device Flow. Do not enter a client secret or private key; a private key is not needed for this flow.
 
-## 開発・実行
+## Requirements
+
+- .NET SDK 10.0.x.
+- Windows x64 or Linux x64.
+- On Linux, GUI/tray/notification support depends on the environment's GTK, D-Bus, notification daemon, and optionally Secret Service. Missing components use the documented fallback where possible.
+- `gh` to check existing GitHub CLI authentication; a browser for Device Flow.
+
+## Build and run
 
 ```bash
 dotnet restore QuotaSight.slnx
@@ -39,25 +47,37 @@ dotnet build QuotaSight.slnx -c Release --no-restore
 dotnet test QuotaSight.slnx -c Release --no-build --no-restore
 dotnet format QuotaSight.slnx --verify-no-changes --no-restore
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj
-# headless 起動契約の確認
+# Check the headless startup contract
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 ```
 
-`--smoke-test` は UI を表示せず、配布 binary の起動・基本依存を確認して終了します。
+`--smoke-test` starts without showing the UI, checks startup and basic dependencies, and exits.
 
-## 配布 ZIP の実行
+## Release ZIP
 
-Release workflow が OS 上で NativeAOT self-contained binary を作り、`QuotaSight-<version>-<rid>.zip`（`linux-x64` または `win-x64`）として公開します。ZIP を展開し、Windows は `QuotaSight.UI.exe`、Linux は `QuotaSight.UI` を実行してください。Linux では必要に応じて実行権限を付与し、GUI/tray/notification 依存をインストールします。
+The release workflow builds a self-contained .NET 10 Native AOT binary on the target OS and publishes `QuotaSight-<version>-<rid>.zip` for `linux-x64` or `win-x64`. Extract the ZIP and run `QuotaSight.UI` on Linux or `QuotaSight.UI.exe` on Windows. On Linux, grant execute permission if needed and install the GUI/tray/notification dependencies required by the environment. MSIX, deb, and AppImage packages are not currently provided.
 
-## プライバシー
+## Security and privacy
 
-外部 telemetry はありません。history は既定で 30 日の JSONL です。credential の取得・削除・export の境界は `docs/security.md` を参照してください。CLI 内部 credential の読取、平文 fallback、token の log/UI/history 出力、生 response の保存は行いません。
+QuotaSight is local-first and sends no external telemetry. History is retained for 30 days as daily JSONL. Provider CLI credential files are not read or parsed. Tokens, API keys, cookies, passwords, raw provider responses, and complete CLI output are not written to settings, history, logs, crash reports, exports, tests, or UI text. Persistent secrets use Windows Credential Manager or Linux Secret Service; if unavailable or locked, credentials stay in memory for the current session only. See [security details](docs/security.md).
+
+Quota windows remain separate (rolling, daily, weekly, monthly, or custom). The dashboard representative is the tightest known window; unrelated windows are not added together. Over-100% values are preserved, with only visual progress indicators clamped. Reset times, freshness, source confidence, and stale/manual/experimental states remain explicit.
 
 ## Roadmap
 
-- provider packages の追加（実サービス仕様と公開 quota endpoint が確認できたものから）。
-- より多くの OS 通知バックエンド。
+- More provider packages when a documented service contract and public quota endpoint are available.
+- More native notification backends.
+- Official Copilot data retrieval is not part of the current implementation.
 
-## English short section
+## Official references
 
-QuotaSight tracks subscription quotas, not API billing. For ChatGPT Plus/Pro it targets the Codex quota only, not all ChatGPT usage. QuotaSight runs its own OpenAI Codex device OAuth for one account and does not read Hermes/Codex credential files. The public client ID, device endpoints, and `wham/usage` are visible in the official Codex implementation, but no public stable third-party contract or permission to reuse the client ID has been confirmed; this integration is therefore Undocumented/Experimental, never Official. Tokens stay in the OS secure store or session memory only; failures fall back to manual entry and the official ChatGPT subscription page. Live login is unverified.
+- [Register a GitHub App](https://github.com/settings/apps/new)
+- [GitHub App user access tokens and Device Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+- [Install a GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
+- [Control GitHub App installation in an organization](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
+- [Copilot user and seat REST API](https://docs.github.com/en/rest/copilot/copilot-user-management?apiVersion=2022-11-28)
+- [Copilot usage metrics REST API](https://docs.github.com/en/rest/copilot/copilot-usage-metrics?apiVersion=2022-11-28)
+- [Billing usage REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)
+- [GitHub Copilot AI usage UI](https://github.com/settings/copilot)
+
+[日本語版](README.ja.md) · [GitHub App setup guide](docs/github-app-setup.md) · [日本語セットアップガイド](docs/github-app-setup.ja.md)
