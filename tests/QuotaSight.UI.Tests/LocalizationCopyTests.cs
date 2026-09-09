@@ -1,4 +1,5 @@
 using QuotaSight.UI;
+using QuotaSight.Core;
 using Xunit;
 
 namespace QuotaSight.UI.Tests;
@@ -44,5 +45,25 @@ public sealed class LocalizationCopyTests
         Assert.Equal("History data is damaged; showing available entries.", english.HistoryCorrupt);
         Assert.Equal("Tray unavailable", english.TrayUnavailableTitle);
         Assert.Equal("Tray unavailable. Use the app window instead.", english.TrayUnavailable);
+    }
+
+    [Fact]
+    public void Missing_provider_refresh_copy_names_the_provider_without_guessing_the_cause()
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+        var missing = new[] { ProviderKind.ChatGpt, ProviderKind.OpenCode };
+
+        Assert.Equal("今回はCodex、OpenCode Goのデータを取得できませんでした。接続状態を確認してください。", japanese.RefreshMissingProviders(missing));
+        Assert.Equal("Codex and OpenCode Go data could not be retrieved this time. Check the connection.", english.RefreshMissingProviders(missing));
+        Assert.DoesNotContain("credential", english.RefreshMissingProviders(missing), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("資格情報", japanese.RefreshMissingProviders(missing), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Codex_display_name_is_distinct_from_chatgpt()
+    {
+        Assert.Equal("ChatGPT Codex", new UiCopy(UiLanguage.English).ProviderName(ProviderKind.ChatGpt));
+        Assert.Equal("ChatGPT Codex", new UiCopy(UiLanguage.Japanese).ProviderName(ProviderKind.ChatGpt));
     }
 }

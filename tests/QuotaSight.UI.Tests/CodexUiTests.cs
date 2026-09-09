@@ -371,6 +371,72 @@ public sealed class CodexUiTests
     }
 
     [Fact]
+    public async Task Refresh_open_code_success_and_missing_codex_recomputes_state_and_preserves_codex_value()
+    {
+        var clock = new FixedTimeProvider();
+        var initialTime = clock.GetUtcNow();
+        var openCode = Snapshot(35, "opencode-account", "OpenCode", QuotaWindowKind.Rolling) with
+        {
+            Provider = ProviderKind.OpenCode,
+            DisplayName = "OpenCode Go",
+            Source = QuotaSource.Official,
+            Confidence = QuotaConfidence.Official,
+            Fetched = initialTime,
+            Observed = initialTime,
+            FreshUntil = initialTime.AddMinutes(1)
+        };
+        var codex = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling) with
+        {
+            DisplayName = "OpenAI Codex",
+            Fetched = initialTime,
+            Observed = initialTime,
+            FreshUntil = initialTime.AddMinutes(1)
+        };
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedApplication(
+            [openCode, codex],
+            [openCode with { Used = 40, Fetched = initialTime.AddMinutes(2), Observed = initialTime.AddMinutes(2), FreshUntil = initialTime.AddMinutes(3) }]), timeProvider: clock);
+
+        await vm.RefreshAsync();
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await vm.RefreshAsync();
+
+        var openCodeCard = Assert.Single(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
+        Assert.Equal("Connected", openCodeCard.StateText);
+        Assert.Equal("40% used · 60% remaining", Assert.Single(openCodeCard.Windows).PercentText);
+
+        var codexCard = Assert.Single(vm.Cards, card => card.Provider == ProviderKind.ChatGpt);
+        var codexRow = Assert.Single(codexCard.Windows);
+        Assert.Equal("45% used · 55% remaining", codexRow.PercentText);
+        Assert.Equal(initialTime, codexRow.FetchedAt);
+        Assert.True(codexRow.IsStale);
+        Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.Ordinal);
+        Assert.Contains("could not be retrieved", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("credential", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Refresh_all_success_clears_previous_incomplete_banner()
+    {
+        var openCode = Snapshot(35, "opencode-account", "OpenCode", QuotaWindowKind.Rolling) with
+        {
+            Provider = ProviderKind.OpenCode,
+            DisplayName = "OpenCode Go",
+            Source = QuotaSource.Official,
+            Confidence = QuotaConfidence.Official
+        };
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([openCode], [new(ProviderKind.ChatGpt, FetchStatus.TransientFailure)]),
+            new QuotaRefreshResult([openCode with { Used = 40 }], [])));
+
+        await vm.RefreshAsync();
+        Assert.True(vm.IsNotificationVisible);
+        await vm.RefreshAsync();
+
+        Assert.False(vm.IsNotificationVisible);
+        Assert.Equal(PresentationState.Ready, vm.PresentationState);
+    }
+
+    [Fact]
     public async Task Refresh_partial_failure_for_same_codex_account_keeps_missing_metric_row_and_marks_it_stale_after_expiry()
     {
         var clock = new FixedTimeProvider();
@@ -431,6 +497,81 @@ public sealed class CodexUiTests
 
         Assert.Contains(vm.Cards, card => card.Account == "manual-account");
         Assert.False(vm.IsError);
+    }
+
+    [Fact]
+    public async Task Refresh_empty_uses_latest_snapshot_per_identity_and_ignores_newer_manual_snapshot()
+    {
+        var oldAutomatic = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling);
+        var newerManual = oldAutomatic with
+        {
+            Used = 20,
+            Observed = oldAutomatic.Observed.AddMinutes(1),
+            Fetched = oldAutomatic.Fetched.AddMinutes(1),
+            Source = QuotaSource.Manual,
+            Confidence = QuotaConfidence.Manual
+        };
+        var history = new SnapshotHistory([oldAutomatic, newerManual]);
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: new SequencedRefreshApplication(new QuotaRefreshResult([], [])));
+
+        await vm.InitializeAsync();
+        await vm.RefreshAsync();
+
+        Assert.False(vm.IsError);
+        Assert.False(vm.IsNotificationVisible);
+    }
+
+    [Fact]
+    public async Task Refresh_empty_does_not_report_codex_missing_after_explicit_disconnect()
+    {
+        var codex = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling);
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([codex], []), new QuotaRefreshResult([], [])));
+
+        await vm.RefreshAsync();
+        vm.SetCodexCredentialPresence(false);
+        await vm.RefreshAsync();
+
+        Assert.False(vm.IsError);
+        Assert.False(vm.IsNotificationVisible);
+    }
+
+    [Fact]
+    public async Task Refresh_open_code_success_only_reports_codex_missing_when_credential_is_present()
+    {
+        var codex = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling);
+        var openCode = Snapshot(35, "opencode-account", "OpenCode", QuotaWindowKind.Rolling) with
+        {
+            Provider = ProviderKind.OpenCode,
+            DisplayName = "OpenCode Go",
+            Source = QuotaSource.Official,
+            Confidence = QuotaConfidence.Official
+        };
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([codex], []), new QuotaRefreshResult([openCode], [])));
+
+        await vm.RefreshAsync();
+        vm.SetCodexCredentialPresence(true);
+        await vm.RefreshAsync();
+
+        Assert.True(vm.IsError);
+        Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Refresh_explicit_provider_failure_is_reported_even_when_codex_is_disconnected()
+    {
+        var codex = Snapshot(45, "codex-account", "Codex", QuotaWindowKind.Rolling);
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
+            new QuotaRefreshResult([codex], []),
+            new QuotaRefreshResult([], [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)])));
+
+        await vm.RefreshAsync();
+        vm.SetCodexCredentialPresence(false);
+        await vm.RefreshAsync();
+
+        Assert.True(vm.IsError);
+        Assert.Contains("OpenCode", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -561,6 +702,19 @@ public sealed class CodexUiTests
         private int calls;
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(new QuotaRefreshResult(Interlocked.Increment(ref calls) == 1 ? first : latest, []));
+    }
+
+    private sealed class SnapshotHistory(IReadOnlyList<QuotaSnapshot> snapshots) : IQuotaHistory
+    {
+        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult(snapshots);
+        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>(snapshots.Select(snapshot => new QuotaHistoryEntry(Guid.NewGuid(), snapshot)).ToList());
+        public ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask PruneAsync(DateOnly before, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask DeleteAsync(DateOnly? day, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask ExportJsonAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
     private sealed class BlockingRefreshApplication(QuotaSnapshot older, QuotaSnapshot newer) : IQuotaApplication

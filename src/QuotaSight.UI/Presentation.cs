@@ -134,7 +134,10 @@ public static class DashboardAggregation
             var windows = group.GroupBy(s => (s.Window.Kind, s.Metric)).Select(w => w.OrderByDescending(s => s.Observed).First()).ToList();
             var representative = QuotaSnapshot.MostConstrained(windows);
             var japanese = language == UiLanguage.Japanese;
-            var card = new ProviderCardViewModel(group.Key.Provider, representative?.DisplayName.Length > 0 ? representative.DisplayName : group.Key.Provider.ToString(), group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? (japanese ? "更新できませんでした" : "Stale · refresh failed") : (japanese ? "接続済み" : "Connected"), false,
+            var name = representative?.DisplayName.Length > 0 ? representative.DisplayName : group.Key.Provider.ToString();
+            if (group.Key.Provider == ProviderKind.ChatGpt && representative?.Source != QuotaSource.Manual)
+                name = new UiCopy(language).ProviderName(group.Key.Provider);
+            var card = new ProviderCardViewModel(group.Key.Provider, name, group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? (japanese ? "更新できませんでした" : "Stale · refresh failed") : (japanese ? "接続済み" : "Connected"), false,
                 windows.OrderByDescending(s => s.EffectivePercent ?? decimal.MinValue).Select(s => QuotaPresentationFormatter.Format(s, now, language)).ToList());
             return (card, percent: representative?.EffectivePercent ?? decimal.MinValue);
         }).OrderByDescending(item => item.percent).Select(item => item.card).ToList();
@@ -478,6 +481,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private CodexUiResult codexResult = new(false, CodexAuthorizationState.Disconnected, "Codex is not connected.");
     private bool providerSelectionMade;
     private bool hasCodexCredential;
+    private bool codexCredentialPresenceKnown;
     public CodexAuthorizationState CodexState => codexResult.State;
     public string CodexStatusText => Language == UiLanguage.Japanese ? CopyText.CodexStatus(codexResult.State, codexResult.Success, codexResult.Status) : codexResult.Message;
     public string CodexUserCode => codexResult.Prompt?.UserCode ?? string.Empty;
@@ -489,12 +493,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsCodexDisconnected => codexResult.State == CodexAuthorizationState.Disconnected;
     public bool IsCodexError => codexResult.State == CodexAuthorizationState.Error;
     public bool IsCodexLogoutVisible => hasCodexCredential || IsCodexConnected;
-    public void SetCodexCredentialPresence(bool exists) { hasCodexCredential = exists; OnPropertyChanged(nameof(IsCodexLogoutVisible)); }
+    public void SetCodexCredentialPresence(bool exists) { hasCodexCredential = exists; codexCredentialPresenceKnown = true; OnPropertyChanged(nameof(IsCodexLogoutVisible)); }
     public void SetCodexResult(CodexUiResult result)
     {
         codexResult = result;
-        if (result.Success && result.State == CodexAuthorizationState.Connected) hasCodexCredential = true;
-        if (result.Success && result.State == CodexAuthorizationState.Disconnected) hasCodexCredential = false;
+        if (result.Success && result.State == CodexAuthorizationState.Connected) { hasCodexCredential = true; codexCredentialPresenceKnown = true; }
+        if (result.Success && result.State == CodexAuthorizationState.Disconnected) { hasCodexCredential = false; codexCredentialPresenceKnown = true; }
         foreach (var name in new[] { nameof(CodexState), nameof(CodexStatusText), nameof(CodexUserCode), nameof(CodexVerificationUriText), nameof(CodexExpiresText), nameof(IsCodexPromptVisible), nameof(IsCodexConnected), nameof(IsCodexDisconnected), nameof(IsCodexError), nameof(IsCodexLogoutVisible) }) OnPropertyChanged(name);
     }
     public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
@@ -593,12 +597,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             PresentationState = PresentationState.Loading;
             if (quotaApplication is null) { LoadCards(); PresentationState = Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready; return; }
-            var previousProviderIdentities = lastKnownSnapshots
+            var previousProviderIdentities = ExpectedAutomaticIdentities();
+            var refreshResult = await quotaApplication.RefreshAsync(cancellationToken);
+            var snapshots = refreshResult.Snapshots;
+            var currentProviderIdentities = snapshots
                 .Where(snapshot => snapshot.Source != QuotaSource.Manual)
                 .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
                 .ToHashSet();
-            var refreshResult = await quotaApplication.RefreshAsync(cancellationToken);
-            var snapshots = refreshResult.Snapshots;
+            var missingProviders = previousProviderIdentities
+                .Where(identity => !currentProviderIdentities.Contains(identity))
+                .Select(identity => identity.Provider)
+                .Distinct()
+                .ToList();
+            var partialFailure = missingProviders.Count > 0;
             if (snapshots.Count > 0)
             {
                 MergeLastKnownSnapshots(snapshots);
@@ -606,15 +617,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
                 ReevaluateCards(timeProvider.GetUtcNow());
                 if (quotaHistory is not null) await History.RefreshAfterPersistAsync(cancellationToken);
-                var currentProviderIdentities = snapshots
-                    .Where(snapshot => snapshot.Source != QuotaSource.Manual)
-                    .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
-                    .ToHashSet();
-                var partialFailure = previousProviderIdentities.Any(identity => !currentProviderIdentities.Contains(identity));
                 if (refreshResult.Failures.Count > 0)
                     notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
                 else if (partialFailure)
-                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshError);
+                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
                 else
                     notificationService.Clear();
                 PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
@@ -624,9 +630,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 if (refreshResult.Failures.Count > 0)
                     notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
+                else if (partialFailure)
+                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
                 else
                     notificationService.Clear();
-                PresentationState = refreshResult.Failures.Count > 0 ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
+                PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
             }
         }
         catch (OperationCanceledException) { throw; }
@@ -716,6 +724,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
+    private HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> ExpectedAutomaticIdentities()
+    {
+        return lastKnownSnapshots
+            .GroupBy(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, Kind: snapshot.Window.Kind))
+            .Select(group => group.OrderByDescending(snapshot => snapshot.Observed).ThenByDescending(snapshot => snapshot.Fetched).First())
+            .Where(snapshot => snapshot.Source != QuotaSource.Manual)
+            .Where(snapshot => snapshot.Provider != ProviderKind.ChatGpt || !codexCredentialPresenceKnown || hasCodexCredential)
+            .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, Kind: snapshot.Window.Kind))
+            .ToHashSet();
+    }
+
     private static bool IsSameSnapshotIdentity(QuotaSnapshot left, QuotaSnapshot right) =>
         left.Provider == right.Provider && left.Account == right.Account && left.Metric == right.Metric && left.Window.Kind == right.Window.Kind;
     public void RemoveCodexCards()
@@ -756,15 +775,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         for (var cardIndex = 0; cardIndex < Cards.Count; cardIndex++)
         {
             var card = Cards[cardIndex];
-            Cards[cardIndex] = card with
+            var windows = card.Windows.Select(row =>
             {
-                Windows = card.Windows.Select(row =>
-                {
-                    var stale = row.WindowEnd != default && row.WindowEnd <= now || row.FreshUntil is { } expiry && now > expiry;
-                    var localized = row.Snapshot is null ? row : QuotaPresentationFormatter.Relocalize(row, now, Language);
-                    return localized with { IsStale = stale, ProgressLabel = Language == UiLanguage.Japanese ? $"{localized.PercentText}。{localized.StatusText}。{localized.ResetText}" : $"{localized.PercentText}. {localized.StatusText}. {localized.ResetText}" };
-                }).ToList()
-            };
+                var stale = row.WindowEnd != default && row.WindowEnd <= now || row.FreshUntil is { } expiry && now > expiry;
+                var localized = row.Snapshot is null ? row : QuotaPresentationFormatter.Relocalize(row, now, Language);
+                return localized with { IsStale = stale, ProgressLabel = Language == UiLanguage.Japanese ? $"{localized.PercentText}。{localized.StatusText}。{localized.ResetText}" : $"{localized.PercentText}. {localized.StatusText}. {localized.ResetText}" };
+            }).ToList();
+            var state = card.StateText;
+            if (windows.Any(row => row.Snapshot is { Source: not QuotaSource.Manual }))
+            {
+                var hasFreshRow = windows.Any(row => row.Snapshot is { Source: not QuotaSource.Manual } && !row.IsStale);
+                state = hasFreshRow ? (Language == UiLanguage.Japanese ? "接続済み" : "Connected") : (Language == UiLanguage.Japanese ? "更新できませんでした" : "Stale · refresh failed");
+            }
+            Cards[cardIndex] = card with { StateText = state, Windows = windows };
         }
     }
     private static string FormatAge(DateTimeOffset fetched, DateTimeOffset now)

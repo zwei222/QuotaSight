@@ -66,6 +66,21 @@ public sealed class UiCopy
     public string HistoryCorrupt => IsJapanese ? "履歴データが破損しています。読み込める項目を表示しています。" : "History data is damaged; showing available entries.";
     public string TrayUnavailableTitle => IsJapanese ? "トレイ" : "Tray unavailable";
     public string TrayUnavailable => IsJapanese ? "トレイを利用できません。アプリ内で操作してください。" : "Tray unavailable. Use the app window instead.";
+    public string ProviderName(ProviderKind provider) => provider switch
+    {
+        ProviderKind.ChatGpt => "ChatGPT Codex",
+        ProviderKind.OpenCode => "OpenCode Go",
+        ProviderKind.Claude => "Claude",
+        ProviderKind.Copilot => "GitHub Copilot",
+        _ => provider.ToString()
+    };
+    private string RefreshProviderName(ProviderKind provider) => provider == ProviderKind.ChatGpt ? "Codex" : ProviderName(provider);
+    public string RefreshMissingProviders(IEnumerable<ProviderKind> providers)
+    {
+        var names = providers.Distinct().Select(RefreshProviderName).ToList();
+        var joined = IsJapanese ? string.Join("、", names) : names.Count switch { 0 => string.Empty, 1 => names[0], _ => string.Join(", ", names[..^1]) + " and " + names[^1] };
+        return IsJapanese ? $"今回は{joined}のデータを取得できませんでした。接続状態を確認してください。" : $"{joined} data could not be retrieved this time. Check the connection.";
+    }
     public string QuotaThresholdTitle(ProviderKind provider) => IsJapanese ? $"{provider switch { ProviderKind.ChatGpt => "ChatGPT", ProviderKind.OpenCode => "OpenCode Go", ProviderKind.Claude => "Claude", ProviderKind.Copilot => "GitHub Copilot", _ => provider.ToString() }}の利用枠のしきい値" : $"{provider} quota threshold";
     public string QuotaThresholdReason(decimal percent) => IsJapanese ? $"使用率 {percent:0.#}%" : $"{percent:0.#}% used";
     public string Appearance => IsJapanese ? "表示" : "Appearance";

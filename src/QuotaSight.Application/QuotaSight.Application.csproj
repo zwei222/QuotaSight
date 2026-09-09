@@ -1,1 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../QuotaSight.Core/QuotaSight.Core.csproj" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../QuotaSight.Core/QuotaSight.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>QuotaSight.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
