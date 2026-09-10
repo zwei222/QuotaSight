@@ -10,7 +10,8 @@ using QuotaSight.Core;
 using QuotaSight.UI;
 
 [assembly: AvaloniaTestApplication(typeof(App))]
-[assembly: CollectionBehavior(DisableTestParallelization = true)]
+[assembly: AvaloniaTestIsolation(AvaloniaTestIsolationLevel.PerAssembly)]
+[assembly: CollectionBehavior(CollectionBehavior.CollectionPerAssembly, DisableTestParallelization = true)]
 
 namespace QuotaSight.UI.Tests;
 
@@ -83,8 +84,7 @@ public sealed class PresentationTests
     [AvaloniaFact]
     public void Warning_foreground_meets_wcag_contrast_on_warning_background_in_light_and_dark_themes()
     {
-        var app = new App();
-        app.Initialize();
+        var app = Assert.IsType<App>(Avalonia.Application.Current);
 
         foreach (var themeKey in new[] { "Light", "Dark" })
         {
@@ -101,102 +101,149 @@ public sealed class PresentationTests
     [AvaloniaFact]
     public void Semantic_owned_colors_follow_actual_light_and_dark_theme_variants_with_readable_contrast()
     {
-        var app = new App();
-        app.Initialize();
-        UiSettings.ApplyTheme(ThemeMode.System);
-        Assert.Equal(ThemeVariant.Default, UiSettings.AppliedTheme);
-        app.RequestedThemeVariant = ThemeVariant.Light;
-        var lightWindow = new MainWindow(new MainViewModel(new DemoDashboardSource())) { RequestedThemeVariant = ThemeVariant.Light };
-        lightWindow.Show();
-        var lightTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Light").Value!;
-        var lightBackground = ((ISolidColorBrush)lightTheme["ContentBackgroundBrush"]!).Color;
-        var lightForeground = ((ISolidColorBrush)lightTheme["TextPrimaryBrush"]!).Color;
+        var app = Assert.IsType<App>(Avalonia.Application.Current);
+        var previousTheme = UiSettings.AppliedTheme;
+        MainWindow? lightWindow = null;
+        MainWindow? darkWindow = null;
+        try
+        {
+            UiSettings.ApplyTheme(ThemeMode.System);
+            Assert.Equal(ThemeVariant.Default, UiSettings.AppliedTheme);
+            app.RequestedThemeVariant = ThemeVariant.Light;
+            lightWindow = new MainWindow(new MainViewModel(new DemoDashboardSource())) { RequestedThemeVariant = ThemeVariant.Light };
+            lightWindow.Show();
+            var lightTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Light").Value!;
+            var lightBackground = ((ISolidColorBrush)lightTheme["ContentBackgroundBrush"]!).Color;
+            var lightForeground = ((ISolidColorBrush)lightTheme["TextPrimaryBrush"]!).Color;
 
-        app.RequestedThemeVariant = ThemeVariant.Dark;
-        var darkWindow = new MainWindow(new MainViewModel(new DemoDashboardSource())) { RequestedThemeVariant = ThemeVariant.Dark };
-        darkWindow.Show();
-        var darkTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Dark").Value!;
-        var darkBackground = ((ISolidColorBrush)darkTheme["ContentBackgroundBrush"]!).Color;
-        var darkForeground = ((ISolidColorBrush)darkTheme["TextPrimaryBrush"]!).Color;
+            app.RequestedThemeVariant = ThemeVariant.Dark;
+            darkWindow = new MainWindow(new MainViewModel(new DemoDashboardSource())) { RequestedThemeVariant = ThemeVariant.Dark };
+            darkWindow.Show();
+            var darkTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Dark").Value!;
+            var darkBackground = ((ISolidColorBrush)darkTheme["ContentBackgroundBrush"]!).Color;
+            var darkForeground = ((ISolidColorBrush)darkTheme["TextPrimaryBrush"]!).Color;
 
-        Assert.Equal(ThemeVariant.Light, lightWindow.ActualThemeVariant);
-        Assert.Equal(ThemeVariant.Dark, darkWindow.ActualThemeVariant);
-        Assert.NotEqual(lightBackground, darkBackground);
-        Assert.NotEqual(lightForeground, darkForeground);
-        Assert.True(ContrastRatio(lightBackground, lightForeground) >= 4.5);
-        Assert.True(ContrastRatio(darkBackground, darkForeground) >= 4.5);
+            Assert.Equal(ThemeVariant.Light, lightWindow.ActualThemeVariant);
+            Assert.Equal(ThemeVariant.Dark, darkWindow.ActualThemeVariant);
+            Assert.NotEqual(lightBackground, darkBackground);
+            Assert.NotEqual(lightForeground, darkForeground);
+            Assert.True(ContrastRatio(lightBackground, lightForeground) >= 4.5);
+            Assert.True(ContrastRatio(darkBackground, darkForeground) >= 4.5);
+        }
+        finally
+        {
+            darkWindow?.Close();
+            darkWindow?.ViewModel.Dispose();
+            lightWindow?.Close();
+            lightWindow?.ViewModel.Dispose();
+            UiSettings.ApplyTheme(previousTheme switch
+            {
+                var theme when theme == ThemeVariant.Light => ThemeMode.Light,
+                var theme when theme == ThemeVariant.Dark => ThemeMode.Dark,
+                _ => ThemeMode.System
+            });
+        }
     }
 
     [AvaloniaFact]
     public void Existing_window_resolves_semantic_brushes_and_updates_when_theme_changes()
     {
-        var app = new App();
-        app.Initialize();
-        UiSettings.ApplyTheme(ThemeMode.System);
-
+        var app = Assert.IsType<App>(Avalonia.Application.Current);
+        var previousTheme = UiSettings.AppliedTheme;
         var window = new MainWindow(new MainViewModel(new DemoDashboardSource()));
-        window.Show();
-        window.UpdateLayout();
+        try
+        {
+            UiSettings.ApplyTheme(ThemeMode.System);
+            window.Show();
+            window.UpdateLayout();
 
-        var contentScroll = window.FindControl<ScrollViewer>("ContentScroll")!;
-        var contentSurface = window.FindControl<StackPanel>("ContentSurface")!;
-        var title = window.FindControl<StackPanel>("DashboardHeaderCopy")!.Children.OfType<TextBlock>().Single(text => text.Classes.Contains("title"));
-        var muted = window.FindControl<StackPanel>("DashboardHeaderCopy")!.Children.OfType<TextBlock>().Single(text => text.Classes.Contains("muted"));
+            var contentScroll = window.FindControl<ScrollViewer>("ContentScroll")!;
+            var contentSurface = window.FindControl<StackPanel>("ContentSurface")!;
+            var title = window.FindControl<StackPanel>("DashboardHeaderCopy")!.Children.OfType<TextBlock>().Single(text => text.Classes.Contains("title"));
+            var muted = window.FindControl<StackPanel>("DashboardHeaderCopy")!.Children.OfType<TextBlock>().Single(text => text.Classes.Contains("muted"));
 
-        window.RequestedThemeVariant = ThemeVariant.Light;
-        window.UpdateLayout();
-        Assert.Equal(ThemeVariant.Light, window.ActualThemeVariant);
-        var lightTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Light").Value!;
-        AssertResolvedBrush(contentScroll.Background, lightTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(contentSurface.Background, lightTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(title.Foreground, lightTheme, "TextPrimaryBrush");
-        AssertResolvedBrush(muted.Foreground, lightTheme, "TextMutedBrush");
+            window.RequestedThemeVariant = ThemeVariant.Light;
+            window.UpdateLayout();
+            Assert.Equal(ThemeVariant.Light, window.ActualThemeVariant);
+            var lightTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Light").Value!;
+            AssertResolvedBrush(contentScroll.Background, lightTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(contentSurface.Background, lightTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(title.Foreground, lightTheme, "TextPrimaryBrush");
+            AssertResolvedBrush(muted.Foreground, lightTheme, "TextMutedBrush");
 
-        window.RequestedThemeVariant = ThemeVariant.Dark;
-        window.UpdateLayout();
-        Assert.Equal(ThemeVariant.Dark, window.ActualThemeVariant);
-        var darkTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Dark").Value!;
-        AssertResolvedBrush(contentScroll.Background, darkTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(contentSurface.Background, darkTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(title.Foreground, darkTheme, "TextPrimaryBrush");
-        AssertResolvedBrush(muted.Foreground, darkTheme, "TextMutedBrush");
+            window.RequestedThemeVariant = ThemeVariant.Dark;
+            window.UpdateLayout();
+            Assert.Equal(ThemeVariant.Dark, window.ActualThemeVariant);
+            var darkTheme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == "Dark").Value!;
+            AssertResolvedBrush(contentScroll.Background, darkTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(contentSurface.Background, darkTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(title.Foreground, darkTheme, "TextPrimaryBrush");
+            AssertResolvedBrush(muted.Foreground, darkTheme, "TextMutedBrush");
 
-        Assert.NotEqual(((ISolidColorBrush)lightTheme["ContentBackgroundBrush"]!).Color, ((ISolidColorBrush)darkTheme["ContentBackgroundBrush"]!).Color);
-        Assert.NotEqual(((ISolidColorBrush)lightTheme["TextPrimaryBrush"]!).Color, ((ISolidColorBrush)darkTheme["TextPrimaryBrush"]!).Color);
-        Assert.NotEqual(((ISolidColorBrush)lightTheme["TextMutedBrush"]!).Color, ((ISolidColorBrush)darkTheme["TextMutedBrush"]!).Color);
+            Assert.NotEqual(((ISolidColorBrush)lightTheme["ContentBackgroundBrush"]!).Color, ((ISolidColorBrush)darkTheme["ContentBackgroundBrush"]!).Color);
+            Assert.NotEqual(((ISolidColorBrush)lightTheme["TextPrimaryBrush"]!).Color, ((ISolidColorBrush)darkTheme["TextPrimaryBrush"]!).Color);
+            Assert.NotEqual(((ISolidColorBrush)lightTheme["TextMutedBrush"]!).Color, ((ISolidColorBrush)darkTheme["TextMutedBrush"]!).Color);
 
-        window.RequestedThemeVariant = ThemeVariant.Default;
-        window.UpdateLayout();
-        Assert.True(window.ActualThemeVariant == ThemeVariant.Light || window.ActualThemeVariant == ThemeVariant.Dark);
-        var systemTheme = window.ActualThemeVariant == ThemeVariant.Light ? lightTheme : darkTheme;
-        AssertResolvedBrush(contentScroll.Background, systemTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(contentSurface.Background, systemTheme, "ContentBackgroundBrush");
-        AssertResolvedBrush(title.Foreground, systemTheme, "TextPrimaryBrush");
-        AssertResolvedBrush(muted.Foreground, systemTheme, "TextMutedBrush");
+            window.RequestedThemeVariant = ThemeVariant.Default;
+            window.UpdateLayout();
+            Assert.True(window.ActualThemeVariant == ThemeVariant.Light || window.ActualThemeVariant == ThemeVariant.Dark);
+            var systemTheme = window.ActualThemeVariant == ThemeVariant.Light ? lightTheme : darkTheme;
+            AssertResolvedBrush(contentScroll.Background, systemTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(contentSurface.Background, systemTheme, "ContentBackgroundBrush");
+            AssertResolvedBrush(title.Foreground, systemTheme, "TextPrimaryBrush");
+            AssertResolvedBrush(muted.Foreground, systemTheme, "TextMutedBrush");
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+            UiSettings.ApplyTheme(previousTheme switch
+            {
+                var theme when theme == ThemeVariant.Light => ThemeMode.Light,
+                var theme when theme == ThemeVariant.Dark => ThemeMode.Dark,
+                _ => ThemeMode.System
+            });
+        }
     }
 
     [AvaloniaFact]
     public void Dashboard_header_keeps_copy_and_refresh_separate_at_compact_width()
     {
         var window = new MainWindow(new MainViewModel(new DemoDashboardSource())) { Width = 420 };
-        window.Show();
-        window.UpdateLayout();
-        var copy = window.FindControl<StackPanel>("DashboardHeaderCopy")!;
-        var refresh = window.FindControl<Button>("RefreshButton")!;
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var copy = window.FindControl<StackPanel>("DashboardHeaderCopy")!;
+            var refresh = window.FindControl<Button>("RefreshButton")!;
 
-        Assert.False(copy.Bounds.Intersects(refresh.Bounds));
-        Assert.True(refresh.Bounds.Y >= copy.Bounds.Bottom);
+            Assert.False(copy.Bounds.Intersects(refresh.Bounds));
+            Assert.True(refresh.Bounds.Y >= copy.Bounds.Bottom);
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
     }
 
     [AvaloniaFact]
     public void Main_window_page_visibility_follows_navigation_state()
     {
-        var window = new MainWindow();
-        window.Show();
-        var vm = window.ViewModel;
-        vm.Navigate(AppPage.History);
-        Assert.False(vm.IsDashboardVisible);
-        Assert.True(vm.IsHistoryVisible);
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()));
+        try
+        {
+            window.Show();
+            var vm = window.ViewModel;
+            vm.Navigate(AppPage.History);
+            Assert.False(vm.IsDashboardVisible);
+            Assert.True(vm.IsHistoryVisible);
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
     }
 
     private static void AssertResolvedBrush(IBrush? actual, ResourceDictionary theme, string key)
