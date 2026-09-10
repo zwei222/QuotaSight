@@ -9,7 +9,7 @@ QuotaSightは、サブスクリプション契約の利用枠を確認するWind
 - 安全なサンプルデータを表示するDemo mode。
 - Avaloniaによるdashboard、history、settings画面。
 - 実行中の日本語/英語切り替えと狭い幅のレイアウト。
-- tray常駐と、native通知が使えない場合のアプリ内通知fallback。trayが使えない環境でも通常のウィンドウを利用できます。
+- 選択式の常駐モード。トレイアイコンの通常クリックで省スペースな利用枠画面を開き、コンテキストメニューから正式なウィンドウ、更新、明示的な終了を選べます。native tray hostが使えない、または途中で消失した場合は、復帰不能な非表示状態にせず通常のウィンドウを維持・復元します。
 - quota snapshotを日別JSONLで30日間保持。
 - Windows Credential Manager、Linux Secret Service/`secret-tool`を利用。安全な資格情報ストアが使えない場合はセッション中だけメモリに保持。
 - telemetryなし。token、平文credential、生のprovider responseは保存・表示しません。
@@ -52,6 +52,10 @@ dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 ```
 
 `--smoke-test`はUIを表示せず、起動と基本依存を確認して終了します。
+
+### 選択式の常駐モード
+
+**設定 → 更新と通知**で**常駐モードを有効にする**を選びます。以後、正式なウィンドウを閉じてもQuotaSightはトレイに残ります。トレイアイコンの通常クリックでは利用枠確認用の省スペース画面を開き、コンテキストメニューから正式なウィンドウの表示、利用枠の更新、アプリの終了を実行できます。2つの画面は同じアプリ状態と更新schedulerを共有します。常駐モードは初期状態では無効で、動作するnative tray hostがない環境では有効になりません。
 
 ## Release ZIP
 

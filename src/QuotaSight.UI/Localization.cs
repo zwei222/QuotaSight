@@ -92,6 +92,14 @@ public sealed class UiCopy
     public string RefreshAlerts => IsJapanese ? "更新と通知" : "Refresh and alerts";
     public string RefreshInterval => IsJapanese ? "更新間隔（5〜15分）" : "Refresh interval (5–15 minutes)";
     public string EnableNotifications => IsJapanese ? "通知を有効にする" : "Enable notifications";
+    public string ResidentMode => IsJapanese ? "常駐モードを有効にする" : "Enable resident mode";
+    public string ResidentModeDescription => IsJapanese ? "対応環境ではアイコンをクリックして利用枠をすばやく確認できます。ウィンドウを閉じてもトレイに残ります。" : "On supported platforms, click the icon for a quick quota check; closing the window keeps QuotaSight in the tray.";
+    public string OpenFullWindow => IsJapanese ? "正式なウィンドウを開く" : "Open full window";
+    public string TrayUpdate => IsJapanese ? "更新" : "Refresh";
+    public string TrayExit => IsJapanese ? "終了" : "Exit";
+    public string CompactTitle => IsJapanese ? "利用枠の確認" : "Quota check";
+    public string CompactSubtitle => IsJapanese ? "次のリセットまでの概要" : "A quick view before the next reset";
+    public string CompactProviders => IsJapanese ? "プロバイダー" : "Quota providers";
     public string OverallThreshold => IsJapanese ? "通知する使用率（%）" : "Overall threshold (%)";
     public string ProviderOverrides => IsJapanese ? "プロバイダーごとにしきい値を設定できます。" : "Provider overrides can be configured per account.";
     public string Integrations => IsJapanese ? "連携" : "Integrations";

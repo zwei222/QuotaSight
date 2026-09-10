@@ -10,5 +10,5 @@
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
-  <ItemGroup><AvaloniaResource Include="Assets/quotasight-tray.svg" /></ItemGroup>
+  <ItemGroup><AvaloniaResource Include="Assets/quotasight-tray.svg" /><AvaloniaResource Include="Assets/quotasight-tray.png" /></ItemGroup>
 </Project>

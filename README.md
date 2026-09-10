@@ -9,7 +9,7 @@ QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is n
 - Safe demo mode with sample dashboard data.
 - Avalonia dashboard, history, and settings screens.
 - Runtime English/Japanese switching and a narrow-width layout.
-- Tray support and in-app notification fallback when native notifications are unavailable. If the tray is unavailable, the normal application window remains usable.
+- Optional resident mode with a compact quota window on tray-icon click, plus full-window, refresh, and explicit exit actions in the tray menu. If a native tray host is unavailable or disappears, QuotaSight keeps or restores the normal window instead of hiding without a recovery path.
 - Thirty days of quota snapshots stored as daily JSONL history.
 - Windows Credential Manager and Linux Secret Service/`secret-tool` integration, with session-only credential storage when a secure store is unavailable.
 - No telemetry. Tokens, plaintext credentials, and raw provider responses are not stored or displayed.
@@ -52,6 +52,10 @@ dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 ```
 
 `--smoke-test` starts without showing the UI, checks startup and basic dependencies, and exits.
+
+### Optional resident mode
+
+Enable **Resident mode** under **Settings → Refresh and alerts**. Closing the full window then keeps QuotaSight in the tray. A normal tray-icon click opens the compact quota view; the context menu opens the full window, refreshes quota data, or exits the process explicitly. Both windows share one application state and refresh scheduler. Resident mode defaults to off and remains unavailable when the platform has no working native tray host.
 
 ## Release ZIP
 

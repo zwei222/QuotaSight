@@ -170,6 +170,7 @@ public sealed class SettingsState
     public UiLanguage Language { get; set; } = UiLanguage.English;
     public int RefreshMinutes { get; private set; } = 10;
     public bool NotificationsEnabled { get; set; } = true;
+    public bool ResidentMode { get; set; }
     public decimal OverallThreshold { get; private set; } = 80;
     public Dictionary<ProviderKind, decimal> ProviderOverrides { get; } = [];
     public string GithubOAuthClientId { get; set; } = string.Empty;
@@ -468,6 +469,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string OpenCodeCredentialNotice => credentialAvailability is CredentialStoreAvailability.SecureStore ? CopyText.SecureCredential : CopyText.CredentialUnavailable(credentialAvailability.ToString());
     public void SetCredentialAvailability(CredentialStoreAvailability availability) { credentialAvailability = availability; OnPropertyChanged(nameof(OpenCodeCredentialNotice)); }
     public string PersistentStateForTests => Settings.GithubOAuthClientId;
+    public AppSettingsDto CurrentSettingsForTests => CurrentSettings();
     public string CopilotNotice => CopyText.CopilotDescription;
     public IReadOnlyList<ProviderChoiceViewModel> ProviderChoices => UiSettings.ProviderChoices(Language);
     private CopilotUiState copilotState = CopilotUiState.Idle;
@@ -579,12 +581,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
     public void Notify(string title, string reason) => notificationService.Notify(title, reason);
-    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; UiSettings.ApplyTheme(Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value));
+    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode);
     public async Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) { Settings.Theme = value; UiSettings.ApplyTheme(value); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task SetLanguageAsync(UiLanguage value, CancellationToken cancellationToken = default) { Language = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task<bool> SetRefreshMinutesAsync(int value, CancellationToken cancellationToken = default) { if (!Settings.TrySetRefreshMinutes(value)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
     public async Task SetNotificationsAsync(bool value, CancellationToken cancellationToken = default) { Settings.NotificationsEnabled = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public async Task SetResidentModeAsync(bool value, CancellationToken cancellationToken = default) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public void RestoreResidentMode(bool value) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); }
     public async Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) { if (!Settings.TrySetThreshold(value, out _)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
     public async Task SetGithubClientIdAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOAuthClientId = value.Trim(); githubFactory?.Create(Settings.GithubOAuthClientId); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public void Navigate(AppPage page) => CurrentPage = page;
