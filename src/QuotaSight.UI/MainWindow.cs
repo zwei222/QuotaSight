@@ -229,7 +229,8 @@ public partial class MainWindow : Window
     private async void GithubClientIdChanged(object? sender, TextChangedEventArgs e)
     {
         if (isInitializing || sender is not TextBox box) return;
-        var clientId = box.Text ?? string.Empty;
+        var clientId = (box.Text ?? string.Empty).Trim();
+        if (clientId == ViewModel.Settings.GithubOAuthClientId) return;
         await ViewModel.SetGithubClientIdAsync(clientId);
         if (providerService is UiProviderFacade facade) facade.UpdateGitHubClientId(clientId);
     }

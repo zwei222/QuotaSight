@@ -12,6 +12,31 @@ namespace QuotaSight.Tests;
 
 public sealed class CompletionTests
 {
+    private sealed class BoundedSingleThreadSynchronizationContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> callbacks = new();
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (callbacks) callbacks.Enqueue((callback, state));
+        }
+
+        public void Drain()
+        {
+            while (true)
+            {
+                (SendOrPostCallback Callback, object? State) work;
+                lock (callbacks)
+                {
+                    if (callbacks.Count == 0) return;
+                    work = callbacks.Dequeue();
+                }
+
+                work.Callback(work.State);
+            }
+        }
+    }
+
     private sealed class FakeSecretRunner(int exitCode) : ISecretToolProcessRunner
     {
         public ValueTask<SecretToolResult> RunAsync(IReadOnlyList<string> arguments, string? stdin, CancellationToken cancellationToken)
@@ -609,6 +634,66 @@ public sealed class CompletionTests
         await store.SaveAsync(new AppSettingsDto(Theme: "Dark", Language: "Japanese", RefreshMinutes: 5, OverallThreshold: 70, NotificationsEnabled: false, GithubOAuthClientId: "id"));
         var loaded = await store.LoadAsync();
         Assert.Equal("Dark", loaded.Theme); Assert.Equal("id", loaded.GithubOAuthClientId);
+    }
+
+    [Fact]
+    public void Settings_store_async_save_completes_when_blocked_on_a_single_thread_context()
+    {
+        var store = new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var previous = SynchronizationContext.Current;
+        var context = new BoundedSingleThreadSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var save = store.SaveAsync(new AppSettingsDto(Theme: "context-theme")).AsTask();
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            while (!save.IsCompleted && DateTime.UtcNow < deadline) Thread.Sleep(10);
+            Assert.True(save.IsCompleted, "SaveAsync captured the single-thread context and deadlocked.");
+            Assert.Equal("context-theme", store.Load().Theme);
+        }
+        finally
+        {
+            context.Drain();
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+    }
+
+    [Fact]
+    public async Task Settings_store_concurrent_saves_from_multiple_instances_leave_valid_settings()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var stores = Enumerable.Range(0, 8).Select(_ => new AppSettingsStore(root)).ToArray();
+        var settings = Enumerable.Range(0, 64)
+            .Select(i => new AppSettingsDto(Theme: $"theme-{i}", Language: $"language-{i}", GithubOAuthClientId: $"client-{i}"))
+            .ToArray();
+
+        var errors = await Record.ExceptionAsync(async () =>
+            await Task.WhenAll(settings.Select((value, i) => stores[i % stores.Length].SaveAsync(value).AsTask())));
+
+        Assert.Null(errors);
+        var loaded = await stores[0].LoadAsync();
+        Assert.Contains(loaded, settings);
+    }
+
+    [Fact]
+    public async Task Settings_store_save_and_save_async_are_mutually_exclusive_across_instances()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var asyncStore = new AppSettingsStore(root);
+        var syncStore = new AppSettingsStore(root);
+        var asyncSettings = new AppSettingsDto(Theme: "async-theme", Language: "async-language", GithubOAuthClientId: "async-client");
+        var syncSettings = new AppSettingsDto(Theme: "sync-theme", Language: "sync-language", GithubOAuthClientId: "sync-client");
+
+        var errors = await Record.ExceptionAsync(async () =>
+        {
+            var asyncSave = asyncStore.SaveAsync(asyncSettings).AsTask();
+            var syncSave = Task.Run(() => syncStore.Save(syncSettings));
+            await Task.WhenAll(asyncSave, syncSave);
+        });
+
+        Assert.Null(errors);
+        var loaded = await asyncStore.LoadAsync();
+        Assert.Contains(loaded, new[] { asyncSettings, syncSettings });
     }
 
     [Fact]

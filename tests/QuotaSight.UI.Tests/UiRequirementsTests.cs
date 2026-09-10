@@ -160,13 +160,23 @@ public sealed class UiRequirementsTests
     public async Task Language_switch_preserves_manual_controls_and_saves_the_selected_claude_monthly_identity()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        MainWindow? window = null;
+        MainViewModel? viewModel = null;
+        JsonlQuotaHistory? history = null;
         try
         {
             var store = new AppSettingsStore(root);
-            using var history = new JsonlQuotaHistory(root);
-            var window = new MainWindow(new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, settingsStore: store), new UiProviderFacade());
+            const string githubClientId = "github-client-before-language-switch";
+            store.Save(new AppSettingsDto(Language: "English", GithubOAuthClientId: githubClientId));
+            history = new JsonlQuotaHistory(root);
+            viewModel = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, settingsStore: store);
+            window = new MainWindow(viewModel, new UiProviderFacade());
             window.Show();
             await window.InitializeAsync();
+            var githubClientIdBox = window.FindControl<TextBox>("GithubClientIdBox")!;
+            Assert.Equal(githubClientId, githubClientIdBox.Text);
+            Assert.Equal(githubClientId, viewModel.Settings.GithubOAuthClientId);
+
             window.FindControl<Button>("AddProviderButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             window.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = window.ViewModel.ProviderChoices.Single(item => item.Choice == ProviderConnectionChoice.Claude);
             var provider = window.FindControl<ComboBox>("ManualProviderBox")!;
@@ -180,10 +190,15 @@ public sealed class UiRequirementsTests
             percent.Text = "37";
             reset.Text = string.Empty;
 
-            var language = window.FindControl<ComboBox>("LanguageBox")!;
-            language.SelectedItem = "日本語";
-            await Task.Delay(50);
+            window.FindControl<ComboBox>("LanguageBox")!.SelectedItem = "日本語";
+            await WaitForAsync(async () => (await store.LoadAsync()).Language == "Japanese");
+            var savedSettings = await store.LoadAsync();
 
+            Assert.Equal(UiLanguage.Japanese, viewModel.Language);
+            Assert.Equal(githubClientId, githubClientIdBox.Text);
+            Assert.Equal(githubClientId, viewModel.Settings.GithubOAuthClientId);
+            Assert.Equal(githubClientId, savedSettings.GithubOAuthClientId);
+            Assert.Equal("Japanese", savedSettings.Language);
             Assert.Equal(ProviderKind.Claude, Assert.IsType<LocalizedChoice<ProviderKind>>(provider.SelectedItem).Value);
             Assert.Equal<QuotaWindowKind>(QuotaWindowKind.Monthly, ((LocalizedChoice<QuotaWindowKind>)quotaWindow.SelectedItem!).Value);
             Assert.Equal("Claude account", account.Text);
@@ -192,13 +207,65 @@ public sealed class UiRequirementsTests
 
             var addAccount = window.GetVisualDescendants().OfType<Button>().Single(button => button.Content?.ToString() == window.ViewModel.CopyText.AddAccount);
             addAccount.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await Task.Delay(50);
+            await WaitForAsync(() => Task.FromResult(window.ViewModel.History.Entries.Any(entry => entry.Account == "Claude account")));
             var saved = Assert.Single(window.ViewModel.History.Entries, entry => entry.Account == "Claude account");
             Assert.Equal("Claude", saved.Provider);
             Assert.Equal("Monthly", saved.Window);
-            window.Close();
         }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        finally
+        {
+            window?.Close();
+            if (viewModel is not null) viewModel.Dispose();
+            else history?.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Github_client_id_same_value_text_change_does_not_mutate_but_changed_input_persists()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        MainWindow? window = null;
+        MainViewModel? viewModel = null;
+        try
+        {
+            var store = new AppSettingsStore(root);
+            const string originalClientId = "github-client-original";
+            store.Save(new AppSettingsDto(GithubOAuthClientId: originalClientId));
+            var viewModelFactory = new RecordingGithubClientFactory();
+            var facadeFactory = new RecordingGithubClientFactory();
+            viewModel = new MainViewModel(new EmptyDashboardSource(), settingsStore: store, githubFactory: viewModelFactory);
+            window = new MainWindow(viewModel, new UiProviderFacade(githubFactory: facadeFactory));
+            window.Show();
+            await window.InitializeAsync();
+
+            var clientIdBox = window.FindControl<TextBox>("GithubClientIdBox")!;
+            Assert.Equal(1, viewModelFactory.CreateCount);
+            Assert.Equal(0, facadeFactory.CreateCount);
+
+            clientIdBox.Text = originalClientId;
+            await Task.Delay(50);
+
+            Assert.Equal(originalClientId, viewModel.Settings.GithubOAuthClientId);
+            Assert.Equal(1, viewModelFactory.CreateCount);
+            Assert.Equal(0, facadeFactory.CreateCount);
+
+            const string changedClientId = "github-client-changed";
+            clientIdBox.Text = $"  {changedClientId}  ";
+            await WaitForAsync(async () =>
+                (await store.LoadAsync()).GithubOAuthClientId == changedClientId
+                && facadeFactory.CreateCount == 1);
+
+            Assert.Equal(changedClientId, viewModel.Settings.GithubOAuthClientId);
+            Assert.Equal(2, viewModelFactory.CreateCount);
+            Assert.Equal(1, facadeFactory.CreateCount);
+        }
+        finally
+        {
+            window?.Close();
+            viewModel?.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     [Fact]
@@ -510,6 +577,15 @@ public sealed class UiRequirementsTests
         window.Close();
     }
 
+    private static async Task WaitForAsync(Func<Task<bool>> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!await condition())
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
     private static QuotaSnapshot DemoSnapshot(decimal percent) => new(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1)), percent, 100, null, "percent", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, DateTimeOffset.UtcNow.AddDays(1), "ChatGPT Plus");
 
     private sealed class RecordingClipboard : IClipboardService
@@ -517,6 +593,16 @@ public sealed class UiRequirementsTests
         public string? LastText { get; private set; }
         public int CopyCount { get; private set; }
         public Task SetTextAsync(string text) { CopyCount++; LastText = text; return Task.CompletedTask; }
+    }
+
+    private sealed class RecordingGithubClientFactory : IGitHubClientFactory
+    {
+        public int CreateCount { get; private set; }
+        public GitHubDeviceFlowClient Create(string clientId)
+        {
+            CreateCount++;
+            return new GitHubDeviceFlowClient(new HttpClient(), clientId);
+        }
     }
 
     private sealed class BlockingRefreshApplication : IQuotaApplication
