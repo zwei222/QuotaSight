@@ -1,8 +1,10 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Automation;
 using Avalonia.Interactivity;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
+
 using Avalonia.VisualTree;
 
 using QuotaSight.Core;
@@ -48,6 +50,126 @@ public sealed class UiRequirementsTests
         var exception = Record.Exception(() => noClipboardWindow.FindControl<Button>("CodexCopyButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
         Assert.Null(exception);
         noClipboardWindow.Close();
+    }
+
+    [AvaloniaFact]
+    public void Primary_action_buttons_use_matching_vector_icons_localized_tooltips_and_automation_names()
+    {
+        var main = new MainWindow(new MainViewModel(new EmptyDashboardSource()));
+        var compact = new CompactQuotaWindow(new MainViewModel(new EmptyDashboardSource()));
+        try
+        {
+            main.Show();
+            compact.Show();
+            main.UpdateLayout();
+            compact.UpdateLayout();
+
+            var mainRefresh = main.FindControl<Button>("RefreshButton")!;
+            var compactRefresh = compact.FindControl<Button>("CompactRefreshButton")!;
+            var addProvider = main.FindControl<Button>("AddProviderButton")!;
+
+            Assert.IsType<PathIcon>(mainRefresh.Content);
+            Assert.IsType<PathIcon>(compactRefresh.Content);
+            Assert.IsType<PathIcon>(addProvider.Content);
+            Assert.Equal(((PathIcon)mainRefresh.Content).Data?.ToString(), ((PathIcon)compactRefresh.Content).Data?.ToString());
+            Assert.Equal(main.ViewModel.CopyText.Refresh, ToolTip.GetTip(mainRefresh));
+            Assert.Equal(main.ViewModel.CopyText.Refresh, AutomationProperties.GetName(mainRefresh));
+            Assert.Equal(compact.ViewModel.CopyText.Refresh, ToolTip.GetTip(compactRefresh));
+            Assert.Equal(compact.ViewModel.CopyText.Refresh, AutomationProperties.GetName(compactRefresh));
+            Assert.Equal(main.ViewModel.CopyText.AddProvider, ToolTip.GetTip(addProvider));
+            Assert.Equal(main.ViewModel.CopyText.AddProvider, AutomationProperties.GetName(addProvider));
+
+            main.ViewModel.Language = UiLanguage.Japanese;
+            compact.ViewModel.Language = UiLanguage.Japanese;
+            main.UpdateLayout();
+            compact.UpdateLayout();
+
+            Assert.Equal("更新", ToolTip.GetTip(mainRefresh));
+            Assert.Equal("更新", AutomationProperties.GetName(mainRefresh));
+            Assert.Equal("更新", ToolTip.GetTip(compactRefresh));
+            Assert.Equal("更新", AutomationProperties.GetName(compactRefresh));
+            Assert.Equal(main.ViewModel.CopyText.AddProvider, ToolTip.GetTip(addProvider));
+            Assert.Equal(main.ViewModel.CopyText.AddProvider, AutomationProperties.GetName(addProvider));
+        }
+        finally
+        {
+            compact.Close();
+            compact.ViewModel.Dispose();
+            main.Close();
+            main.ViewModel.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void Icon_actions_keep_the_path_icon_readable_across_theme_and_interaction_states()
+    {
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource())) { Width = 420 };
+        try
+        {
+            window.Show();
+            var refresh = window.FindControl<Button>("RefreshButton")!;
+            var icon = Assert.IsType<PathIcon>(refresh.Content);
+
+            foreach (var theme in new[] { ThemeMode.Light, ThemeMode.Dark })
+            {
+                UiSettings.ApplyTheme(theme);
+                GetPseudoClasses(refresh).Remove(":pressed");
+                window.UpdateLayout();
+                AssertBrushColor(refresh.Background, "#00FFFFFF");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+
+                GetPseudoClasses(refresh).Add(":pointerover");
+                window.UpdateLayout();
+                AssertBrushColor(refresh.Background, theme == ThemeMode.Light ? "#E8EEFF" : "#242B48");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+                GetPseudoClasses(refresh).Remove(":pointerover");
+
+                GetPseudoClasses(refresh).Add(":focus-visible");
+                window.UpdateLayout();
+                AssertBrushColor(refresh.BorderBrush, theme == ThemeMode.Light ? "#405DE6" : "#AAB8FF");
+                GetPseudoClasses(refresh).Remove(":focus-visible");
+
+                GetPseudoClasses(refresh).Add(":pressed");
+                window.UpdateLayout();
+                AssertBrushColor(refresh.Background, theme == ThemeMode.Light ? "#405DE6" : "#AAB8FF");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#F8FAFC" : "#0F131B");
+                GetPseudoClasses(refresh).Remove(":pressed");
+
+                refresh.IsEnabled = false;
+                window.UpdateLayout();
+                Assert.Equal(0.5, refresh.Opacity);
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+                refresh.IsEnabled = true;
+            }
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void Compact_width_keeps_header_and_add_provider_actions_from_overlapping_copy()
+    {
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource())) { Width = 420 };
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var headerCopy = window.FindControl<StackPanel>("DashboardHeaderCopy")!;
+            var refresh = window.FindControl<Button>("RefreshButton")!;
+            var addProvider = window.FindControl<Button>("AddProviderButton")!;
+            var usageHeading = window.GetVisualDescendants().OfType<TextBlock>().Single(text => text.Text == window.ViewModel.CopyText.UsageOverview);
+
+            Assert.False(headerCopy.Bounds.Intersects(refresh.Bounds));
+            Assert.False(usageHeading.Bounds.Intersects(addProvider.Bounds));
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
     }
 
     [AvaloniaFact]
@@ -547,6 +669,7 @@ public sealed class UiRequirementsTests
         Assert.Contains("Stale", english.Windows.Single().FreshnessText);
     }
 
+
     [AvaloniaFact]
     public void Rendered_progress_bars_use_the_four_semantic_theme_fills()
     {
@@ -587,6 +710,14 @@ public sealed class UiRequirementsTests
     }
 
     private static QuotaSnapshot DemoSnapshot(decimal percent) => new(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1)), percent, 100, null, "percent", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, DateTimeOffset.UtcNow.AddDays(1), "ChatGPT Plus");
+
+    private static void AssertBrushColor(IBrush? actual, string expected)
+    {
+        Assert.Equal(Color.Parse(expected), Assert.IsAssignableFrom<ISolidColorBrush>(actual).Color);
+    }
+
+    private static IPseudoClasses GetPseudoClasses(Control control) =>
+        (IPseudoClasses)control.GetType().GetProperty("PseudoClasses", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(control)!;
 
     private sealed class RecordingClipboard : IClipboardService
     {

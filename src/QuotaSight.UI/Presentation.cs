@@ -138,7 +138,12 @@ public static class DashboardAggregation
             if (group.Key.Provider == ProviderKind.ChatGpt && representative?.Source != QuotaSource.Manual)
                 name = new UiCopy(language).ProviderName(group.Key.Provider);
             var card = new ProviderCardViewModel(group.Key.Provider, name, group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? (japanese ? "更新できませんでした" : "Stale · refresh failed") : (japanese ? "接続済み" : "Connected"), false,
-                windows.OrderByDescending(s => s.EffectivePercent ?? decimal.MinValue).Select(s => QuotaPresentationFormatter.Format(s, now, language)).ToList());
+                windows.OrderBy(s => s.Window.End - s.Window.Start)
+                    .ThenBy(s => s.Window.Start)
+                    .ThenBy(s => s.Window.End)
+                    .ThenBy(s => s.Window.Kind)
+                    .ThenBy(s => s.Metric, StringComparer.Ordinal)
+                    .Select(s => QuotaPresentationFormatter.Format(s, now, language)).ToList());
             return (card, percent: representative?.EffectivePercent ?? decimal.MinValue);
         }).OrderByDescending(item => item.percent).Select(item => item.card).ToList();
     }

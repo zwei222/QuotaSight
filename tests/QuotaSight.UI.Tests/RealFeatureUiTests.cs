@@ -91,7 +91,24 @@ public sealed class RealFeatureTests
     public void Thirty_day_aggregation_deduplicates_account_and_keeps_multiple_windows()
     {
         var now = DateTimeOffset.UtcNow; var snapshots = new[] { Snapshot(40), Snapshot(90) with { Window = new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)) } };
-        var cards = DashboardAggregation.ToCards(snapshots, now); Assert.Single(cards); Assert.Equal(2, cards[0].Windows.Count); Assert.Equal("Monthly", cards[0].Windows[0].WindowName);
+        var cards = DashboardAggregation.ToCards(snapshots, now); Assert.Single(cards); Assert.Equal(2, cards[0].Windows.Count); Assert.Equal("Rolling", cards[0].Windows[0].WindowName);
+    }
+
+    [Fact]
+    public void Dashboard_windows_are_ordered_by_actual_period_then_deterministic_window_key()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var snapshots = new[]
+        {
+            Snapshot(95) with { Metric = "Monthly metric", Window = new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)) },
+            Snapshot(20) with { Metric = "Rolling metric", Window = new(QuotaWindowKind.Rolling, now.AddHours(-12), now.AddHours(12)) },
+            Snapshot(40) with { Metric = "Custom metric", Window = new(QuotaWindowKind.Custom, now.AddDays(-2), now.AddDays(-1)) },
+            Snapshot(60) with { Metric = "Daily metric", Window = new(QuotaWindowKind.Daily, now.AddDays(-1), now.AddDays(29)) },
+        };
+
+        var rows = Assert.Single(DashboardAggregation.ToCards(snapshots, now)).Windows;
+
+        Assert.Equal(["Custom metric", "Rolling metric", "Daily metric", "Monthly metric"], rows.Select(row => row.Metric));
     }
 
     [Fact]
