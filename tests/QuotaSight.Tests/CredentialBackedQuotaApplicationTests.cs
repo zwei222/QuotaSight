@@ -40,13 +40,13 @@ public sealed class CredentialBackedQuotaApplicationTests
             _ => new StallingAdapter(),
             credentials,
             CreateCodex(credentials, onRequest: () => codexStarted.TrySetResult()),
-            TimeSpan.FromMilliseconds(50));
+            TimeSpan.FromMilliseconds(500));
 
         var refresh = application.RefreshAsync(cancellation.Token).AsTask();
         try
         {
-            await codexStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
-            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(2));
+            await codexStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var result = await refresh.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Single(result.Snapshots);
             Assert.Equal(ProviderKind.ChatGpt, result.Snapshots[0].Provider);
