@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../QuotaSight.Core/QuotaSight.Core.csproj" /><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /></ItemGroup></Project>

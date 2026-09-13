@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><PublishAot>true</PublishAot>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.12" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+  </ItemGroup>
+  <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
+  <ItemGroup><AvaloniaResource Include="Assets/quotasight-tray.svg" /><AvaloniaResource Include="Assets/quotasight-tray.png" /></ItemGroup>
+</Project>

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore QuotaSight.slnx
+      - name: Format verification
+        run: dotnet format QuotaSight.slnx --verify-no-changes --no-restore
+      - name: Build Release
+        run: dotnet build QuotaSight.slnx --configuration Release --no-restore
+      - name: Test Release
+        run: dotnet test QuotaSight.slnx --configuration Release --no-build --no-restore
