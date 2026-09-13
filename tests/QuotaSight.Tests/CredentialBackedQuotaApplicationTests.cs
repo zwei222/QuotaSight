@@ -9,27 +9,23 @@ namespace QuotaSight.Tests;
 public sealed class CredentialBackedQuotaApplicationTests
 {
     [Fact]
-    public async Task Refresh_without_opencode_key_returns_codex_snapshot_and_appends_once()
+    public async Task Refresh_without_opencode_key_returns_codex_snapshot()
     {
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
         var codex = new CodexSessionManager(
             new CodexOAuthClient(new HttpClient(new Handler(_ => Json("{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1788696000,\"limit_window_seconds\":18000}}}"))), credentials),
             new HttpClient(new Handler(_ => Json("{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1788696000,\"limit_window_seconds\":18000}}}"))));
-        var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => throw new Xunit.Sdk.XunitException("OpenCode adapter must not be called"),
             credentials,
-            history,
-            codexSessionManager: codex);
+            codex);
 
         var result = await application.RefreshAsync(default);
 
         Assert.Single(result.Snapshots);
         Assert.Equal(ProviderKind.ChatGpt, result.Snapshots[0].Provider);
         Assert.Empty(result.Failures);
-        Assert.Equal(1, history.AppendCount);
-        Assert.Single(history.LastSnapshots!);
     }
 
     [Fact]
@@ -40,12 +36,9 @@ public sealed class CredentialBackedQuotaApplicationTests
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
-        var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => new StallingAdapter(),
             credentials,
-            history,
-            null,
             CreateCodex(credentials, onRequest: () => codexStarted.TrySetResult()),
             TimeSpan.FromMilliseconds(50));
 
@@ -60,7 +53,6 @@ public sealed class CredentialBackedQuotaApplicationTests
             var failure = Assert.Single(result.Failures);
             Assert.Equal(ProviderKind.OpenCode, failure.Provider);
             Assert.Equal(FetchStatus.TransientFailure, failure.Status);
-            Assert.Equal(1, history.AppendCount);
         }
         finally
         {
@@ -75,15 +67,12 @@ public sealed class CredentialBackedQuotaApplicationTests
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
-        var history = new RecordingHistory();
         var codex = new CodexSessionManager(
             new CodexOAuthClient(new HttpClient(new Handler(_ => new HttpResponseMessage(HttpStatusCode.OK))), credentials),
             new HttpClient(new BlockingHandler()));
         var application = new CredentialBackedQuotaApplication(
             _ => new FixedAdapter(OpenCodeSnapshot()),
             credentials,
-            history,
-            null,
             codex,
             TimeSpan.FromMilliseconds(50));
 
@@ -94,29 +83,23 @@ public sealed class CredentialBackedQuotaApplicationTests
         var failure = Assert.Single(result.Failures);
         Assert.Equal(ProviderKind.ChatGpt, failure.Provider);
         Assert.Equal(FetchStatus.TransientFailure, failure.Status);
-        Assert.Equal(1, history.AppendCount);
     }
 
     [Fact]
-    public async Task Refresh_merges_successful_sources_and_appends_once()
+    public async Task Refresh_merges_successful_sources()
     {
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
-        var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => new FixedAdapter(OpenCodeSnapshot()),
             credentials,
-            history,
-            null,
             CreateCodex(credentials));
 
         var result = await application.RefreshAsync(default);
 
         Assert.Equal(2, result.Snapshots.Count);
         Assert.Empty(result.Failures);
-        Assert.Equal(1, history.AppendCount);
-        Assert.Equal(2, history.LastSnapshots!.Count);
     }
 
     [Fact]
@@ -125,12 +108,9 @@ public sealed class CredentialBackedQuotaApplicationTests
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
         await credentials.SetAsync(CodexOAuthClient.CredentialKey, "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}", default);
-        var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => new FixedAdapter(OpenCodeSnapshot()),
             credentials,
-            history,
-            null,
             CreateCodex(credentials, HttpStatusCode.Unauthorized));
 
         var result = await application.RefreshAsync(default);
@@ -139,7 +119,6 @@ public sealed class CredentialBackedQuotaApplicationTests
         Assert.Equal(ProviderKind.OpenCode, result.Snapshots[0].Provider);
         Assert.Single(result.Failures);
         Assert.Equal(FetchStatus.Unauthorized, result.Failures[0].Status);
-        Assert.Equal(1, history.AppendCount);
     }
 
     [Theory]
@@ -154,8 +133,7 @@ public sealed class CredentialBackedQuotaApplicationTests
         var application = new CredentialBackedQuotaApplication(
             _ => throw new Xunit.Sdk.XunitException("OpenCode adapter must not be called"),
             credentials,
-            new RecordingHistory(),
-            codexSessionManager: CreateCodex(credentials, status));
+            CreateCodex(credentials, status));
 
         var result = await application.RefreshAsync(default);
 
@@ -168,16 +146,14 @@ public sealed class CredentialBackedQuotaApplicationTests
     }
 
     [Fact]
-    public async Task Refresh_does_not_append_when_both_sources_are_empty()
+    public async Task Refresh_returns_empty_result_when_both_sources_are_empty()
     {
-        var history = new RecordingHistory();
-        var application = new CredentialBackedQuotaApplication(_ => new FixedAdapter(), new InMemoryCredentialStore(), history);
+        var application = new CredentialBackedQuotaApplication(_ => new FixedAdapter(), new InMemoryCredentialStore());
 
         var result = await application.RefreshAsync(default);
 
         Assert.Empty(result.Snapshots);
         Assert.Empty(result.Failures);
-        Assert.Equal(0, history.AppendCount);
     }
 
     [Fact]
@@ -186,11 +162,9 @@ public sealed class CredentialBackedQuotaApplicationTests
         using var cancellation = new CancellationTokenSource();
         var credentials = new InMemoryCredentialStore();
         await credentials.SetAsync("OpenCode Go", "open-code-key", default);
-        var history = new RecordingHistory();
         var application = new CredentialBackedQuotaApplication(
             _ => new CancellableAdapter(cancellation.Token),
-            credentials,
-            history);
+            credentials);
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => application.RefreshAsync(cancellation.Token).AsTask());
@@ -260,19 +234,5 @@ public sealed class CredentialBackedQuotaApplicationTests
     {
         public ProviderKind Provider => ProviderKind.OpenCode;
         public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken _) => ValueTask.FromCanceled<FetchResult<IReadOnlyList<QuotaSnapshot>>>(token);
-    }
-
-    private sealed class RecordingHistory : IQuotaHistory
-    {
-        public int AppendCount { get; private set; }
-        public IReadOnlyList<QuotaSnapshot>? LastSnapshots { get; private set; }
-        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) { AppendCount++; LastSnapshots = snapshots; return ValueTask.CompletedTask; }
-        public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]);
-        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]);
-        public ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask PruneAsync(DateOnly before, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask DeleteAsync(DateOnly? day, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask ExportJsonAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 }

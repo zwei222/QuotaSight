@@ -30,11 +30,55 @@ public sealed class ResidentModeVisualTests
             window.ApplyTrayAvailability(false, compact);
 
             Assert.True(window.IsVisible);
+            Assert.Equal(WindowState.Normal, window.WindowState);
             Assert.False(compact.IsVisible);
             Assert.False(window.TrayAvailable);
             Assert.False(window.EffectiveResidentMode);
         }
         finally { compact.Close(); window.Close(); vm.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Host_loss_preserves_an_already_visible_minimized_window()
+    {
+        var vm = new MainViewModel(new EmptyDashboardSource());
+        var window = new MainWindow(vm);
+        var compact = new CompactQuotaWindow(vm);
+        try
+        {
+            window.Show();
+            window.SetTrayCapability(true);
+            window.SyncResidentMode(true);
+            window.WindowState = WindowState.Minimized;
+            compact.Show();
+
+            window.ApplyTrayAvailability(false, compact);
+
+            Assert.True(window.IsVisible);
+            Assert.Equal(WindowState.Minimized, window.WindowState);
+        }
+        finally { compact.Close(); window.Close(); vm.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Fallback_does_not_activate_or_change_existing_window_state_but_full_show_does()
+    {
+        var vm = new MainViewModel(new EmptyDashboardSource());
+        var window = new MainWindow(vm);
+        try
+        {
+            window.ShowActivated = true;
+            window.Show();
+            window.WindowState = WindowState.Minimized;
+            window.ShowFallbackWindow();
+            Assert.True(window.ShowActivated);
+            Assert.Equal(WindowState.Minimized, window.WindowState);
+
+            window.ShowFullWindow();
+            Assert.True(window.ShowActivated);
+            Assert.Equal(WindowState.Normal, window.WindowState);
+        }
+        finally { window.Close(); vm.Dispose(); }
     }
 
     [AvaloniaFact]

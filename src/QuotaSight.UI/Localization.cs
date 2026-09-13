@@ -59,6 +59,8 @@ public sealed class UiCopy
     public string ExportJson => "Export JSON";
     public string DeleteAll => IsJapanese ? "すべて削除" : "Delete all";
     public string UsageTrend => IsJapanese ? "使用状況の推移" : "Usage trend";
+    public string HistoryPrevious => IsJapanese ? "前へ" : "Previous";
+    public string HistoryNext => IsJapanese ? "次へ" : "Next";
     public string Delete => IsJapanese ? "削除" : "Delete";
     public string HistoryNotificationTitle => History;
     public string HistoryDeleteFailure => IsJapanese ? "この履歴を削除できませんでした。" : "Unable to delete this history entry.";

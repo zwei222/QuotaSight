@@ -74,12 +74,97 @@ public sealed class PresentationTests
     }
 
     [Fact]
-    public void History_delete_all_is_explicitly_available()
+    public async Task History_delete_all_is_explicitly_available()
     {
-        var history = new HistoryState();
-        history.DeleteAll();
+        using var history = new HistoryState(uiDispatcher: new ImmediateUiDispatcher());
+        await history.DeleteAllAsync();
         Assert.Empty(history.Entries);
     }
+
+    [Fact]
+    public async Task History_pages_limit_display_but_export_all_filtered_entries()
+    {
+        var source = new InMemoryQuotaHistory(Enumerable.Range(0, 500).Select(index => HistorySnapshot(index % 2 == 0 ? "Personal" : "Work", index)).ToList());
+        using var history = new HistoryState(source, new ImmediateUiDispatcher());
+        await history.InitializeAsync();
+
+        Assert.Equal(50, history.DisplayedEntries.Count);
+        Assert.Equal(10, history.PageCount);
+        Assert.True(history.HasNextPage);
+        history.NextPage();
+        await history.WaitForPublishedAsync();
+        Assert.Equal(50, history.DisplayedEntries.Count);
+        Assert.Equal(history.Entries[50].Id, history.DisplayedEntries[0].Id);
+        var csv = await history.ExportCsvAsync();
+        Assert.Equal(500, csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length - 1);
+
+        history.AccountFilter = "Personal";
+        await history.WaitForPublishedAsync();
+        Assert.Equal(0, history.CurrentPage);
+        Assert.Equal(250, history.FilteredEntries.Count);
+        Assert.True(history.HasNextPage);
+        history.NextPage();
+        history.NextPage();
+        history.NextPage();
+        history.NextPage();
+        await history.WaitForPublishedAsync();
+        Assert.True(await history.DeleteAsync(history.DisplayedEntries[^1].Id));
+        Assert.Equal(4, history.CurrentPage);
+    }
+
+    [Fact]
+    public async Task Sparkline_is_sampled_with_fixed_limit_and_keeps_temporal_endpoints()
+    {
+        var source = new InMemoryQuotaHistory(Enumerable.Range(0, 500).Select(index => HistorySnapshot("Personal", index)).ToList());
+        using var history = new HistoryState(source, new ImmediateUiDispatcher());
+        await history.InitializeAsync();
+
+        Assert.InRange(history.SparklinePoints.Count, 2, HistoryState.SparklineLimit);
+        Assert.Equal(0, history.SparklinePoints[0]);
+        Assert.Equal(499, history.SparklinePoints[^1]);
+    }
+
+    [Fact]
+    public async Task Sparkline_orders_reverse_input_filters_nulls_and_handles_empty_and_single_values()
+    {
+        var source = new InMemoryQuotaHistory([
+            HistorySnapshot("Account", null, Now.AddMinutes(2)),
+            HistorySnapshot("Account", 20, Now.AddMinutes(1)),
+            HistorySnapshot("Account", 10, Now)
+        ]);
+        using var history = new HistoryState(source, new ImmediateUiDispatcher());
+        await history.InitializeAsync();
+
+        Assert.Equal([10d, 20d], history.SparklinePoints);
+        var filtered = history.FilteredEntries;
+        var sparkline = history.SparklinePoints;
+        Assert.Same(filtered, history.FilteredEntries);
+        Assert.Same(sparkline, history.SparklinePoints);
+        await history.DeleteAllAsync();
+        Assert.Empty(history.SparklinePoints);
+        await history.AppendAndReloadAsync([HistorySnapshot("Account", 42, Now)]);
+        Assert.Equal([42d], history.SparklinePoints);
+    }
+
+    [Fact]
+    public async Task History_delete_normalizes_page_after_collection_shrinks()
+    {
+        var source = new InMemoryQuotaHistory(Enumerable.Range(0, 101).Select(index => HistorySnapshot("Account", index)).ToList());
+        using var history = new HistoryState(source, new ImmediateUiDispatcher());
+        await history.InitializeAsync();
+
+        history.NextPage();
+        history.NextPage();
+        await history.WaitForPublishedAsync();
+        Assert.Equal(2, history.CurrentPage);
+        Assert.True(await history.DeleteAsync(history.Entries[^1].Id));
+
+        Assert.Equal(1, history.CurrentPage);
+        Assert.NotEmpty(history.DisplayedEntries);
+    }
+
+    private static QuotaSnapshot HistorySnapshot(string account, decimal? percent, DateTimeOffset? observed = null) => new(ProviderKind.ChatGpt, account, "Messages", new(QuotaWindowKind.Weekly, Now.AddDays(-1), Now.AddDays(6)), null, null, percent, "percent", observed ?? Now, observed ?? Now, QuotaSource.Manual, QuotaConfidence.Manual, null, "ChatGPT Plus");
+    private static QuotaSnapshot HistorySnapshot(string account, int index) => HistorySnapshot(account, index, Now.AddMinutes(index));
 
     [AvaloniaFact]
     public void Warning_foreground_meets_wcag_contrast_on_warning_background_in_light_and_dark_themes()

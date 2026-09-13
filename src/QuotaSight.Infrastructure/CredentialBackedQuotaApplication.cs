@@ -3,53 +3,24 @@ using QuotaSight.Core;
 
 namespace QuotaSight.Infrastructure;
 
+// Fetch-only: history persistence is owned by the UI's HistoryState storage lane so that
+// provider refreshes never write storage concurrently with history mutations.
 public sealed class CredentialBackedQuotaApplication : IQuotaApplication
 {
     private readonly Func<string, IQuotaAdapter> adapterFactory;
     private readonly ICredentialStore credentials;
-    private readonly IQuotaHistory history;
     private readonly CodexSessionManager? codexSessionManager;
     private readonly TimeSpan providerTimeout;
 
     public CredentialBackedQuotaApplication(
         Func<string, IQuotaAdapter> adapterFactory,
         ICredentialStore credentials,
-        IQuotaHistory history)
-        : this(adapterFactory, credentials, history, null, null)
-    {
-    }
-
-    public CredentialBackedQuotaApplication(
-        Func<string, IQuotaAdapter> adapterFactory,
-        ICredentialStore credentials,
-        IQuotaHistory history,
-        TimeProvider? timeProvider)
-        : this(adapterFactory, credentials, history, timeProvider, null)
-    {
-    }
-
-    public CredentialBackedQuotaApplication(
-        Func<string, IQuotaAdapter> adapterFactory,
-        ICredentialStore credentials,
-        IQuotaHistory history,
-        CodexSessionManager? codexSessionManager)
-        : this(adapterFactory, credentials, history, null, codexSessionManager)
-    {
-    }
-
-    public CredentialBackedQuotaApplication(
-        Func<string, IQuotaAdapter> adapterFactory,
-        ICredentialStore credentials,
-        IQuotaHistory history,
-        TimeProvider? timeProvider,
-        CodexSessionManager? codexSessionManager,
+        CodexSessionManager? codexSessionManager = null,
         TimeSpan? providerTimeout = null)
     {
         this.adapterFactory = adapterFactory;
         this.credentials = credentials;
-        this.history = history;
         this.codexSessionManager = codexSessionManager;
-        _ = timeProvider;
         this.providerTimeout = providerTimeout ?? TimeSpan.FromSeconds(30);
     }
 
@@ -63,9 +34,6 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
         var results = new[] { openCode, codex };
         var snapshots = results.SelectMany(result => result.Snapshots).ToArray();
         var failures = results.SelectMany(result => result.Failures).ToArray();
-        if (snapshots.Length == 0) return new(snapshots, failures);
-
-        await history.AppendAsync(snapshots, cancellationToken);
         return new(snapshots, failures);
     }
 

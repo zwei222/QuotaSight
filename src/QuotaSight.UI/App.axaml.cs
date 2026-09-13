@@ -177,7 +177,7 @@ public partial class App : Avalonia.Application
         var currentLifecycle = lifecycle ?? throw new InvalidOperationException("Lifecycle is not initialized.");
         refreshScheduler = new RefreshScheduler(() => TimeSpan.FromMinutes(window.ViewModel.Settings.RefreshMinutes));
         refreshLifetime = AppLifecycleCoordinator.CreateLinkedLifetime(currentLifecycle.CancellationToken);
-        refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshAsync(token)), refreshLifetime.Token).AsTask();
+        refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshAsync(RefreshOrigin.Scheduled, token)), refreshLifetime.Token).AsTask();
         currentLifecycle.Track(refreshTask);
     }
 

@@ -332,8 +332,7 @@ public sealed class ResidentModeTests
     {
         var history = new BlockingDeleteHistory();
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
-        var entry = new HistoryUiEntry(Guid.NewGuid(), "ChatGPT Plus", "Personal", "Weekly", 42, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual);
-        vm.History.Entries.Add(entry);
+        await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
         vm.Navigate(AppPage.History);
         var window = new MainWindow(vm);
         var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
@@ -436,7 +435,6 @@ public sealed class ResidentModeTests
         var destination = new BlockingExportDestination("text/csv");
         var vm = new MainViewModel(new EmptyDashboardSource());
         vm.Navigate(AppPage.History);
-        vm.History.Entries.Add(new HistoryUiEntry(Guid.NewGuid(), "ChatGPT Plus", "Personal", "Weekly", 42, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual));
         var window = new MainWindow(vm, new UiProviderFacade(), null, destination);
         var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
         window.OperationRunner = coordinator.Run;
@@ -477,7 +475,6 @@ public sealed class ResidentModeTests
         var destination = new BlockingExportDestination(contentType);
         var vm = new MainViewModel(new EmptyDashboardSource());
         vm.Navigate(AppPage.History);
-        vm.History.Entries.Add(new HistoryUiEntry(Guid.NewGuid(), "ChatGPT Plus", "Personal", "Weekly", 42, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual));
         var window = new MainWindow(vm, new UiProviderFacade(), null, destination);
         var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
         window.OperationRunner = coordinator.Run;
@@ -572,11 +569,12 @@ public sealed class ResidentModeTests
 
     private sealed class BlockingDeleteHistory : IQuotaHistory
     {
+        private readonly QuotaHistoryEntry seeded = new(Guid.NewGuid(), new QuotaSnapshot(ProviderKind.ChatGpt, "Personal", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(6)), null, null, 42, "percent", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, null, "ChatGPT Plus"));
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]);
-        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]);
+        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>(day == DateOnly.FromDateTime(DateTime.UtcNow) ? [seeded] : []);
         public async ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken)
         {
             Started.TrySetResult();

@@ -43,33 +43,76 @@ public sealed class TrayAvailabilityTests
     }
 
     [Fact]
-    public async Task Monitor_reports_owner_loss_and_cancels_cleanly()
+    public async Task Monitor_ignores_single_owner_loss_and_cancels_cleanly()
     {
         var values = new Queue<bool>([true, false]);
         var changes = new List<bool>();
+        var firstChange = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancel = new CancellationTokenSource();
-        var monitor = new LinuxStatusNotifierMonitor(() => Task.FromResult(values.Dequeue()), changes.Add, TimeSpan.FromMilliseconds(1));
+        var monitor = new LinuxStatusNotifierMonitor(() => Task.FromResult(values.Dequeue()), value => { changes.Add(value); firstChange.TrySetResult(); }, TimeSpan.FromMilliseconds(1));
 
         var running = monitor.RunAsync(cancel.Token);
-        while (changes.Count < 2) await Task.Delay(1);
+        await firstChange.Task.WaitAsync(TimeSpan.FromSeconds(2));
         cancel.Cancel();
         await running;
 
-        Assert.Equal([true, false], changes);
+        Assert.Equal([true], changes);
     }
 
     [Fact]
-    public async Task Monitor_treats_host_probe_failure_as_unavailable()
+    public async Task Monitor_reports_unavailable_only_on_third_failure_and_recovers_after_success()
     {
         var changes = new List<bool>();
+        var probes = new[] { true, false, false, false, true };
+        var probeCount = 0;
+        var thirdFailure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancel = new CancellationTokenSource();
-        var monitor = new LinuxStatusNotifierMonitor(() => throw new InvalidOperationException(), changes.Add, TimeSpan.FromMilliseconds(1));
+        var monitor = new LinuxStatusNotifierMonitor(() =>
+        {
+            var value = probes[Interlocked.Increment(ref probeCount) - 1];
+            if (value && probeCount == 5)
+            {
+                recoveryGate.Task.GetAwaiter().GetResult();
+                recovered.TrySetResult();
+            }
+            return Task.FromResult(value);
+        }, value => { changes.Add(value); if (!value) thirdFailure.TrySetResult(); }, TimeSpan.FromMilliseconds(1));
 
         var running = monitor.RunAsync(cancel.Token);
-        while (changes.Count == 0) await Task.Delay(1);
+        await thirdFailure.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal([true, false], changes);
+        recoveryGate.TrySetResult();
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
         cancel.Cancel();
         await running;
 
-        Assert.Equal([false], changes);
+        Assert.Equal([true, false, true], changes);
+    }
+
+    [Fact]
+    public async Task Monitor_does_not_publish_unavailable_after_one_or_two_failures()
+    {
+        var changes = new List<bool>();
+        var secondFailure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+        using var cancel = new CancellationTokenSource();
+        var monitor = new LinuxStatusNotifierMonitor(() =>
+        {
+            var probe = Interlocked.Increment(ref count);
+            if (probe == 3) secondFailure.TrySetResult();
+            // A fourth probe would be a third consecutive failure; park it on a task that only
+            // cancellation resolves so the test deterministically observes exactly two failures.
+            if (probe >= 4) return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+            return Task.FromResult(probe == 1);
+        }, changes.Add, TimeSpan.FromMilliseconds(1));
+
+        var running = monitor.RunAsync(cancel.Token);
+        await secondFailure.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancel.Cancel();
+        await running.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal([true], changes);
     }
 }

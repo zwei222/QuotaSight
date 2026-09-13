@@ -344,6 +344,8 @@ public partial class MainWindow : Window
     }
     private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.AccountFilter = choice.Value; }
     private void HistoryWindowFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.WindowFilter = choice.Value; }
+    private void HistoryPreviousClick(object? sender, RoutedEventArgs e) => ViewModel.History.PreviousPage();
+    private void HistoryNextClick(object? sender, RoutedEventArgs e) => ViewModel.History.NextPage();
     private async void AddManualClick(object? sender, RoutedEventArgs e)
     {
         var providerBox = this.FindControl<ComboBox>("ManualProviderBox");
@@ -520,19 +522,22 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) { }
     }
-    private async void ExportCsvClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.csv", "text/csv", ViewModel.History.ExportCsv());
-    private async void ExportJsonClick(object? sender, RoutedEventArgs e) => await ExportAsync("quotasight-history.json", "application/json", ViewModel.History.ExportJson());
-    private async Task ExportAsync(string suggestedName, string contentType, string content)
+    private async void ExportCsvClick(object? sender, RoutedEventArgs e) => await ExportLatestAsync("quotasight-history.csv", "text/csv", ViewModel.History.ExportCsvAsync);
+    private async void ExportJsonClick(object? sender, RoutedEventArgs e) => await ExportLatestAsync("quotasight-history.json", "application/json", ViewModel.History.ExportJsonAsync);
+    private async Task ExportLatestAsync(string suggestedName, string contentType, Func<CancellationToken, Task<string>> contentFactory)
     {
         try
         {
+            string? content = null;
+            await RunTrackedAsync(async token => content = await contentFactory(token));
+            if (content is null) return;
+            // The OS save dialog cannot be cancelled, so it must stay outside tracked work: app
+            // exit never waits on it, and a late result runs into a no-op tracked operation, so
+            // it can neither write nor notify after cleanup.
             var file = await exportDestination.PickAsync(suggestedName, contentType);
             if (file is null) return;
             await RunTrackedAsync(async token =>
             {
-                // Avalonia IStorageFile.OpenWriteAsync() has no cancellation token overload;
-                // the tracked token is plumbed through write and flush so exit cancellation
-                // completes the operation promptly after the stream is opened.
                 await using var stream = await file.OpenWriteAsync();
                 await using var writer = new StreamWriter(stream);
                 await writer.WriteAsync(content.AsMemory(), token);
@@ -540,7 +545,7 @@ public partial class MainWindow : Window
             });
         }
         catch (OperationCanceledException) { }
-        catch { }
+        catch (Exception exception) { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, exception.Message); }
     }
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
@@ -568,12 +573,28 @@ public partial class MainWindow : Window
         if (!available && persistedResidentMode && !IsVisible)
         {
             compact.Hide();
-            ShowFullWindow();
+            ShowFallbackWindow();
         }
     }
     public bool EffectiveResidentMode => effectiveResidentMode;
     public void SetExiting() => effectiveResidentMode = false;
-    public void ShowFullWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
+    public void ShowFullWindow()
+    {
+        ShowActivated = true;
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+    public void ShowFallbackWindow()
+    {
+        var previousShowActivated = ShowActivated;
+        try
+        {
+            ShowActivated = false;
+            Show();
+        }
+        finally { ShowActivated = previousShowActivated; }
+    }
     public void ShutdownCleanup() => Close();
 
     private Task RunTrackedAsync(Func<CancellationToken, Task> operation) =>

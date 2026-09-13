@@ -79,7 +79,7 @@ public sealed class CodexUiTests
         Assert.Equal(FetchStatus.Unauthorized, (await manager.FetchAsync(default)).Status);
     }
 
-    [Fact]
+    [AvaloniaFact]
     public async Task CompositionRoot_wires_the_same_codex_session_into_ui_and_automatic_refresh()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -512,7 +512,7 @@ public sealed class CodexUiTests
             Confidence = QuotaConfidence.Manual
         };
         var history = new SnapshotHistory([oldAutomatic, newerManual]);
-        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: new SequencedRefreshApplication(new QuotaRefreshResult([], [])));
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: new SequencedRefreshApplication(new QuotaRefreshResult([], [])), uiDispatcher: new ImmediateUiDispatcher());
 
         await vm.InitializeAsync();
         await vm.RefreshAsync();

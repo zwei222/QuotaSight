@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Avalonia.Headless.XUnit;
+using Avalonia.Threading;
 using Xunit;
 using QuotaSight.Application;
 using QuotaSight.Core;
@@ -11,6 +13,40 @@ namespace QuotaSight.UI.Tests;
 
 public sealed class RealFeatureTests
 {
+    [AvaloniaFact]
+    public async Task Scheduled_refresh_publishes_nonempty_state_on_Avalonia_ui_thread_while_worker_fetches()
+    {
+        var application = new BlockingRefreshWithSnapshotApplication(Snapshot(85));
+        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
+        var sentinel = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refresh = Task.Run(() => viewModel.RefreshAsync(RefreshOrigin.Scheduled));
+        await application.Started.Task;
+
+        Dispatcher.UIThread.Post(() => sentinel.TrySetResult());
+        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        application.Release.TrySetResult(true);
+        await refresh;
+
+        Assert.True(application.WasCalledOffUiThread);
+        Assert.True(viewModel.HasCards);
+        Assert.NotEmpty(viewModel.Cards);
+        Assert.True(Dispatcher.UIThread.CheckAccess());
+    }
+
+    [Fact]
+    public async Task Scheduled_refresh_fetches_off_ui_thread_and_publishes_on_ui_thread_without_busy_state()
+    {
+        var dispatcher = new RecordingUiDispatcher();
+        var application = new ThreadRecordingRefreshApplication();
+        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: dispatcher);
+
+        await viewModel.RefreshAsync(RefreshOrigin.Scheduled);
+
+        Assert.False(application.WasCalledOnCapturedContext);
+        Assert.True(dispatcher.InvocationCount > 0);
+        Assert.False(viewModel.IsQuotaDataBusy);
+    }
+
     [Fact]
     public async Task OpenCode_success_stores_session_credential_and_delivers_snapshots()
     {
@@ -57,17 +93,17 @@ public sealed class RealFeatureTests
         try
         {
             using var history = new JsonlQuotaHistory(root);
-            var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history);
+            var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, uiDispatcher: new RecordingUiDispatcher());
             await vm.InitializeAsync();
             var manual = Snapshot(25) with { Provider = ProviderKind.ChatGpt, Account = "manual-account", DisplayName = "ChatGPT Plus", Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
             await vm.ApplyManualSnapshotAsync(manual);
             Assert.Contains(vm.History.Entries, entry => entry.Account == "manual-account");
-            Assert.Contains("manual-account", vm.History.ExportJson(), StringComparison.Ordinal);
+            Assert.Contains("manual-account", await vm.History.ExportJsonAsync(), StringComparison.Ordinal);
 
             var provider = Snapshot(75) with { Account = "provider-account", Source = QuotaSource.Official, Confidence = QuotaConfidence.Official };
             await vm.ApplyProviderSnapshotsAsync([provider]);
             Assert.Contains(vm.History.Entries, entry => entry.Account == "provider-account");
-            Assert.Contains("provider-account", vm.History.ExportCsv(), StringComparison.Ordinal);
+            Assert.Contains("provider-account", await vm.History.ExportCsvAsync(), StringComparison.Ordinal);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -124,15 +160,15 @@ public sealed class RealFeatureTests
                 Snapshot(75) with { Source = QuotaSource.Official, Confidence = QuotaConfidence.Official },
                 Snapshot(0) with { Used = null, Limit = null, Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual }
             ], default);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
             await viewModel.InitializeAsync();
 
-            using var json = JsonDocument.Parse(viewModel.History.ExportJson());
+            using var json = JsonDocument.Parse(await viewModel.History.ExportJsonAsync());
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Manual" && entry.GetProperty("confidence").GetString() == "Manual");
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Official" && entry.GetProperty("confidence").GetString() == "Official");
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("usedPercent").ValueKind == JsonValueKind.Null);
 
-            var csv = viewModel.History.ExportCsv();
+            var csv = await viewModel.History.ExportCsvAsync();
             Assert.StartsWith("Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n", csv, StringComparison.Ordinal);
             Assert.Contains(",Manual,Manual", csv, StringComparison.Ordinal);
             Assert.Contains(",Official,Official", csv, StringComparison.Ordinal);
@@ -149,7 +185,7 @@ public sealed class RealFeatureTests
         {
             using var history = new JsonlQuotaHistory(root);
             await history.AppendAsync([Snapshot(25)], default);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
 
             await viewModel.InitializeAsync();
 
@@ -172,7 +208,7 @@ public sealed class RealFeatureTests
             await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], default);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
 
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
             await viewModel.InitializeAsync();
             await viewModel.InitializeAsync();
 
@@ -194,7 +230,7 @@ public sealed class RealFeatureTests
             using var history = new JsonlQuotaHistory(root);
             var today = DateOnly.FromDateTime(now.UtcDateTime);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
-            var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
             vm.Language = UiLanguage.Japanese;
 
             await vm.InitializeAsync();
@@ -227,10 +263,10 @@ public sealed class RealFeatureTests
         {
             using var history = new JsonlQuotaHistory(root);
             await history.AppendAsync([Snapshot(25) with { Account = account }], default);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
             await viewModel.InitializeAsync();
 
-            var rows = ParseCsv(viewModel.History.ExportCsv());
+            var rows = ParseCsv(await viewModel.History.ExportCsvAsync());
 
             Assert.Equal(2, rows.Count);
             Assert.Equal(account, rows[1][1]);
@@ -308,7 +344,7 @@ public sealed class RealFeatureTests
     public async Task Quota_initialization_exposes_busy_copy_and_releases_after_history_load()
     {
         var history = new BlockingHistory();
-        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
+        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
 
         var initialization = viewModel.InitializeAsync();
         await history.Started.Task;
@@ -357,6 +393,40 @@ public sealed class RealFeatureTests
             await Release.Task.WaitAsync(cancellationToken);
             return new QuotaRefreshResult([], []);
         }
+    }
+
+    private sealed class BlockingRefreshWithSnapshotApplication(QuotaSnapshot snapshot) : IQuotaApplication
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool WasCalledOffUiThread { get; private set; }
+
+        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            WasCalledOffUiThread = !Dispatcher.UIThread.CheckAccess();
+            Started.TrySetResult(true);
+            await Release.Task.WaitAsync(cancellationToken);
+            return new QuotaRefreshResult([snapshot], []);
+        }
+    }
+
+    private sealed class ThreadRecordingRefreshApplication : IQuotaApplication
+    {
+        private readonly SynchronizationContext? context = SynchronizationContext.Current;
+        public bool WasCalledOnCapturedContext { get; private set; }
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            WasCalledOnCapturedContext = SynchronizationContext.Current == context;
+            return ValueTask.FromResult(new QuotaRefreshResult([], []));
+        }
+    }
+
+    private sealed class RecordingUiDispatcher : IUiDispatcher
+    {
+        public int InvocationCount { get; private set; }
+        public bool CheckAccess() => true;
+        public Task InvokeAsync(Action action) { InvocationCount++; action(); return Task.CompletedTask; }
+        public Task InvokeAsync(Func<Task> action) { InvocationCount++; return action(); }
     }
 
     private sealed class StubApplication(IReadOnlyList<QuotaSnapshot> result) : IQuotaApplication

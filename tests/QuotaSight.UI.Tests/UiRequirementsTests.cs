@@ -619,18 +619,41 @@ public sealed class UiRequirementsTests
     }
 
     [Fact]
-    public void History_window_display_localizes_without_changing_filter_or_export_identity()
+    public async Task History_window_display_localizes_without_changing_filter_or_export_identity()
     {
-        var history = new HistoryState();
+        using var history = new HistoryState(uiDispatcher: new ImmediateUiDispatcher());
         history.WindowFilter = "Weekly";
         history.SetLanguage(UiLanguage.Japanese);
+        await history.WaitForPublishedAsync();
 
-        Assert.All(history.Entries, entry => Assert.Equal("週次", entry.WindowDisplay));
+        Assert.NotEmpty(history.FilteredEntries);
+        Assert.All(history.FilteredEntries, entry => Assert.Equal("週次", entry.WindowDisplay));
         Assert.Equal("Weekly", history.WindowFilter);
-        Assert.Contains("Weekly", history.ExportCsv(), StringComparison.Ordinal);
+        Assert.Contains("Weekly", await history.ExportCsvAsync(), StringComparison.Ordinal);
 
         history.SetLanguage(UiLanguage.English);
-        Assert.All(history.Entries, entry => Assert.Equal("Weekly", entry.WindowDisplay));
+        await history.WaitForPublishedAsync();
+        Assert.All(history.FilteredEntries, entry => Assert.Equal("Weekly", entry.WindowDisplay));
+    }
+
+    [AvaloniaFact]
+    public async Task History_visual_tree_contains_only_the_current_page_not_the_full_archive()
+    {
+        var source = new InMemoryQuotaHistory(Enumerable.Range(0, 500).Select(index => new QuotaSnapshot(ProviderKind.ChatGpt, "Personal", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(6)), null, null, index, "percent", DateTimeOffset.UtcNow.AddMinutes(index), DateTimeOffset.UtcNow.AddMinutes(index), QuotaSource.Manual, QuotaConfidence.Manual, null, "ChatGPT Plus")).ToList());
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: source);
+        var window = new MainWindow(vm);
+        try
+        {
+            await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            vm.Navigate(AppPage.History);
+            window.Show();
+
+            var list = window.FindControl<ListBox>("HistoryEntriesList")!;
+            Assert.Equal(HistoryState.PageSize, list.ItemCount);
+            Assert.True(list.GetVisualDescendants().OfType<Border>().Count() < 500);
+            Assert.Equal("History entries", AutomationProperties.GetName(list));
+        }
+        finally { window.Close(); vm.Dispose(); }
     }
 
     [AvaloniaFact]

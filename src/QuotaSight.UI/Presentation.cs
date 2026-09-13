@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Text;
 using Avalonia;
 using Avalonia.Styling;
 
@@ -10,6 +9,8 @@ using Avalonia.Threading;
 using QuotaSight.Core;
 using QuotaSight.Application;
 using QuotaSight.Infrastructure;
+
+[assembly: InternalsVisibleTo("QuotaSight.UI.Tests")]
 
 namespace QuotaSight.UI;
 
@@ -214,92 +215,762 @@ public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, st
 {
     public string WindowDisplay { get; init; } = Window;
 }
-public interface IHistoryUiService { IReadOnlyList<HistoryUiEntry> Read(); bool Delete(Guid id); void DeleteAll(); string ExportJson(); string ExportCsv(); }
-public sealed class HistoryState : IHistoryUiService, INotifyPropertyChanged
+public interface IUiDispatcher
 {
-    private readonly IQuotaHistory? persistentHistory;
-    public ObservableCollection<HistoryUiEntry> Entries { get; } = [];
-    public string? LoadError { get; private set; }
-    private string accountFilter = "All accounts";
-    private string windowFilter = "All windows";
-    public UiLanguage Language { get; private set; } = UiLanguage.English;
-    public string AccountFilter { get => accountFilter; set { if (accountFilter == value) return; accountFilter = value; PropertyChanged?.Invoke(this, new(nameof(AccountFilter))); PropertyChanged?.Invoke(this, new(nameof(FilteredEntries))); PropertyChanged?.Invoke(this, new(nameof(SparklinePoints))); } }
-    public string WindowFilter { get => windowFilter; set { if (windowFilter == value) return; windowFilter = value; PropertyChanged?.Invoke(this, new(nameof(WindowFilter))); PropertyChanged?.Invoke(this, new(nameof(FilteredEntries))); PropertyChanged?.Invoke(this, new(nameof(SparklinePoints))); } }
-    public event PropertyChangedEventHandler? PropertyChanged;
-    public IReadOnlyList<HistoryUiEntry> FilteredEntries => Entries.Where(e => (AccountFilter == "All accounts" || e.Account == AccountFilter) && (WindowFilter == "All windows" || e.Window == WindowFilter)).ToList();
-    public IReadOnlyList<double> SparklinePoints => FilteredEntries.OrderBy(e => e.Observed).Where(e => e.UsedPercent is not null).Select(e => (double)e.UsedPercent!.Value).ToList();
-    public HistoryState(IQuotaHistory? history = null)
-    {
-        persistentHistory = history;
-        Entries.CollectionChanged += (_, _) => NotifyDerivedProperties();
-        if (history is null) for (var i = 0; i < 30; i++) Entries.Add(CreateEntry(new(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.Now.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual)));
-    }
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
-    {
-        Entries.Clear();
-        LoadError = null;
-        for (var i = 0; i < 30; i++)
-        {
-            var day = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-i));
-            try
-            {
-                foreach (var item in await persistentHistory!.ReadEventsAsync(day, cancellationToken))
-                {
-                    var snapshot = item.Snapshot;
-                    Entries.Add(CreateEntry(new(item.EventId, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence)));
-                }
-            }
-            catch (InvalidDataException) { LoadError = "History data is damaged; showing available entries."; }
-        }
-    }
-    public IReadOnlyList<HistoryUiEntry> Read() => Entries;
-    public void SetLanguage(UiLanguage language)
-    {
-        Language = language;
-        for (var index = 0; index < Entries.Count; index++) Entries[index] = CreateEntry(Entries[index]);
-        PropertyChanged?.Invoke(this, new(nameof(Entries)));
-        PropertyChanged?.Invoke(this, new(nameof(FilteredEntries)));
-    }
-    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) { var entry = Entries.FirstOrDefault(e => e.Id == id); if (entry is null) return false; if (persistentHistory is not null) await persistentHistory.DeleteEventAsync(id, cancellationToken); return Entries.Remove(entry); }
-    public async Task DeleteAllAsync(CancellationToken cancellationToken = default) { if (persistentHistory is not null) await persistentHistory.DeleteAsync(null, cancellationToken); Entries.Clear(); }
-    public bool Delete(Guid id) { var entry = Entries.FirstOrDefault(e => e.Id == id); return entry is not null && Entries.Remove(entry); }
-    public void DeleteAll() => Entries.Clear();
-    public async Task RefreshAfterPersistAsync(CancellationToken cancellationToken = default)
-    {
-        if (persistentHistory is not null) await InitializeAsync(cancellationToken);
-    }
-    private void NotifyDerivedProperties()
-    {
-        PropertyChanged?.Invoke(this, new(nameof(Entries)));
-        PropertyChanged?.Invoke(this, new(nameof(FilteredEntries)));
-        PropertyChanged?.Invoke(this, new(nameof(SparklinePoints)));
-    }
-    private HistoryUiEntry CreateEntry(HistoryUiEntry entry) => entry with { WindowDisplay = Language == UiLanguage.Japanese && Enum.TryParse<QuotaWindowKind>(entry.Window, true, out var kind) ? QuotaPresentationFormatter.LocalizeWindow(kind) : entry.Window };
-    public string ExportJson() => "[" + string.Join(",", FilteredEntries.Select(e => $"{{\"provider\":\"{EscapeJson(e.Provider)}\",\"account\":\"{EscapeJson(e.Account)}\",\"window\":\"{EscapeJson(e.Window)}\",\"usedPercent\":{(e.UsedPercent is { } p ? p.ToString(CultureInfo.InvariantCulture) : "null")},\"observed\":\"{EscapeJson(e.Observed.ToString("O", CultureInfo.InvariantCulture))}\",\"source\":\"{e.Source}\",\"confidence\":\"{e.Confidence}\"}}")) + "]";
-    public string ExportCsv() => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", FilteredEntries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
-    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
-    private static string EscapeJson(string value)
-    {
-        var builder = new StringBuilder(value.Length);
-        foreach (var character in value)
-        {
-            switch (character)
-            {
-                case '\\': builder.Append("\\\\"); break;
-                case '"': builder.Append("\\\""); break;
-                case '\b': builder.Append("\\b"); break;
-                case '\f': builder.Append("\\f"); break;
-                case '\n': builder.Append("\\n"); break;
-                case '\r': builder.Append("\\r"); break;
-                case '\t': builder.Append("\\t"); break;
-                default: if (character < ' ') builder.Append($"\\u{(int)character:x4}"); else builder.Append(character); break;
-            }
-        }
-        return builder.ToString();
-    }
-    private static string EscapeCsv(string value) => value.Any(character => character is ',' or '"' or '\r' or '\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
+    bool CheckAccess();
+    Task InvokeAsync(Action action);
+    Task InvokeAsync(Func<Task> action);
+}
+public sealed class AvaloniaUiDispatcher : IUiDispatcher
+{
+    public bool CheckAccess() => Dispatcher.UIThread.CheckAccess();
+    public Task InvokeAsync(Action action) => CheckAccess() ? InvokeInline(action) : Dispatcher.UIThread.InvokeAsync(action).GetTask();
+    public Task InvokeAsync(Func<Task> action) => CheckAccess() ? action() : Dispatcher.UIThread.InvokeAsync(action);
+    private static Task InvokeInline(Action action) { action(); return Task.CompletedTask; }
+}
+public sealed class ImmediateUiDispatcher : IUiDispatcher
+{
+    public bool CheckAccess() => true;
+    public Task InvokeAsync(Action action) { action(); return Task.CompletedTask; }
+    public Task InvokeAsync(Func<Task> action) => action();
+}
+public enum RefreshOrigin { Manual, Scheduled }
+public interface IQuotaWorkScheduler
+{
+    Task<T> RunAsync<T>(Func<Task<T>> work);
+}
+public sealed class TaskRunQuotaWorkScheduler : IQuotaWorkScheduler
+{
+    public Task<T> RunAsync<T>(Func<Task<T>> work) => Task.Run(work);
+}
+internal sealed record HistorySnapshotState(
+    IReadOnlyList<HistoryUiEntry> Raw,
+    string AccountFilter,
+    string WindowFilter,
+    UiLanguage Language,
+    int RequestedPage,
+    long DataRevision,
+    long QueryVersion,
+    IReadOnlyList<HistoryUiEntry> Filtered,
+    IReadOnlyList<HistoryUiEntry> Displayed,
+    IReadOnlyList<double> Sparkline,
+    int PageCount,
+    int NormalizedPage,
+    string? LoadError,
+    bool RawUncertain = false)
+{
+    public static HistorySnapshotState Empty { get; } = new([], "All accounts", "All windows", UiLanguage.English, 0, 0, 0, [], [], [], 1, 0, null);
 }
 
+internal sealed record HistoryDesiredSummary(string AccountFilter, string WindowFilter, UiLanguage Language, int RequestedPage)
+{
+    public static HistoryDesiredSummary Empty { get; } = new("All accounts", "All windows", UiLanguage.English, 0);
+}
+
+internal interface IHistoryProjectionScheduler { Task<T> ScheduleAsync<T>(Func<T> work); }
+internal sealed class TaskRunHistoryProjectionScheduler : IHistoryProjectionScheduler
+{
+    public Task<T> ScheduleAsync<T>(Func<T> work) => Task.Run(work);
+}
+
+public sealed class HistoryState : INotifyPropertyChanged, IDisposable
+{
+    public const int PageSize = 50;
+    public const int SparklineLimit = 64;
+    private static readonly string[] PublishedPropertyNames = [nameof(Entries), nameof(FilteredEntries), nameof(DisplayedEntries), nameof(SparklinePoints), nameof(LoadError), nameof(PageCount), nameof(CurrentPage), nameof(HasPreviousPage), nameof(HasNextPage), nameof(PageStatus)];
+    private readonly IQuotaHistory? persistentHistory;
+    private readonly IUiDispatcher uiDispatcher;
+    private readonly IHistoryProjectionScheduler projectionScheduler;
+    private readonly System.Threading.Channels.Channel<Command> commands = System.Threading.Channels.Channel.CreateUnbounded<Command>(new() { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly Task pump;
+    private readonly object publishGate = new();
+    private bool publishClosed;
+    private long highestPublishedBuildId;
+    private int stopped;
+
+    // Reducer-owned state: mutated only while handling commands on the pump.
+    private HistorySnapshotState desired = HistorySnapshotState.Empty;
+    private HistorySnapshotState committed = HistorySnapshotState.Empty;
+    private long acceptedDataRevision;
+    private long buildCounter;
+    private long latestBuildId;
+    private long committedBuildId;
+    private long notificationRecoveryBuildId = -1;
+    private Exception? latestBuildFailure;
+    private readonly Dictionary<long, CancellationTokenSource> buildWorkers = [];
+    private readonly List<CrudRequest> crudRequests = [];
+    private readonly List<WaitRequest> waitRequests = [];
+    private readonly List<WaitRequest> serializingRequests = [];
+    private Task storageTail = Task.CompletedTask;
+
+    // Storage-lane state: touched only inside the serialized storage chain (and the constructor).
+    private IReadOnlyList<HistoryUiEntry> memoryRaw = [];
+
+    // Atomically published immutable snapshots read by public getters.
+    private HistorySnapshotState published = HistorySnapshotState.Empty;
+    private HistoryDesiredSummary desiredSummary = HistoryDesiredSummary.Empty;
+
+    private enum CommandKind { SetAccount, SetWindow, SetLanguage, Previous, Next, Reload, Append, Delete, DeleteAll, Manual, ExportCsv, ExportJson, Barrier, StorageCompleted, BuildCompleted, PublishCompleted, SerializeCompleted }
+    private sealed record Command(
+        CommandKind Kind,
+        string? Text = null,
+        UiLanguage Language = UiLanguage.English,
+        Guid Id = default,
+        IReadOnlyList<QuotaSnapshot>? Snapshots = null,
+        Func<CancellationToken, Task>? Persist = null,
+        TaskCompletionSource<object?>? Result = null,
+        CancellationTokenRegistration Registration = default,
+        CancellationToken CancellationToken = default,
+        long BuildId = 0,
+        long Revision = 0,
+        HistorySnapshotState? Built = null,
+        IReadOnlyList<HistoryUiEntry>? Entries = null,
+        Exception? Error = null,
+        bool Canceled = false,
+        bool Committed = false,
+        bool DeleteResult = false,
+        bool MutationApplied = false,
+        string? LoadError = null);
+
+    private sealed class CrudRequest
+    {
+        public required TaskCompletionSource<object?> Completion { get; init; }
+        public required CancellationTokenRegistration Registration { get; init; }
+        public required long TargetRevision { get; init; }
+        public bool DeleteResult { get; set; } = true;
+    }
+
+    private sealed class WaitRequest
+    {
+        public required TaskCompletionSource<object?> Completion { get; init; }
+        public required CancellationTokenRegistration Registration { get; init; }
+        public required long TargetRevision { get; init; }
+        public required long TargetQuery { get; init; }
+        public required CommandKind Kind { get; init; }
+        // The exact query (filters, language, page) desired when the request was accepted;
+        // exports must serialize this query even if a later query publishes first.
+        public required HistorySnapshotState DesiredAtAccept { get; init; }
+        public CancellationToken CancellationToken { get; init; }
+        // The exact rows at the accepted data revision, captured when that revision's storage
+        // outcome is observed; exports must serialize these rows even if a later data revision
+        // publishes first. Held only until the request settles, faults, or cancels.
+        public bool HasAcceptedRaw { get; private set; }
+        public IReadOnlyList<HistoryUiEntry> AcceptedRaw { get; private set; } = [];
+        public bool AcceptedRawUncertain { get; private set; }
+        public string? AcceptedLoadError { get; private set; }
+        public void CaptureAcceptedRaw(HistorySnapshotState current)
+        {
+            AcceptedRaw = current.Raw;
+            AcceptedRawUncertain = current.RawUncertain;
+            AcceptedLoadError = current.LoadError;
+            HasAcceptedRaw = true;
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    internal Task PumpCompletedForTests => pump;
+
+    public HistoryState(IQuotaHistory? history = null, IUiDispatcher? uiDispatcher = null) : this(history, uiDispatcher, null) { }
+    internal HistoryState(IQuotaHistory? history, IUiDispatcher? uiDispatcher, IHistoryProjectionScheduler? projectionScheduler)
+    {
+        persistentHistory = history;
+        this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher();
+        this.projectionScheduler = projectionScheduler ?? new TaskRunHistoryProjectionScheduler();
+        if (history is null)
+        {
+            var raw = Enumerable.Range(0, 30).Select(i => new HistoryUiEntry(Guid.NewGuid(), i % 2 == 0 ? "ChatGPT Plus" : "Claude Pro", i % 2 == 0 ? "Personal" : "Work", "Weekly", 35 + i % 18, DateTimeOffset.UtcNow.AddDays(-29 + i), QuotaSource.Manual, QuotaConfidence.Manual)).ToArray();
+            memoryRaw = raw;
+            desired = desired with { Raw = raw };
+            var seeded = Build(desired);
+            committed = seeded;
+            published = seeded;
+        }
+        pump = Task.Run(PumpAsync);
+    }
+
+    public IReadOnlyList<HistoryUiEntry> Entries => Volatile.Read(ref published).Raw;
+    public IReadOnlyList<HistoryUiEntry> FilteredEntries => Volatile.Read(ref published).Filtered;
+    public IReadOnlyList<HistoryUiEntry> DisplayedEntries => Volatile.Read(ref published).Displayed;
+    public IReadOnlyList<double> SparklinePoints => Volatile.Read(ref published).Sparkline;
+    public string? LoadError => Volatile.Read(ref published).LoadError;
+    public UiLanguage Language => Volatile.Read(ref desiredSummary).Language;
+    public int CurrentPage => Volatile.Read(ref published).NormalizedPage;
+    public int RequestedPage => Volatile.Read(ref desiredSummary).RequestedPage;
+    public int PageCount => Volatile.Read(ref published).PageCount;
+    public bool HasPreviousPage => Volatile.Read(ref published).NormalizedPage > 0;
+    public bool HasNextPage { get { var snapshot = Volatile.Read(ref published); return snapshot.NormalizedPage < snapshot.PageCount - 1; } }
+    public string PageStatus => $"{CurrentPage + 1} / {PageCount}";
+
+    public string AccountFilter { get => Volatile.Read(ref desiredSummary).AccountFilter; set => Enqueue(new(CommandKind.SetAccount, Text: value)); }
+    public string WindowFilter { get => Volatile.Read(ref desiredSummary).WindowFilter; set => Enqueue(new(CommandKind.SetWindow, Text: value)); }
+    public void SetLanguage(UiLanguage language) => Enqueue(new(CommandKind.SetLanguage, Language: language));
+    public void PreviousPage() => Enqueue(new(CommandKind.Previous));
+    public void NextPage() => Enqueue(new(CommandKind.Next));
+
+    public Task InitializeAsync(CancellationToken cancellationToken = default) => EnqueueRequest(new(CommandKind.Reload), cancellationToken);
+    public Task RefreshAfterPersistAsync(CancellationToken cancellationToken = default) => InitializeAsync(cancellationToken);
+    public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) => (bool)(await EnqueueRequest(new(CommandKind.Delete, Id: id), cancellationToken).ConfigureAwait(false))!;
+    public Task DeleteAllAsync(CancellationToken cancellationToken = default) => EnqueueRequest(new(CommandKind.DeleteAll), cancellationToken);
+    public Task AppendAndReloadAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken = default) => EnqueueRequest(new(CommandKind.Append, Snapshots: snapshots), cancellationToken);
+    public async Task<string> ExportCsvAsync(CancellationToken cancellationToken = default) => (string)(await EnqueueRequest(new(CommandKind.ExportCsv), cancellationToken).ConfigureAwait(false))!;
+    public async Task<string> ExportJsonAsync(CancellationToken cancellationToken = default) => (string)(await EnqueueRequest(new(CommandKind.ExportJson), cancellationToken).ConfigureAwait(false))!;
+    internal Task ApplyManualPersistAsync(Func<CancellationToken, Task> persist, CancellationToken cancellationToken = default) => EnqueueRequest(new(CommandKind.Manual, Persist: persist), cancellationToken);
+    internal Task WaitForPublishedAsync(CancellationToken cancellationToken = default) => EnqueueRequest(new(CommandKind.Barrier), cancellationToken);
+
+    private Task<object?> EnqueueRequest(Command command, CancellationToken cancellationToken)
+    {
+        var result = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Volatile.Read(ref stopped) != 0)
+        {
+            result.TrySetCanceled(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true));
+            return result.Task;
+        }
+        var registration = cancellationToken.CanBeCanceled ? cancellationToken.Register(() => result.TrySetCanceled(cancellationToken)) : default;
+        if (!commands.Writer.TryWrite(command with { Result = result, Registration = registration, CancellationToken = cancellationToken }))
+        {
+            registration.Dispose();
+            result.TrySetCanceled(new CancellationToken(true));
+        }
+        return result.Task;
+    }
+
+    private void Enqueue(Command command)
+    {
+        if (Volatile.Read(ref stopped) == 0) commands.Writer.TryWrite(command);
+    }
+
+    private async Task PumpAsync()
+    {
+        try
+        {
+            await foreach (var command in commands.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                try { Handle(command); }
+                catch (Exception exception)
+                {
+                    command.Registration.Dispose();
+                    command.Result?.TrySetException(exception);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally { ShutdownPending(); }
+    }
+
+    private void Handle(Command command)
+    {
+        switch (command.Kind)
+        {
+            case CommandKind.SetAccount: ApplyQuery(desired with { AccountFilter = command.Text ?? "All accounts", RequestedPage = 0 }); break;
+            case CommandKind.SetWindow: ApplyQuery(desired with { WindowFilter = command.Text ?? "All windows", RequestedPage = 0 }); break;
+            case CommandKind.SetLanguage: ApplyQuery(desired with { Language = command.Language }); break;
+            case CommandKind.Previous: ApplyQuery(desired with { RequestedPage = Math.Max(0, desired.RequestedPage - 1) }); break;
+            case CommandKind.Next: ApplyQuery(desired with { RequestedPage = desired.RequestedPage + 1 }); break;
+            case CommandKind.Reload:
+            case CommandKind.Append:
+            case CommandKind.Delete:
+            case CommandKind.DeleteAll:
+            case CommandKind.Manual: AcceptStorage(command); break;
+            case CommandKind.ExportCsv:
+            case CommandKind.ExportJson:
+            case CommandKind.Barrier: AcceptWait(command); break;
+            case CommandKind.StorageCompleted: CompleteStorage(command); break;
+            case CommandKind.BuildCompleted: CompleteBuild(command); break;
+            case CommandKind.PublishCompleted: CompletePublish(command); break;
+            case CommandKind.SerializeCompleted: CompleteSerialize(command); break;
+        }
+    }
+
+    private void ApplyQuery(HistorySnapshotState next)
+    {
+        desired = next with { QueryVersion = desired.QueryVersion + 1 };
+        PublishDesiredSummary();
+        StartBuild();
+    }
+
+    private void PublishDesiredSummary() => Volatile.Write(ref desiredSummary, new HistoryDesiredSummary(desired.AccountFilter, desired.WindowFilter, desired.Language, desired.RequestedPage));
+
+    private void AcceptStorage(Command command)
+    {
+        var revision = ++acceptedDataRevision;
+        if (command.Result is { } completion)
+            crudRequests.Add(new CrudRequest { Completion = completion, Registration = command.Registration, TargetRevision = revision });
+        var previous = storageTail;
+        storageTail = Task.Run(() => RunStorageJobAsync(previous, command.Kind, revision, command.Id, command.Snapshots, command.Persist, command.CancellationToken));
+    }
+
+    private async Task RunStorageJobAsync(Task previous, CommandKind kind, long revision, Guid id, IReadOnlyList<QuotaSnapshot>? snapshots, Func<CancellationToken, Task>? persist, CancellationToken callerToken)
+    {
+        await previous.ConfigureAwait(false);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, callerToken);
+        var token = linked.Token;
+        // Once a mutation reached persistent storage, a later read failure leaves the cached
+        // rows unverified; report that so stale data is never exported as current.
+        var mutationApplied = false;
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var incoming = snapshots?.ToArray() ?? [];
+            if (persist is not null)
+            {
+                await persist(token).ConfigureAwait(false);
+                mutationApplied = true;
+            }
+            IReadOnlyList<HistoryUiEntry> entries;
+            string? loadError = null;
+            var deleteResult = true;
+            if (persistentHistory is null)
+            {
+                if (kind == CommandKind.Delete) deleteResult = memoryRaw.Any(entry => entry.Id == id);
+                entries = kind switch
+                {
+                    CommandKind.Append => [.. memoryRaw, .. incoming.Select(snapshot => ToEntry(Guid.NewGuid(), snapshot))],
+                    CommandKind.Delete => memoryRaw.Where(entry => entry.Id != id).ToArray(),
+                    CommandKind.DeleteAll => [],
+                    _ => memoryRaw
+                };
+                memoryRaw = entries;
+            }
+            else if (kind == CommandKind.DeleteAll)
+            {
+                await persistentHistory.DeleteAsync(null, token).ConfigureAwait(false);
+                mutationApplied = true;
+                entries = [];
+            }
+            else
+            {
+                if (kind == CommandKind.Append)
+                {
+                    await persistentHistory.AppendAsync(incoming, token).ConfigureAwait(false);
+                    mutationApplied = true;
+                }
+                if (kind == CommandKind.Delete)
+                {
+                    var before = await ReadPersistedEntriesAsync(token).ConfigureAwait(false);
+                    deleteResult = before.Entries.Any(entry => entry.Id == id);
+                    if (deleteResult)
+                    {
+                        await persistentHistory.DeleteEventAsync(id, token).ConfigureAwait(false);
+                        mutationApplied = true;
+                    }
+                }
+                var read = await ReadPersistedEntriesAsync(token).ConfigureAwait(false);
+                entries = read.Entries;
+                loadError = read.Error;
+            }
+            commands.Writer.TryWrite(new(CommandKind.StorageCompleted, Revision: revision, Entries: entries, LoadError: loadError, DeleteResult: deleteResult));
+        }
+        catch (OperationCanceledException) { commands.Writer.TryWrite(new(CommandKind.StorageCompleted, Revision: revision, Canceled: true, MutationApplied: mutationApplied)); }
+        catch (Exception exception) { commands.Writer.TryWrite(new(CommandKind.StorageCompleted, Revision: revision, Error: exception, MutationApplied: mutationApplied)); }
+    }
+
+    private void CompleteStorage(Command command)
+    {
+        var index = crudRequests.FindIndex(request => request.TargetRevision == command.Revision);
+        var request = index >= 0 ? crudRequests[index] : null;
+        if (command.Error is not null || command.Canceled)
+        {
+            if (request is not null)
+            {
+                crudRequests.RemoveAt(index);
+                request.Registration.Dispose();
+                if (command.Error is not null) request.Completion.TrySetException(command.Error);
+                else request.Completion.TrySetCanceled(CancellationToken.None);
+            }
+            desired = command.MutationApplied
+                // Storage did change but the verifying re-read failed: keep showing the last
+                // verified rows, but mark them unverified so exports fault until a reload succeeds.
+                ? desired with
+                {
+                    RawUncertain = true,
+                    LoadError = command.Error?.Message ?? "History changed but could not be re-read; reload to verify.",
+                    DataRevision = Math.Max(desired.DataRevision, command.Revision)
+                }
+                // The failed operation left the data unchanged, but its revision must still be observed
+                // so exports and waiters accepted behind it do not stall forever.
+                : desired with { DataRevision = Math.Max(desired.DataRevision, command.Revision), LoadError = command.Error?.Message ?? desired.LoadError };
+            foreach (var waiter in waitRequests) CaptureAcceptedRawIfObserved(waiter);
+            StartBuild();
+            return;
+        }
+        if (request is not null) request.DeleteResult = command.DeleteResult;
+        desired = desired with { Raw = command.Entries ?? [], LoadError = command.LoadError, RawUncertain = false, DataRevision = Math.Max(desired.DataRevision, command.Revision) };
+        foreach (var waiter in waitRequests) CaptureAcceptedRawIfObserved(waiter);
+        StartBuild();
+    }
+
+    private void AcceptWait(Command command)
+    {
+        var request = new WaitRequest
+        {
+            Completion = command.Result!,
+            Registration = command.Registration,
+            TargetRevision = acceptedDataRevision,
+            TargetQuery = desired.QueryVersion,
+            Kind = command.Kind,
+            DesiredAtAccept = desired,
+            CancellationToken = command.CancellationToken
+        };
+        CaptureAcceptedRawIfObserved(request);
+        if (committed.DataRevision >= request.TargetRevision && committed.QueryVersion >= request.TargetQuery)
+        {
+            SettleWait(request, committed);
+            return;
+        }
+        if (latestBuildFailure is { } failure && desired.DataRevision >= request.TargetRevision && desired.QueryVersion >= request.TargetQuery)
+        {
+            request.Registration.Dispose();
+            request.Completion.TrySetException(failure);
+            return;
+        }
+        waitRequests.Add(request);
+    }
+
+    private void CaptureAcceptedRawIfObserved(WaitRequest request)
+    {
+        if (request.Kind == CommandKind.Barrier || request.HasAcceptedRaw || desired.DataRevision < request.TargetRevision) return;
+        request.CaptureAcceptedRaw(desired);
+    }
+
+    private void SettleWait(WaitRequest request, HistorySnapshotState snapshot)
+    {
+        if (request.Kind == CommandKind.Barrier)
+        {
+            request.Registration.Dispose();
+            request.Completion.TrySetResult(null);
+            return;
+        }
+        if (request.HasAcceptedRaw ? request.AcceptedRawUncertain : snapshot.RawUncertain)
+        {
+            // A storage mutation was applied but the verifying re-read failed; refusing the
+            // export is the only way to avoid presenting stale rows as current data.
+            request.Registration.Dispose();
+            request.Completion.TrySetException(new InvalidOperationException((request.HasAcceptedRaw ? request.AcceptedLoadError : snapshot.LoadError) ?? "History changed but could not be re-read; reload to verify."));
+            return;
+        }
+        serializingRequests.Add(request);
+        _ = SerializeAsync(request, snapshot);
+    }
+
+    private async Task SerializeAsync(WaitRequest request, HistorySnapshotState snapshot)
+    {
+        try
+        {
+            var text = await Task.Run(() =>
+            {
+                // Serialize the exact rows captured at the accepted data revision under the query
+                // desired at accept time; the covering snapshot may already belong to a later data
+                // or query revision and neither may be substituted.
+                var projection = Build(request.DesiredAtAccept with { Raw = request.HasAcceptedRaw ? request.AcceptedRaw : snapshot.Raw });
+                return request.Kind == CommandKind.ExportJson ? SerializeJson(projection.Filtered) : SerializeCsv(projection.Filtered);
+            }, request.CancellationToken).ConfigureAwait(false);
+            commands.Writer.TryWrite(new(CommandKind.SerializeCompleted, Text: text, Result: request.Completion));
+        }
+        catch (Exception exception)
+        {
+            commands.Writer.TryWrite(new(CommandKind.SerializeCompleted, Error: exception, Result: request.Completion));
+        }
+    }
+
+    private void CompleteSerialize(Command command)
+    {
+        var index = serializingRequests.FindIndex(request => ReferenceEquals(request.Completion, command.Result));
+        if (index >= 0)
+        {
+            serializingRequests[index].Registration.Dispose();
+            serializingRequests.RemoveAt(index);
+        }
+        if (command.Error is not null) command.Result?.TrySetException(command.Error);
+        else command.Result?.TrySetResult(command.Text ?? string.Empty);
+    }
+
+    private void StartBuild()
+    {
+        latestBuildFailure = null;
+        var buildId = ++buildCounter;
+        latestBuildId = buildId;
+        foreach (var worker in buildWorkers.Values) worker.Cancel();
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        buildWorkers[buildId] = cts;
+        _ = BuildAsync(desired, buildId, cts.Token);
+    }
+
+    private async Task BuildAsync(HistorySnapshotState input, long buildId, CancellationToken token)
+    {
+        try
+        {
+            var work = projectionScheduler.ScheduleAsync(() => Build(input));
+            _ = work.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var built = await work.WaitAsync(token).ConfigureAwait(false);
+            commands.Writer.TryWrite(new(CommandKind.BuildCompleted, BuildId: buildId, Built: built));
+        }
+        catch (OperationCanceledException) { commands.Writer.TryWrite(new(CommandKind.BuildCompleted, BuildId: buildId, Canceled: true)); }
+        catch (Exception exception) { commands.Writer.TryWrite(new(CommandKind.BuildCompleted, BuildId: buildId, Error: exception)); }
+    }
+
+    private void CompleteBuild(Command command)
+    {
+        if (buildWorkers.Remove(command.BuildId, out var worker)) worker.Dispose();
+        if (command.BuildId != latestBuildId) return;
+        if (command.Error is not null)
+        {
+            latestBuildFailure = command.Error;
+            desired = desired with { LoadError = command.Error.Message };
+            FailSatisfiable(command.Error, desired.DataRevision, desired.QueryVersion);
+            return;
+        }
+        if (command.Canceled)
+        {
+            // The latest projection will never publish; no newer build supersedes it, so every
+            // request that depends on it must terminate now instead of waiting forever.
+            var canceled = new OperationCanceledException("The latest history projection was canceled before publishing.");
+            latestBuildFailure = canceled;
+            CancelSatisfiable(desired.DataRevision, desired.QueryVersion);
+            return;
+        }
+        _ = PublishAsync(command.Built!, command.BuildId);
+    }
+
+    private async Task PublishAsync(HistorySnapshotState snapshot, long buildId)
+    {
+        try
+        {
+            await uiDispatcher.InvokeAsync(() =>
+            {
+                var swapped = false;
+                Exception? notifyError = null;
+                lock (publishGate)
+                {
+                    // Freshness check at publish time: a publish action released after a newer
+                    // build already published must not overwrite the newer snapshot.
+                    if (!publishClosed && buildId > highestPublishedBuildId)
+                    {
+                        highestPublishedBuildId = buildId;
+                        Volatile.Write(ref published, snapshot);
+                        swapped = true;
+                        notifyError = RaisePublishedNotifications();
+                    }
+                }
+                commands.Writer.TryWrite(new(CommandKind.PublishCompleted, BuildId: buildId, Built: snapshot, Committed: swapped, Canceled: !swapped, Error: notifyError));
+            }).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            commands.Writer.TryWrite(new(CommandKind.PublishCompleted, BuildId: buildId, Built: snapshot, Error: exception));
+        }
+    }
+
+    private Exception? RaisePublishedNotifications()
+    {
+        Exception? first = null;
+        foreach (var name in PublishedPropertyNames)
+        {
+            // A subscriber may dispose this state while handling a notification; once the
+            // publish gate closes no further property names may be raised.
+            if (publishClosed) break;
+            try { PropertyChanged?.Invoke(this, new(name)); }
+            catch (Exception exception) { first ??= exception; }
+        }
+        return first;
+    }
+
+    private void CompletePublish(Command command)
+    {
+        if (command.Committed)
+        {
+            // Publish order is enforced by the gate, but completion commands can arrive out of
+            // order; never let an older build replace the committed snapshot.
+            if (command.BuildId < committedBuildId) return;
+            committedBuildId = command.BuildId;
+            committed = command.Built!;
+            if (command.Error is not null)
+            {
+                FailSatisfiable(command.Error, committed.DataRevision, committed.QueryVersion);
+                if (command.BuildId != notificationRecoveryBuildId)
+                {
+                    // Surface one safe LoadError through a single recovery publish; if that
+                    // recovery publish faults again the loop stops instead of republishing.
+                    desired = desired with { LoadError = command.Error.Message, QueryVersion = desired.QueryVersion + 1 };
+                    StartBuild();
+                    notificationRecoveryBuildId = latestBuildId;
+                }
+                else desired = desired with { LoadError = command.Error.Message };
+                return;
+            }
+            if (committed.QueryVersion == desired.QueryVersion && desired.RequestedPage != committed.NormalizedPage)
+            {
+                desired = desired with { RequestedPage = committed.NormalizedPage };
+                PublishDesiredSummary();
+            }
+            SettleSatisfied(committed);
+            return;
+        }
+        if (command.Canceled) return;
+        if (command.Error is not null && command.BuildId == latestBuildId && !ReferenceEquals(committed, command.Built))
+        {
+            latestBuildFailure = command.Error;
+            desired = desired with { LoadError = command.Error.Message };
+            FailSatisfiable(command.Error, command.Built!.DataRevision, command.Built.QueryVersion);
+        }
+    }
+
+    private void SettleSatisfied(HistorySnapshotState snapshot)
+    {
+        for (var i = crudRequests.Count - 1; i >= 0; i--)
+        {
+            var request = crudRequests[i];
+            if (request.Completion.Task.IsCompleted)
+            {
+                crudRequests.RemoveAt(i);
+                request.Registration.Dispose();
+                continue;
+            }
+            if (request.TargetRevision > snapshot.DataRevision) continue;
+            crudRequests.RemoveAt(i);
+            request.Registration.Dispose();
+            request.Completion.TrySetResult(request.DeleteResult);
+        }
+        for (var i = waitRequests.Count - 1; i >= 0; i--)
+        {
+            var request = waitRequests[i];
+            if (request.Completion.Task.IsCompleted)
+            {
+                waitRequests.RemoveAt(i);
+                request.Registration.Dispose();
+                continue;
+            }
+            if (request.TargetRevision > snapshot.DataRevision || request.TargetQuery > snapshot.QueryVersion) continue;
+            waitRequests.RemoveAt(i);
+            SettleWait(request, snapshot);
+        }
+    }
+
+    private void FailSatisfiable(Exception error, long dataRevision, long queryVersion)
+    {
+        for (var i = crudRequests.Count - 1; i >= 0; i--)
+        {
+            var request = crudRequests[i];
+            if (request.TargetRevision > dataRevision) continue;
+            crudRequests.RemoveAt(i);
+            request.Registration.Dispose();
+            request.Completion.TrySetException(error);
+        }
+        for (var i = waitRequests.Count - 1; i >= 0; i--)
+        {
+            var request = waitRequests[i];
+            if (request.TargetRevision > dataRevision || request.TargetQuery > queryVersion) continue;
+            waitRequests.RemoveAt(i);
+            request.Registration.Dispose();
+            request.Completion.TrySetException(error);
+        }
+    }
+
+    private void CancelSatisfiable(long dataRevision, long queryVersion)
+    {
+        for (var i = crudRequests.Count - 1; i >= 0; i--)
+        {
+            var request = crudRequests[i];
+            if (request.TargetRevision > dataRevision) continue;
+            crudRequests.RemoveAt(i);
+            request.Registration.Dispose();
+            request.Completion.TrySetCanceled(CancellationToken.None);
+        }
+        for (var i = waitRequests.Count - 1; i >= 0; i--)
+        {
+            var request = waitRequests[i];
+            if (request.TargetRevision > dataRevision || request.TargetQuery > queryVersion) continue;
+            waitRequests.RemoveAt(i);
+            request.Registration.Dispose();
+            request.Completion.TrySetCanceled(CancellationToken.None);
+        }
+    }
+
+    private void ShutdownPending()
+    {
+        foreach (var worker in buildWorkers.Values) worker.Cancel();
+        buildWorkers.Clear();
+        foreach (var request in crudRequests) { request.Registration.Dispose(); request.Completion.TrySetCanceled(lifetime.Token); }
+        crudRequests.Clear();
+        foreach (var request in waitRequests) { request.Registration.Dispose(); request.Completion.TrySetCanceled(lifetime.Token); }
+        waitRequests.Clear();
+        foreach (var request in serializingRequests) { request.Registration.Dispose(); request.Completion.TrySetCanceled(lifetime.Token); }
+        serializingRequests.Clear();
+        while (commands.Reader.TryRead(out var command))
+        {
+            command.Registration.Dispose();
+            command.Result?.TrySetCanceled(lifetime.Token);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref stopped, 1) != 0) return;
+        lock (publishGate) { publishClosed = true; }
+        // Completing the channel before cancelling makes acceptance linearizable: any TryWrite
+        // that succeeded happened before completion, so the pump either handles that command or
+        // ShutdownPending drains and cancels it — no request can be orphaned.
+        commands.Writer.TryComplete();
+        lifetime.Cancel();
+    }
+
+    private async Task<(IReadOnlyList<HistoryUiEntry> Entries, string? Error)> ReadPersistedEntriesAsync(CancellationToken token)
+    {
+        var entries = new List<HistoryUiEntry>();
+        string? error = null;
+        for (var i = 0; i < 30; i++)
+        {
+            try
+            {
+                foreach (var item in await persistentHistory!.ReadEventsAsync(DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-i)), token).ConfigureAwait(false))
+                    entries.Add(ToEntry(item.EventId, item.Snapshot));
+            }
+            catch (InvalidDataException) { error = "History data is damaged; showing available entries."; }
+        }
+        return (entries, error);
+    }
+
+    private static HistoryUiEntry ToEntry(Guid id, QuotaSnapshot snapshot) => new(id, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence);
+
+    private static HistorySnapshotState Build(HistorySnapshotState input)
+    {
+        var filtered = input.Raw.Where(e => (input.AccountFilter == "All accounts" || e.Account == input.AccountFilter) && (input.WindowFilter == "All windows" || e.Window == input.WindowFilter)).Select(e => e with { WindowDisplay = input.Language == UiLanguage.Japanese && Enum.TryParse<QuotaWindowKind>(e.Window, true, out var kind) ? QuotaPresentationFormatter.LocalizeWindow(kind) : e.Window }).ToArray();
+        var pageCount = Math.Max(1, (filtered.Length + PageSize - 1) / PageSize);
+        var page = Math.Clamp(input.RequestedPage, 0, pageCount - 1);
+        var displayed = filtered.Skip(page * PageSize).Take(PageSize).ToArray();
+        var points = filtered.Where(e => e.UsedPercent is not null).OrderBy(e => e.Observed).Select(e => (double)e.UsedPercent!.Value).ToArray();
+        IReadOnlyList<double> sparkline = points.Length <= SparklineLimit ? points : Enumerable.Range(0, SparklineLimit).Select(i => points[(int)Math.Round(i * (points.Length - 1d) / (SparklineLimit - 1), MidpointRounding.ToEven)]).ToArray();
+        return input with { Filtered = filtered, Displayed = displayed, Sparkline = sparkline, PageCount = pageCount, NormalizedPage = page };
+    }
+
+    private static string SerializeJson(IReadOnlyList<HistoryUiEntry> entries)
+    {
+        // Utf8JsonWriter is AOT-safe (no reflection) and escapes every control character.
+        using var buffer = new MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var entry in entries)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("provider", entry.Provider);
+                writer.WriteString("account", entry.Account);
+                writer.WriteString("window", entry.Window);
+                if (entry.UsedPercent is { } percent) writer.WriteNumber("usedPercent", percent);
+                else writer.WriteNull("usedPercent");
+                writer.WriteString("observed", entry.Observed.ToString("O", CultureInfo.InvariantCulture));
+                writer.WriteString("source", entry.Source.ToString());
+                writer.WriteString("confidence", entry.Confidence.ToString());
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+    private static string SerializeCsv(IReadOnlyList<HistoryUiEntry> entries) => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", entries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
+    private static string EscapeCsv(string value) => value.Any(character => character is ',' or '"' or '\r' or '\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
+}
 public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
 public sealed class InAppNotificationService : IInAppNotificationService, INotificationSink, INotifyPropertyChanged
 {
@@ -550,36 +1221,53 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private bool quotaDataBusy;
+    private readonly IUiDispatcher uiDispatcher;
+    private readonly IQuotaWorkScheduler workScheduler;
+    private int disposedState;
+
+    private bool IsDisposed => Volatile.Read(ref disposedState) != 0;
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref disposedState, 1) != 0) return;
         // RefreshAsync may still be waiting on or holding the gate; leave it undisposed to avoid a race.
+        History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
         try
         {
-            if (settingsStore is not null) SetSettings(await settingsStore.LoadAsync(cancellationToken), persist: false);
+            if (settingsStore is not null) SetSettings(await workScheduler.RunAsync(() => settingsStore.LoadAsync(cancellationToken).AsTask()), persist: false);
             if (quotaHistory is null) return;
 
-            await quotaHistory.PruneAsync(DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30), cancellationToken);
+            // Prune, the 30-day read, and card aggregation are storage/CPU work: run them on a
+            // worker; only the resulting immutable projections are applied on the caller.
+            var pruneBefore = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30);
+            var loaded = await workScheduler.RunAsync(async () =>
+            {
+                await quotaHistory.PruneAsync(pruneBefore, cancellationToken);
+                var snapshots = new List<QuotaSnapshot>();
+                var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
+                for (var dayOffset = 0; dayOffset < 30; dayOffset++)
+                {
+                    try { snapshots.AddRange(await quotaHistory.ReadAsync(today.AddDays(-dayOffset), cancellationToken)); }
+                    catch (InvalidDataException) { }
+                }
+                var cards = snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow(), Language) : null;
+                return (Snapshots: snapshots, Cards: cards);
+            });
             await History.InitializeAsync(cancellationToken);
             if (History.LoadError is not null) notificationService.Notify(CopyText.HistoryNotificationTitle, CopyText.HistoryCorrupt);
 
-            var snapshots = new List<QuotaSnapshot>();
-            var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
-            for (var dayOffset = 0; dayOffset < 30; dayOffset++)
+            if (loaded.Snapshots.Count > 0)
             {
-                try { snapshots.AddRange(await quotaHistory.ReadAsync(today.AddDays(-dayOffset), cancellationToken)); }
-                catch (InvalidDataException) { }
+                lastKnownSnapshots.Clear();
+                lastKnownSnapshots.AddRange(loaded.Snapshots);
             }
-
-            if (snapshots.Count > 0) lastKnownSnapshots.Clear();
-            if (snapshots.Count > 0) lastKnownSnapshots.AddRange(snapshots);
-            ReplaceCards(snapshots.Count > 0 ? DashboardAggregation.ToCards(snapshots, timeProvider.GetUtcNow(), Language) : source.Load());
+            ReplaceCards(loaded.Cards ?? source.Load());
         }
         finally { SetQuotaDataBusy(false); }
     }
@@ -597,64 +1285,95 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public async Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) { if (!Settings.TrySetThreshold(value, out _)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
     public async Task SetGithubClientIdAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOAuthClientId = value.Trim(); githubFactory?.Create(Settings.GithubOAuthClientId); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public void Navigate(AppPage page) => CurrentPage = page;
-    public void Refresh() => _ = RefreshAsync();
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    public void Refresh() => _ = RefreshAsync(RefreshOrigin.Manual);
+    public Task RefreshAsync(CancellationToken cancellationToken = default) => RefreshAsync(RefreshOrigin.Manual, cancellationToken);
+    public async Task RefreshAsync(RefreshOrigin origin, CancellationToken cancellationToken = default)
     {
-        await refreshGate.WaitAsync(cancellationToken);
-        SetQuotaDataBusy(true);
+        if (origin == RefreshOrigin.Scheduled && !refreshGate.Wait(0)) return;
+        if (origin == RefreshOrigin.Manual) await refreshGate.WaitAsync(cancellationToken);
+        if (origin == RefreshOrigin.Manual) SetQuotaDataBusy(true);
         try
         {
-            PresentationState = PresentationState.Loading;
+            if (origin == RefreshOrigin.Manual) PresentationState = PresentationState.Loading;
             if (quotaApplication is null) { LoadCards(); PresentationState = Cards.Count == 0 ? PresentationState.Empty : PresentationState.Ready; return; }
             var previousProviderIdentities = ExpectedAutomaticIdentities();
-            var refreshResult = await quotaApplication.RefreshAsync(cancellationToken);
-            var snapshots = refreshResult.Snapshots;
-            var currentProviderIdentities = snapshots
-                .Where(snapshot => snapshot.Source != QuotaSource.Manual)
-                .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
-                .ToHashSet();
-            var missingProviders = previousProviderIdentities
-                .Where(identity => !currentProviderIdentities.Contains(identity))
-                .Select(identity => identity.Provider)
-                .Distinct()
-                .ToList();
-            var partialFailure = missingProviders.Count > 0;
-            if (snapshots.Count > 0)
+            // Provider fetches (including their synchronous prefix) always run on a worker so
+            // neither origin can execute network or credential work on the UI thread.
+            var refreshResult = await workScheduler.RunAsync(() => quotaApplication.RefreshAsync(cancellationToken).AsTask());
+            if (origin == RefreshOrigin.Scheduled)
             {
-                MergeLastKnownSnapshots(snapshots);
-                if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
-                UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
-                ReevaluateCards(timeProvider.GetUtcNow());
-                if (quotaHistory is not null) await History.RefreshAfterPersistAsync(cancellationToken);
-                if (refreshResult.Failures.Count > 0)
-                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
-                else if (partialFailure)
-                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
-                else
-                    notificationService.Clear();
-                PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
+                await uiDispatcher.InvokeAsync(() => ApplyRefreshResultAsync(refreshResult, previousProviderIdentities, cancellationToken));
+                return;
             }
-            else ReevaluateCards(timeProvider.GetUtcNow());
-            if (snapshots.Count == 0)
-            {
-                if (refreshResult.Failures.Count > 0)
-                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
-                else if (partialFailure)
-                    notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
-                else
-                    notificationService.Clear();
-                PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
-            }
+            await ApplyRefreshResultAsync(refreshResult, previousProviderIdentities, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch { ReevaluateCards(timeProvider.GetUtcNow()); PresentationState = PresentationState.Error; }
-        finally { SetQuotaDataBusy(false); refreshGate.Release(); }
+        catch
+        {
+            if (origin == RefreshOrigin.Scheduled)
+                await uiDispatcher.InvokeAsync(ApplyRefreshFailureUi);
+            else
+                ApplyRefreshFailureUi();
+        }
+        finally { if (origin == RefreshOrigin.Manual) SetQuotaDataBusy(false); refreshGate.Release(); }
+    }
+    private void ApplyRefreshFailureUi()
+    {
+        // The dispatcher may run this action after Dispose; recheck before any collection or
+        // state mutation, not only before dispatching.
+        if (IsDisposed) return;
+        ReevaluateCards(timeProvider.GetUtcNow());
+        PresentationState = PresentationState.Error;
+    }
+    private async Task ApplyRefreshResultAsync(QuotaRefreshResult refreshResult, HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> previousProviderIdentities, CancellationToken cancellationToken)
+    {
+        // An in-flight refresh released after Dispose must not publish state or notifications.
+        if (IsDisposed) return;
+        var snapshots = refreshResult.Snapshots;
+        var currentProviderIdentities = snapshots
+            .Where(snapshot => snapshot.Source != QuotaSource.Manual)
+            .Select(snapshot => (snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind))
+            .ToHashSet();
+        var missingProviders = previousProviderIdentities
+            .Where(identity => !currentProviderIdentities.Contains(identity))
+            .Select(identity => identity.Provider)
+            .Distinct()
+            .ToList();
+        var partialFailure = missingProviders.Count > 0;
+        if (snapshots.Count > 0)
+        {
+            MergeLastKnownSnapshots(snapshots);
+            if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
+            UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
+            ReevaluateCards(timeProvider.GetUtcNow());
+            // HistoryState's storage lane is the single owner of history mutations: provider
+            // snapshots are appended here instead of by the provider application.
+            if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
+            if (refreshResult.Failures.Count > 0)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
+            else if (partialFailure)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
+            else
+                notificationService.Clear();
+            PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
+        }
+        else ReevaluateCards(timeProvider.GetUtcNow());
+        if (snapshots.Count == 0)
+        {
+            if (refreshResult.Failures.Count > 0)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
+            else if (partialFailure)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
+            else
+                notificationService.Clear();
+            PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
+        }
+        OnPropertyChanged(nameof(PresentationState));
     }
     public async ValueTask ApplyProviderSnapshotsAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken = default)
     {
-        if (snapshots.Count == 0) return;
-        if (quotaHistory is not null) await quotaHistory.AppendAsync(snapshots, cancellationToken);
-        await History.RefreshAfterPersistAsync(cancellationToken);
+        if (snapshots.Count == 0 || IsDisposed) return;
+        if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
         MergeLastKnownSnapshots(snapshots);
         if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
         UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
@@ -671,8 +1390,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     public async Task ApplyManualSnapshotAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken = default)
     {
-        if (manualQuotaService is not null) await manualQuotaService.SetAsync(snapshot, cancellationToken);
-        if (manualQuotaService is not null) await History.RefreshAfterPersistAsync(cancellationToken);
+        if (manualQuotaService is not null)
+            await History.ApplyManualPersistAsync(async token => await manualQuotaService.SetAsync(snapshot, token), cancellationToken);
         lastKnownSnapshots.RemoveAll(existing => existing.Provider == snapshot.Provider && existing.Account == snapshot.Account && existing.Window.Kind == snapshot.Window.Kind && existing.Metric == snapshot.Metric);
         lastKnownSnapshots.Add(snapshot);
         ApplyManualSnapshotUi(snapshot);
@@ -706,6 +1425,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     private void UpsertSnapshotCards(IEnumerable<QuotaSnapshot> snapshots, DateTimeOffset now)
     {
+        if (IsDisposed) return;
         foreach (var snapshot in snapshots)
         {
             var row = QuotaPresentationFormatter.Format(snapshot, now, Language);
@@ -778,9 +1498,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(EmptyStateText));
     }
-    private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { var replacement = cards.ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
+    private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { if (IsDisposed) return; var replacement = cards.ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
     private void ReevaluateCards(DateTimeOffset now)
     {
+        // Cards.CollectionChanged is not covered by the OnPropertyChanged guard; in-flight
+        // refresh/initialize completions must never mutate the collection after Dispose.
+        if (IsDisposed) return;
         for (var cardIndex = 0; cardIndex < Cards.Count; cardIndex++)
         {
             var card = Cards[cardIndex];
@@ -829,7 +1552,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); } return true; }
-    private void OnPropertyChanged(string? name) => PropertyChanged?.Invoke(this, new(name));
+    private void OnPropertyChanged(string? name)
+    {
+        if (IsDisposed) return;
+        PropertyChanged?.Invoke(this, new(name));
+    }
 }
 
 public static class UiSettings

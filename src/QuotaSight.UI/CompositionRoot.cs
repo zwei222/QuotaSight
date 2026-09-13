@@ -44,7 +44,7 @@ public static class CompositionRoot
         var credentials = CreateCredentialStore();
         var source = new PersistentDashboardSource(history);
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
-        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history, codex);
+        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex);
         return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application);
     }
 
@@ -54,7 +54,7 @@ public static class CompositionRoot
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
         var credentials = credentialStore ?? CreateCredentialStore();
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
-        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, history, codex);
+        var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex);
         var settings = new AppSettingsStore();
         var factory = new GitHubClientFactory(client);
         var github = factory.Create(settings.Load().GithubOAuthClientId);
