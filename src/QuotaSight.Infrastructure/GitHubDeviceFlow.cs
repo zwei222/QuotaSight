@@ -54,7 +54,11 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/device/code");
             request.Headers.Accept.ParseAdd("application/json");
-            request.Content = JsonContent.Create(new DeviceCodeRequest(clientId, scope), GitHubJsonContext.Default.DeviceCodeRequest);
+            request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = clientId,
+                ["scope"] = scope
+            });
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
             var details = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceCodeResponse, cancellationToken);
@@ -87,16 +91,27 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
                 await delay.DelayAsync(interval, cancellationToken);
                 using var request = new HttpRequestMessage(HttpMethod.Post, "https://github.com/login/oauth/access_token");
                 request.Headers.Accept.ParseAdd("application/json");
-                request.Content = JsonContent.Create(new TokenRequest(clientId, authorization.DeviceCode, GrantType), GitHubJsonContext.Default.TokenRequest);
+                request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["client_id"] = clientId,
+                    ["device_code"] = authorization.DeviceCode,
+                    ["grant_type"] = GrantType
+                });
                 using var response = await client.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);
                 var result = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(cancellationToken), GitHubJsonContext.Default.DeviceTokenResponse, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(result?.AccessToken)) return FetchResult<string>.Success(result.AccessToken);
                 if (result?.Error == "authorization_pending") continue;
                 if (result?.Error == "slow_down") { interval += TimeSpan.FromSeconds(5); continue; }
-                if (result?.Error == "expired_token") return new(FetchStatus.TransientFailure, Error: "GitHub device authorization expired.");
-                if (result?.Error == "access_denied") return new(FetchStatus.Unauthorized, Error: "GitHub device authorization denied.");
-                return new(FetchStatus.TransientFailure, Error: "GitHub token response was invalid.");
+                return result?.Error switch
+                {
+                    "expired_token" => new(FetchStatus.TransientFailure, Error: "GitHub device authorization expired."),
+                    "access_denied" => new(FetchStatus.Unauthorized, Error: "GitHub device authorization denied."),
+                    "incorrect_client_credentials" => new(FetchStatus.Unauthorized, Error: "GitHub client credentials were rejected."),
+                    "device_flow_disabled" => new(FetchStatus.Unsupported, Error: "GitHub device authorization is disabled."),
+                    "unsupported_grant_type" => new(FetchStatus.Unsupported, Error: "GitHub device authorization grant is unsupported."),
+                    _ => new(FetchStatus.TransientFailure, Error: "GitHub token response was invalid.")
+                };
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {

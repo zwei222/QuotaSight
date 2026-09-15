@@ -400,16 +400,32 @@ public partial class MainWindow : Window
     private DeviceAuthorizationStart? githubAuthorization;
     private async void CopilotStartClick(object? sender, RoutedEventArgs e)
     {
+        if (ViewModel.IsCopilotFlowActive) return;
+        ViewModel.SetCopilotFlowActive(true);
         try
         {
             await RunTrackedAsync(async token =>
             {
                 var result = await providerService.StartGitHubDeviceFlowAsync(token);
-                if (result.IsSuccess && result.Value is { } auth) { githubAuthorization = auth; ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started); }
-                else ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotUiState.Failed);
+                if (!result.IsSuccess || result.Value is not { } auth)
+                {
+                    ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotStateFor(result.Status, result.Error), result.Error);
+                    return;
+                }
+
+                githubAuthorization = auth;
+                ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started);
+                _ = Launcher.LaunchUriAsync(auth.VerificationUri);
+                await PollCopilotAsync(auth, token);
             });
         }
         catch (OperationCanceledException) { }
+        finally { ViewModel.SetCopilotFlowActive(false); }
+    }
+    private async Task PollCopilotAsync(DeviceAuthorizationStart auth, CancellationToken token)
+    {
+        var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
+        ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.IsSuccess ? CopilotUiState.Completed : CopilotStateFor(result.Status, result.Error), result.Error);
     }
     private async void CopilotProbeClick(object? sender, RoutedEventArgs e)
     {
@@ -421,16 +437,25 @@ public partial class MainWindow : Window
     }
     private async void CopilotPollClick(object? sender, RoutedEventArgs e)
     {
-        if (githubAuthorization is not { } auth) return;
+        if (ViewModel.IsCopilotFlowActive || githubAuthorization is not { } auth) return;
+        ViewModel.SetCopilotFlowActive(true);
         try
         {
-            await RunTrackedAsync(async token =>
-            {
-                var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
-                ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.IsSuccess ? CopilotUiState.Completed : CopilotUiState.Failed);
-            });
+            await RunTrackedAsync(token => PollCopilotAsync(auth, token));
         }
         catch (OperationCanceledException) { }
+        finally { ViewModel.SetCopilotFlowActive(false); }
+    }
+    private static CopilotUiState CopilotStateFor(FetchStatus status, string? error)
+    {
+        var message = error ?? string.Empty;
+        if (message.Contains("device_flow_disabled", StringComparison.OrdinalIgnoreCase) || message.Contains("device flow is disabled", StringComparison.OrdinalIgnoreCase) || message.Contains("device authorization is disabled", StringComparison.OrdinalIgnoreCase)) return CopilotUiState.DeviceFlowDisabled;
+        if (message.Contains("not configured", StringComparison.OrdinalIgnoreCase) || message.Contains("incorrect_client_credentials", StringComparison.OrdinalIgnoreCase) || message.Contains("client credentials", StringComparison.OrdinalIgnoreCase) || message.Contains("incorrect credentials", StringComparison.OrdinalIgnoreCase)) return CopilotUiState.ConfigurationError;
+        if (status == FetchStatus.Unsupported) return CopilotUiState.Unsupported;
+        if (status == FetchStatus.Unauthorized) return CopilotUiState.Denied;
+        if (error?.Contains("expired", StringComparison.OrdinalIgnoreCase) == true) return CopilotUiState.Expired;
+        if (error?.Contains("pending", StringComparison.OrdinalIgnoreCase) == true) return CopilotUiState.Pending;
+        return CopilotUiState.Failed;
     }
     private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = Launcher.LaunchUriAsync(auth.VerificationUri); }
     private void CopilotCopyClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(auth.UserCode); }
