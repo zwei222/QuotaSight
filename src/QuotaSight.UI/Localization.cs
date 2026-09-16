@@ -38,6 +38,7 @@ public sealed class UiCopy
     public string OpenCodeDescription => IsJapanese ? "APIキーは安全な資格情報ストアを利用できる場合は保存し、利用できない場合はセッション中のみ保持します。キーは表示・記録しません。" : "API key is stored in the secure credential store when available; otherwise it is kept for this session only. It is never displayed or logged.";
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
     public string CopilotDescription => IsJapanese ? "Copilotはghの状態確認またはデバイス認証を使用します。デバイス認証には実行時に設定したGitHub App Client IDが必要ですが、クライアントシークレットは不要です。ghの状態確認にはClient IDは不要です。組織の利用枠を取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub App Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotFlowWaiting => IsJapanese ? "認証処理中です。ブラウザーでコードを入力するまで待っています。" : "Authentication is in progress. Waiting for you to enter the code in your browser.";
     public string CodexBadge => IsJapanese ? "実験的" : "Experimental";
     public string CodexDescription => IsJapanese ? "OpenAI Codexの実験的な連携です。ChatGPT Plus/ProのCodex枠だけを取得します。Codex CLIは不要で、QuotaSightがブラウザーでデバイス認証を開始します。ブラウザーを開けない場合は、表示されたURLとコードで手動で続行できます。" : "Experimental OpenAI Codex integration for the ChatGPT Plus/Pro Codex allowance only. No Codex CLI installation is required; QuotaSight starts the device login in your browser. If the browser cannot open, continue manually with the displayed URL and code.";
     public string CodexExpires => IsJapanese ? "期限" : "Expires";
@@ -143,20 +144,35 @@ public sealed class UiCopy
         FetchStatus.RateLimited => "OpenCode Goで一時的な利用制限が発生しています（429）。",
         _ => "OpenCode Goからの応答を処理できませんでした。"
     } : result.Message;
+    public string CopilotQuotaNotice => IsJapanese
+        ? "認証に成功しても利用枠の取得には成功していません。Copilot Business個人の月次残量を返す公式APIは確認できないため、公式画面または手動入力を利用してください。"
+        : "Authorization does not mean quota was retrieved. GitHub has no confirmed official API for an individual Copilot Business monthly remaining balance; use the official page or enter it manually.";
     public string CopilotStatus(CopilotUiState state) => IsJapanese ? state switch
     {
         CopilotUiState.Idle => "Copilotの認証はまだ開始されていません。",
-        CopilotUiState.Started => "Copilotの認証を開始しました。",
-        CopilotUiState.Completed => "Copilotの認証が完了しました。",
-        CopilotUiState.Failed => "Copilotの認証に失敗しました。",
+        CopilotUiState.Started => "認証を開始しました。ブラウザーでコードを入力するまで待っています。入力後は自動で確認します。",
+        CopilotUiState.Pending => "認証を待っています。ブラウザーでコードを入力してください。",
+        CopilotUiState.Completed => "GitHubの認証が完了しました。",
+        CopilotUiState.Denied => "GitHubの認証が拒否されました。",
+        CopilotUiState.Expired => "GitHubのデバイス認証コードの期限が切れました。もう一度開始してください。",
+        CopilotUiState.ConfigurationError => "GitHub App Client IDが設定されていません。設定を確認してください。",
+        CopilotUiState.DeviceFlowDisabled => "GitHubのデバイス認証は無効になっています。別の認証方法または公式ページを利用してください。",
+        CopilotUiState.Unsupported => "このCopilot連携は非対応です。公式ページまたは手動入力を利用してください。",
+        CopilotUiState.Failed => "GitHubの認証を完了できませんでした。詳細を確認して再試行してください。",
         CopilotUiState.GhProbe => "Copilotのgh状態を確認しました。",
         _ => "Copilotの状態を確認できません。"
     } : state switch
     {
         CopilotUiState.Idle => "Copilot authentication has not started yet.",
-        CopilotUiState.Started => "Copilot device flow started.",
+        CopilotUiState.Started => "Device authentication started. Waiting for you to enter the code in your browser; checking continues automatically afterward.",
+        CopilotUiState.Pending => "Waiting for GitHub authorization. Enter the code in your browser.",
         CopilotUiState.Completed => "GitHub authorization completed.",
-        CopilotUiState.Failed => "GitHub authorization failed.",
+        CopilotUiState.Denied => "GitHub authorization was denied.",
+        CopilotUiState.Expired => "The GitHub device code expired. Start again to request a new code.",
+        CopilotUiState.ConfigurationError => "GitHub App Client ID is not configured. Check Settings.",
+        CopilotUiState.DeviceFlowDisabled => "GitHub device flow is disabled. Use another sign-in method or the official page.",
+        CopilotUiState.Unsupported => "This Copilot integration is unsupported. Use the official page or manual entry.",
+        CopilotUiState.Failed => "GitHub authorization could not be completed. Review the details and try again.",
         CopilotUiState.GhProbe => "Copilot gh status checked.",
         _ => "Copilot status unavailable."
     };

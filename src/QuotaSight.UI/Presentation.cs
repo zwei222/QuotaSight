@@ -20,7 +20,7 @@ public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
 public enum CodexAuthorizationState { Disconnected, AwaitingAuthorization, Pending, Connected, Error }
 public enum ProviderConnectionChoice { ChatGpt, Claude, Codex, OpenCode, Copilot }
-public enum CopilotUiState { Idle, Started, Completed, Failed, GhProbe }
+public enum CopilotUiState { Idle, Started, Pending, Completed, Denied, Expired, ConfigurationError, DeviceFlowDisabled, Unsupported, Failed, GhProbe }
 public enum UsageBand { Normal, Attention, Danger, OverLimit }
 public sealed record LocalizedChoice<T>(T Value, string DisplayName)
 {
@@ -1147,15 +1147,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string PersistentStateForTests => Settings.GithubOAuthClientId;
     public AppSettingsDto CurrentSettingsForTests => CurrentSettings();
     public string CopilotNotice => CopyText.CopilotDescription;
+    public string CopilotQuotaNotice => CopyText.CopilotQuotaNotice;
+    public string CopilotFlowWaitingText => CopyText.CopilotFlowWaiting;
     public IReadOnlyList<ProviderChoiceViewModel> ProviderChoices => UiSettings.ProviderChoices(Language);
     private CopilotUiState copilotState = CopilotUiState.Idle;
     private string copilotVerificationUrl = string.Empty;
     private string copilotUserCode = string.Empty;
-    public string CopilotDeviceResult => copilotState == CopilotUiState.Started
+    private string copilotDetail = string.Empty;
+    public CopilotUiState CopilotState => copilotState;
+    public bool IsCopilotFlowActive { get; private set; }
+    public bool CanStartCopilot => !IsCopilotFlowActive;
+    public bool CanPollCopilot => !IsCopilotFlowActive && copilotState is CopilotUiState.Started or CopilotUiState.Pending or CopilotUiState.Failed;
+    public string CopilotDeviceResult => copilotState is CopilotUiState.Started or CopilotUiState.Pending
         ? Language == UiLanguage.Japanese
-            ? $"認証URL: {copilotVerificationUrl}\nユーザーコード: {copilotUserCode}\n操作: コピー · 開く · 確認"
-            : $"Verification URL: {copilotVerificationUrl}\nUser code: {copilotUserCode}\nActions: Copy · Open · Poll"
-        : CopyText.CopilotStatus(copilotState);
+            ? $"認証URL: {copilotVerificationUrl}\nユーザーコード: {copilotUserCode}\n{CopyText.CopilotStatus(copilotState)}\n操作: コピー · 開く · 確認"
+            : $"Verification URL: {copilotVerificationUrl}\nUser code: {copilotUserCode}\n{CopyText.CopilotStatus(copilotState)}\nActions: Copy · Open · Poll"
+        : $"{CopyText.CopilotStatus(copilotState)}{(string.IsNullOrWhiteSpace(copilotDetail) ? string.Empty : $"\n{copilotDetail}")}";
     private CodexUiResult codexResult = new(false, CodexAuthorizationState.Disconnected, "Codex is not connected.");
     private bool providerSelectionMade;
     private bool hasCodexCredential;
@@ -1473,20 +1480,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (Cards[index].Provider == ProviderKind.ChatGpt && Cards[index].Name.Contains("Codex", StringComparison.OrdinalIgnoreCase)) Cards.RemoveAt(index);
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
-    public void SetCopilotDeviceResult(string url, string code, CopilotUiState state = CopilotUiState.Started)
+    public void SetCopilotDeviceResult(string url, string code, CopilotUiState state = CopilotUiState.Started, string? detail = null)
     {
         copilotState = state;
-        if (state == CopilotUiState.Started && Uri.TryCreate(url, UriKind.Absolute, out var verificationUri) && verificationUri.Scheme is "https" or "http")
+        copilotDetail = state is CopilotUiState.Started or CopilotUiState.Pending ? string.Empty : detail ?? string.Empty;
+        if (state is CopilotUiState.Started or CopilotUiState.Pending && Uri.TryCreate(url, UriKind.Absolute, out var verificationUri) && verificationUri.Scheme is "https" or "http")
         {
             copilotVerificationUrl = verificationUri.ToString();
             copilotUserCode = code;
         }
-        else
+        else if (state is not CopilotUiState.Pending)
         {
             copilotVerificationUrl = string.Empty;
             copilotUserCode = string.Empty;
         }
-        OnPropertyChanged(nameof(CopilotDeviceResult));
+        foreach (var name in new[] { nameof(CopilotDeviceResult), nameof(CopilotState), nameof(CanPollCopilot) }) OnPropertyChanged(name);
+    }
+    public void SetCopilotFlowActive(bool active)
+    {
+        IsCopilotFlowActive = active;
+        foreach (var name in new[] { nameof(IsCopilotFlowActive), nameof(CanStartCopilot), nameof(CanPollCopilot) }) OnPropertyChanged(name);
     }
     private void LoadCards()
     {
@@ -1549,7 +1562,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); } return true; }
     private void OnPropertyChanged(string? name)

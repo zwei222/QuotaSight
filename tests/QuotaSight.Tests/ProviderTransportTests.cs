@@ -83,6 +83,69 @@ public sealed class ProviderTransportTests
         }
     }
 
+    [Fact]
+    public async Task GitHub_device_flow_uses_form_encoded_requests_and_returns_successful_token()
+    {
+        var requests = new List<(string? ContentType, string Body)>();
+        var responses = new Queue<HttpResponseMessage>(new[]
+        {
+            Json(HttpStatusCode.OK, "{\"device_code\":\"device-code\",\"user_code\":\"user-code\",\"verification_uri\":\"https://github.com/login/device\",\"expires_in\":600,\"interval\":0}"),
+            Json(HttpStatusCode.OK, "{\"access_token\":\"access-token-secret\"}")
+        });
+        var handler = new Handler(request =>
+        {
+            var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            requests.Add((request.Content.Headers.ContentType?.MediaType, body));
+            return responses.Dequeue();
+        });
+        var client = new GitHubDeviceFlowClient(new HttpClient(handler), "client-id", delay: new NoDelay(), scope: "read:user read:org");
+
+        var start = await client.StartAsync(default);
+        var result = await client.PollAsync(start.Value!, default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("access-token-secret", result.Value);
+        Assert.Collection(requests,
+            request =>
+            {
+                Assert.Equal("application/x-www-form-urlencoded", request.ContentType);
+                Assert.Equal("client_id=client-id&scope=read%3Auser+read%3Aorg", request.Body);
+            },
+            request =>
+            {
+                Assert.Equal("application/x-www-form-urlencoded", request.ContentType);
+                Assert.Equal("client_id=client-id&device_code=device-code&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code", request.Body);
+            });
+    }
+
+    [Fact]
+    public async Task GitHub_poll_classifies_known_errors_without_exposing_response_data()
+    {
+        var expected = new Dictionary<string, FetchStatus>
+        {
+            ["expired_token"] = FetchStatus.TransientFailure,
+            ["access_denied"] = FetchStatus.Unauthorized,
+            ["incorrect_client_credentials"] = FetchStatus.Unauthorized,
+            ["device_flow_disabled"] = FetchStatus.Unsupported,
+            ["unsupported_grant_type"] = FetchStatus.Unsupported
+        };
+
+        foreach (var pair in expected)
+        {
+            var error = pair.Key;
+            var responseBody = $"{{\"error\":\"{error}\",\"error_description\":\"secret response details\"}}";
+            var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
+            var result = await new GitHubDeviceFlowClient(
+                new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, responseBody))),
+                "client-id",
+                delay: new NoDelay()).PollAsync(authorization, default);
+
+            Assert.Equal(pair.Value, result.Status);
+            Assert.Null(result.Value);
+            Assert.DoesNotContain(responseBody, result.Error ?? "", StringComparison.Ordinal);
+        }
+    }
+
     private static void AssertSnapshot(QuotaSnapshot snapshot, QuotaWindowKind kind, decimal percent, string resetAt)
     {
         Assert.Equal(kind, snapshot.Window.Kind);
