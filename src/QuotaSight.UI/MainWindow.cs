@@ -11,6 +11,11 @@ using QuotaSight.Infrastructure;
 namespace QuotaSight.UI;
 
 public interface IClipboardService { Task SetTextAsync(string text); }
+public interface IUriLauncher { Task<bool> LaunchUriAsync(Uri uri); }
+public sealed class AvaloniaUriLauncher(Func<Uri, Task<bool>> launch) : IUriLauncher
+{
+    public Task<bool> LaunchUriAsync(Uri uri) => launch(uri);
+}
 public interface IHistoryExportDestination
 {
     Task<IHistoryExportFile?> PickAsync(string suggestedName, string contentType);
@@ -44,6 +49,7 @@ public partial class MainWindow : Window
     private readonly IProviderUiService providerService;
     private readonly IClipboardService? clipboardService;
     private readonly IHistoryExportDestination exportDestination;
+    private readonly IUriLauncher uriLauncher;
     public bool TrayAvailable { get; set; }
     public Action<bool>? ResidentModeChanged { get; set; }
     public Func<Task>? ExitRequestedAsync { get; set; }
@@ -61,13 +67,15 @@ public partial class MainWindow : Window
     public MainWindow((MainViewModel ViewModel, IProviderUiService Provider) parts) : this(parts.ViewModel, parts.Provider) { }
     public MainWindow(MainViewModel viewModel) : this(viewModel, new UiProviderFacade(), null) { }
     public MainWindow(MainViewModel viewModel, IProviderUiService providerService) : this(viewModel, providerService, null, null) { }
-    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService) : this(viewModel, providerService, clipboardService, null) { }
-    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination)
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService) : this(viewModel, providerService, clipboardService, null, null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination) : this(viewModel, providerService, clipboardService, exportDestination, null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination, IUriLauncher? uriLauncher)
     {
         ViewModel = viewModel;
         this.providerService = providerService;
         this.clipboardService = clipboardService;
         this.exportDestination = exportDestination ?? new AvaloniaHistoryExportDestination(this);
+        this.uriLauncher = uriLauncher ?? new AvaloniaUriLauncher(uri => Launcher.LaunchUriAsync(uri));
         InitializeComponent();
         DataContext = ViewModel;
         if (providerService is UiProviderFacade facade)
@@ -415,7 +423,7 @@ public partial class MainWindow : Window
 
                 githubAuthorization = auth;
                 ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started);
-                _ = Launcher.LaunchUriAsync(auth.VerificationUri);
+                await uriLauncher.LaunchUriAsync(auth.VerificationUri);
                 await PollCopilotAsync(auth, token);
             });
         }
@@ -457,9 +465,9 @@ public partial class MainWindow : Window
         if (error?.Contains("pending", StringComparison.OrdinalIgnoreCase) == true) return CopilotUiState.Pending;
         return CopilotUiState.Failed;
     }
-    private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = Launcher.LaunchUriAsync(auth.VerificationUri); }
+    private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = uriLauncher.LaunchUriAsync(auth.VerificationUri); }
     private void CopilotCopyClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(auth.UserCode); }
-    private void OpenChatGptClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.ChatGpt));
+    private void OpenChatGptClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.ChatGpt));
     private async void CodexStartClick(object? sender, RoutedEventArgs e)
     {
         try
@@ -512,12 +520,12 @@ public partial class MainWindow : Window
     private async Task OpenCodexBrowserAsync()
     {
         if (ViewModel.CodexVerificationUri is not { } uri) return;
-        try { ViewModel.SetCodexBrowserStatus(await Launcher.LaunchUriAsync(uri)); }
+        try { ViewModel.SetCodexBrowserStatus(await uriLauncher.LaunchUriAsync(uri)); }
         catch (OperationCanceledException) { throw; }
         catch { ViewModel.SetCodexBrowserStatus(false); }
     }
-    private void OpenClaudeClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Claude));
-    private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
+    private void OpenClaudeClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.Claude));
+    private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
     private async void DeleteHistoryClick(object? sender, RoutedEventArgs e)
     {
         try

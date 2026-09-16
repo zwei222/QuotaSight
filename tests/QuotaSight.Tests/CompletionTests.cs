@@ -540,6 +540,63 @@ public sealed class CompletionTests
     }
 
     [Fact]
+    public async Task Ui_provider_facade_stores_successful_github_device_flow_token_under_github_key()
+    {
+        const string token = "github-access-token";
+        var credentials = new InMemoryCredentialStore();
+        var github = new GitHubDeviceFlowClient(
+            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"access_token\":\"github-access-token\"}"))),
+            "client-id",
+            delay: new NoDelay());
+        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
+        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
+
+        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(token, await credentials.GetAsync("github", default));
+    }
+
+    [Fact]
+    public async Task Ui_provider_facade_does_not_store_failed_github_device_flow_token_or_expose_it()
+    {
+        const string token = "github-access-token-secret";
+        var credentials = new InMemoryCredentialStore();
+        var github = new GitHubDeviceFlowClient(
+            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"error\":\"access_denied\",\"error_description\":\"github-access-token-secret\"}"))),
+            "client-id",
+            delay: new NoDelay());
+        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
+        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
+
+        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(await credentials.GetAsync("github", default));
+        Assert.DoesNotContain(token, result.Error ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Ui_provider_facade_uses_session_fallback_when_github_secure_store_is_unavailable()
+    {
+        const string token = "github-access-token";
+        var fallback = new InMemoryCredentialStore();
+        var credentials = new FallbackCredentialStore(new FailingCredentialStore(), fallback);
+        var github = new GitHubDeviceFlowClient(
+            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"access_token\":\"github-access-token\"}"))),
+            "client-id",
+            delay: new NoDelay());
+        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
+        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
+
+        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(token, await fallback.GetAsync("github", default));
+        Assert.Equal(CredentialStoreAvailability.Unavailable, credentials.Availability);
+    }
+
+    [Fact]
     public async Task Fallback_get_prefers_session_value_and_primary_success_removes_stale_value()
     {
         var primary = new InMemoryCredentialStore();
@@ -890,4 +947,10 @@ public sealed class CompletionTests
     }
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
     private sealed class RecordingGitHubFactory : IGitHubClientFactory { public string? LastClientId; public GitHubDeviceFlowClient Create(string clientId) { LastClientId = clientId; return null!; } }
+    private sealed class NoDelay : IDeviceFlowDelay { public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => ValueTask.CompletedTask; }
+    private sealed class GitHubResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(response(request));
+    }
+    private static HttpResponseMessage JsonResponse(string content) => new(System.Net.HttpStatusCode.OK) { Content = new StringContent(content) };
 }

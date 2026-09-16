@@ -47,6 +47,24 @@ public sealed class CopilotDeviceFlowUiTests
     }
 
     [AvaloniaFact]
+    public async Task Start_success_passes_the_verification_uri_to_the_browser_launcher_exactly_once()
+    {
+        var provider = new RecordingCopilotProvider
+        {
+            StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
+            PollResult = FetchResult<string>.Success("stored")
+        };
+        var launcher = new RecordingBrowserLauncher();
+        var window = CreateWindow(provider, launcher);
+
+        window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Single(launcher.LaunchedUris);
+        Assert.Equal(new Uri("https://github.com/login/device"), launcher.LaunchedUris[0]);
+    }
+
+    [AvaloniaFact]
     public async Task Start_device_flow_suppresses_duplicate_start_while_poll_is_waiting()
     {
         var provider = new RecordingCopilotProvider
@@ -95,6 +113,37 @@ public sealed class CopilotDeviceFlowUiTests
 
         provider.PollRelease.TrySetResult(true);
         await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [AvaloniaFact]
+    public async Task Shutdown_cancels_waiting_copilot_poll_without_dispatcher_error_or_completed_transition()
+    {
+        var provider = new RecordingCopilotProvider
+        {
+            StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
+            PollResult = FetchResult<string>.Success("must not complete")
+        };
+        provider.PollRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var window = CreateWindow(provider, new RecordingBrowserLauncher());
+        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
+        window.OperationRunner = coordinator.Run;
+        var unhandled = new List<Exception>();
+        void OnUnhandled(object? sender, Avalonia.Threading.DispatcherUnhandledExceptionEventArgs args) { unhandled.Add(args.Exception); args.Handled = true; }
+        Avalonia.Threading.Dispatcher.UIThread.UnhandledException += OnUnhandled;
+        try
+        {
+            window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var exit = coordinator.BeginExitAsync();
+            await provider.PollCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.False(window.ViewModel.IsCopilotFlowActive);
+            Assert.NotEqual(CopilotUiState.Completed, window.ViewModel.CopilotState);
+            Assert.Empty(unhandled);
+        }
+        finally { Avalonia.Threading.Dispatcher.UIThread.UnhandledException -= OnUnhandled; }
     }
 
     [Fact]
@@ -161,13 +210,19 @@ public sealed class CopilotDeviceFlowUiTests
         Assert.Contains("Client ID", japanese.CopilotStatus(CopilotUiState.ConfigurationError), StringComparison.Ordinal);
     }
 
-    private static MainWindow CreateWindow(RecordingCopilotProvider provider)
+    private static MainWindow CreateWindow(RecordingCopilotProvider provider, IUriLauncher? launcher = null)
     {
-        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), provider);
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()), provider, null, null, launcher);
         window.Show();
         window.ViewModel.OpenProviderFlow();
         window.ViewModel.SelectProvider(ProviderConnectionChoice.Copilot);
         return window;
+    }
+
+    private sealed class RecordingBrowserLauncher : IUriLauncher
+    {
+        public List<Uri> LaunchedUris { get; } = [];
+        public Task<bool> LaunchUriAsync(Uri uri) { LaunchedUris.Add(uri); return Task.FromResult(true); }
     }
 
     private sealed class RecordingCopilotProvider : IProviderUiService
@@ -176,6 +231,7 @@ public sealed class CopilotDeviceFlowUiTests
         public FetchResult<string> PollResult { get; init; } = new(FetchStatus.TransientFailure);
         public TaskCompletionSource PollStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource PollCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool>? PollRelease { get; set; }
         public int StartCalls { get; private set; }
         public int PollCalls { get; private set; }
@@ -186,7 +242,15 @@ public sealed class CopilotDeviceFlowUiTests
         {
             PollCalls++;
             PollStarted.TrySetResult();
-            if (PollRelease is not null) await PollRelease.Task.WaitAsync(token);
+            try
+            {
+                if (PollRelease is not null) await PollRelease.Task.WaitAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                PollCancellationObserved.TrySetResult();
+                throw;
+            }
             Completed.TrySetResult();
             return PollResult;
         }
