@@ -115,7 +115,7 @@ public sealed class UiCopy
     public string Integrations => IsJapanese ? "連携" : "Integrations";
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
     public string GithubOrganization => IsJapanese ? "GitHub Organization slug（秘密情報ではありません）" : "GitHub organization slug (not a secret)";
-    public string GithubOrganizationHint => IsJapanese ? "Billing Usage APIで参照する組織のslug。空欄または無効な値は安全に無効化されます。" : "The organization slug used by the Billing Usage API. Blank or invalid values are safely disabled.";
+    public string GithubOrganizationHint => IsJapanese ? "入力内容は変更時に自動保存されます。保存後はダッシュボードで更新してください。例: acme-engineering" : "Changes are auto-saved. After saving, refresh the dashboard. Example: acme-engineering";
     public string Autostart => IsJapanese ? "自動起動: 現在利用できません（プラットフォーム機能が未導入）" : "Autostart: Unsupported · platform backend not installed";
     public string AccountWatermark => IsJapanese ? "個人" : "Personal";
     public string UsedPercentWatermark => IsJapanese ? "0以上" : "0 or more";
@@ -199,10 +199,16 @@ public sealed class UiCopy
         };
         var detail = failure.Status switch
         {
+            FetchStatus.ConfigurationError when failure.Provider == ProviderKind.Copilot => IsJapanese ? "GitHub Organizationを設定してください（Settings）。" : "Set the GitHub Organization in Settings.",
+            FetchStatus.Unauthorized when failure.Provider == ProviderKind.Copilot => IsJapanese ? "GitHub認証が必要です。" : "GitHub authentication is required.",
+            FetchStatus.Forbidden when failure.Provider == ProviderKind.Copilot => IsJapanese ? "Billing権限が不足しています。AppのAdministration: Read-only、対象Organizationへのインストール/承認、認証ユーザーのOrganization管理権限を確認してください。" : "GitHub Billing permission is insufficient. Check the App's Administration: Read-only permission, installation and approval for the target Organization, and the authenticated user's Organization management permission.",
+            FetchStatus.RateLimited when failure.Provider == ProviderKind.Copilot => IsJapanese ? "GitHub Copilotのレート制限です。" : "GitHub Copilot is rate-limited.",
+            FetchStatus.ConfigurationError => IsJapanese ? "設定を確認してください。" : "Check the provider configuration.",
             FetchStatus.Unauthorized => IsJapanese ? "再接続が必要です。手動入力または公式ページを利用してください。" : "Reconnect is required. Use manual input or the official page.",
-            FetchStatus.Forbidden => IsJapanese ? "権限が不足しています。権限を確認してください。" : "Permission is insufficient. Check the account permissions.",
+            FetchStatus.Forbidden => IsJapanese ? "権限が不足しています。" : "Permission is insufficient.",
             FetchStatus.RateLimited => IsJapanese ? "一時的なレート制限です。" : "Temporary rate limit.",
             FetchStatus.TransientFailure => IsJapanese ? "一時的な取得失敗です。" : "Temporary fetch failure.",
+            FetchStatus.Unsupported when failure.Provider == ProviderKind.Copilot => IsJapanese ? "Billing Usageを取得できません。Organization名、アクセス権、対象の対応状況を確認してください。" : "Unable to retrieve Billing Usage. Check the organization name, access permissions, and whether the target is supported.",
             FetchStatus.Unsupported => IsJapanese ? "この連携は対応していません。手動入力または公式ページを利用してください。" : "This integration is unsupported. Use manual input or the official page.",
             _ => IsJapanese ? "取得できませんでした。" : "Could not fetch quota data."
         };

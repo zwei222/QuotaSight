@@ -47,6 +47,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
         foreach (var (billingResponse, expectedStatus) in new[]
         {
             (Json(HttpStatusCode.Forbidden, "", ("X-RateLimit-Remaining", "0")), FetchStatus.RateLimited),
+            (Json(HttpStatusCode.Forbidden, "", ("Retry-After", "60")), FetchStatus.RateLimited),
             (Json(HttpStatusCode.Forbidden, ""), FetchStatus.Forbidden),
             (Json((HttpStatusCode)429, ""), FetchStatus.RateLimited)
         })
@@ -64,6 +65,21 @@ public sealed class BlockingIdentityIsolationAdapterTests
     }
 
     [Fact]
+    public async Task FetchWithActiveAccount_maps_user_retry_after_to_rate_limit_without_calling_billing()
+    {
+        var store = new CountingCredentialStore("token");
+        var handler = new SequenceHandler(Json(HttpStatusCode.Forbidden, "", ("Retry-After", "60")));
+        using var client = new HttpClient(handler);
+
+        var result = await new DynamicCopilotAdapter(client, store, () => "acme").FetchWithActiveAccountAsync("GitHub Copilot", default);
+
+        Assert.Equal(FetchStatus.RateLimited, result.Result.Status);
+        Assert.Null(result.ActiveAccount);
+        Assert.Single(handler.Requests);
+        Assert.Equal("/user", handler.Requests[0].AbsolutePath);
+    }
+
+    [Fact]
     public async Task FetchWithActiveAccount_does_not_call_user_when_organization_is_unset_and_propagates_cancellation()
     {
         var store = new CountingCredentialStore("token");
@@ -73,7 +89,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
 
         var unsupported = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", default);
 
-        Assert.Equal(FetchStatus.Unsupported, unsupported.Result.Status);
+        Assert.Equal(FetchStatus.ConfigurationError, unsupported.Result.Status);
         Assert.Null(unsupported.ActiveAccount);
         Assert.Equal(0, store.Reads);
         Assert.Empty(handler.Requests);
@@ -99,7 +115,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
 
         var result = await new DynamicCopilotAdapter(client, store, () => organization).FetchWithActiveAccountAsync("GitHub Copilot", default);
 
-        Assert.Equal(FetchStatus.Unsupported, result.Result.Status);
+        Assert.Equal(FetchStatus.ConfigurationError, result.Result.Status);
         Assert.Null(result.ActiveAccount);
         Assert.Equal(0, store.Reads);
         Assert.Empty(handler.Requests);

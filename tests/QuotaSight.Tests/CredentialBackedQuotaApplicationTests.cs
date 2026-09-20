@@ -233,6 +233,20 @@ public sealed class CredentialBackedQuotaApplicationTests
     }
 
     [Fact]
+    public async Task Refresh_propagates_copilot_configuration_error_as_failure()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.ConfigurationError), "org-b/user-b"));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Equal(FetchStatus.ConfigurationError, Assert.Single(result.Failures).Status);
+        Assert.Empty(result.NoDataProviders);
+    }
+
+    [Fact]
     public async Task Refresh_propagates_copilot_active_account_when_billing_succeeds()
     {
         var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "org-b/user-b", "credits",

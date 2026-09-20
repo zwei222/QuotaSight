@@ -30,10 +30,10 @@ public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore cr
     {
         var configuredOrganization = (organization() ?? string.Empty).Trim();
         if (!GitHubOrganizationSlug.IsValid(configuredOrganization))
-            return new(new(FetchStatus.Unsupported, Error: "GitHub organization is not configured."));
+            return new(new(FetchStatus.ConfigurationError, Error: "GitHub organization is not configured."));
 
         var token = await credentials.GetAsync("github", cancellationToken);
-        if (string.IsNullOrWhiteSpace(token)) return new(new(FetchStatus.NoData));
+        if (string.IsNullOrWhiteSpace(token)) return new(new(FetchStatus.Unauthorized));
 
         try
         {
@@ -65,7 +65,7 @@ public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore cr
         response.StatusCode switch
         {
             System.Net.HttpStatusCode.Unauthorized => new(FetchStatus.Unauthorized),
-            System.Net.HttpStatusCode.Forbidden when response.Headers.TryGetValues("X-RateLimit-Remaining", out var values) && values.FirstOrDefault() == "0" => new(FetchStatus.RateLimited),
+            System.Net.HttpStatusCode.Forbidden when response.Headers.Contains("Retry-After") || response.Headers.TryGetValues("X-RateLimit-Remaining", out var values) && values.FirstOrDefault() == "0" => new(FetchStatus.RateLimited),
             System.Net.HttpStatusCode.Forbidden => new(FetchStatus.Forbidden),
             _ when (int)response.StatusCode == 429 => new(FetchStatus.RateLimited),
             _ when (int)response.StatusCode >= 500 => new(FetchStatus.TransientFailure),

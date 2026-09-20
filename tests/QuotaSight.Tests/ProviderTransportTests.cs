@@ -99,7 +99,7 @@ public sealed class ProviderTransportTests
             requests.Add((request.Content.Headers.ContentType?.MediaType, body));
             return responses.Dequeue();
         });
-        var client = new GitHubDeviceFlowClient(new HttpClient(handler), "client-id", delay: new NoDelay(), scope: "read:user read:org");
+        var client = new GitHubDeviceFlowClient(new HttpClient(handler), "client-id", delay: new NoDelay());
 
         var start = await client.StartAsync(default);
         var result = await client.PollAsync(start.Value!, default);
@@ -110,7 +110,7 @@ public sealed class ProviderTransportTests
             request =>
             {
                 Assert.Equal("application/x-www-form-urlencoded", request.ContentType);
-                Assert.Equal("client_id=client-id&scope=read%3Auser+read%3Aorg", request.Body);
+                Assert.Equal("client_id=client-id", request.Body);
             },
             request =>
             {
@@ -157,7 +157,6 @@ public sealed class ProviderTransportTests
             {"timePeriod":{"year":2026,"month":6},"organization":"acme-org","user":"octo-user","usageItems":[
               {"product":"Copilot","sku":"premium-model-a","unitType":"credits","grossQuantity":1.25,"discountQuantity":0.25,"netQuantity":1.0},
               {"product":"Copilot","sku":"premium-model-b","unitType":"credits","grossQuantity":2,"discountQuantity":0,"netQuantity":2},
-              {"product":"Copilot","sku":"legacy","unitType":"requests","grossQuantity":99,"discountQuantity":0,"netQuantity":99},
               {"product":"Other","sku":"x","unitType":"credits","grossQuantity":500,"discountQuantity":0,"netQuantity":500}
             ]}
             """;
@@ -179,6 +178,7 @@ public sealed class ProviderTransportTests
         Assert.Equal(QuotaConfidence.Official, snapshot.Confidence);
         Assert.Equal("Bearer github-token", captured!.Headers.Authorization!.ToString());
         Assert.Equal("application/vnd.github+json", captured.Headers.Accept.Single().MediaType);
+        Assert.Equal("2026-03-10", captured.Headers.GetValues("X-GitHub-Api-Version").Single());
         Assert.Contains("/organizations/acme-org/settings/billing/ai_credit/usage", captured.RequestUri!.AbsolutePath);
         Assert.Contains("year=2026", captured.RequestUri.Query);
         Assert.Contains("month=6", captured.RequestUri.Query);
@@ -275,7 +275,32 @@ public sealed class ProviderTransportTests
         var result = await new CopilotBillingUsageAdapter(
             new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
             new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
-        Assert.Equal(FetchStatus.NoData, result.Status);
+        Assert.Equal(FetchStatus.Unsupported, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_treats_an_empty_item_as_transient_failure()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"usageItems\":[{}]}"))),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.TransientFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_accepts_zero_credit_quantities()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":0,\"discountQuantity\":0,\"netQuantity\":0}]}"))),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.Success, result.Status);
+        Assert.Equal(0m, Assert.Single(result.Value!).Used);
     }
 
     [Fact]
@@ -307,6 +332,31 @@ public sealed class ProviderTransportTests
     }
 
     [Fact]
+    public async Task Copilot_billing_usage_explicit_empty_token_is_unauthorized_without_http()
+    {
+        var sent = false;
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })),
+            new InMemoryCredentialStore(), "acme-org", "octo-user")
+            .FetchWithTokenAsync("ignored", " ", default);
+
+        Assert.Equal(FetchStatus.Unauthorized, result.Status);
+        Assert.False(sent);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_maps_forbidden_retry_after_to_rate_limited()
+    {
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.Forbidden, "secret body", ("Retry-After", "60")))),
+            new InMemoryCredentialStore(), "acme-org", "octo-user")
+            .FetchWithTokenAsync("ignored", "token", default);
+
+        Assert.Equal(FetchStatus.RateLimited, result.Status);
+        Assert.DoesNotContain("secret body", result.Error ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Copilot_billing_usage_maps_sum_overflow_to_transient_failure()
     {
         var store = new InMemoryCredentialStore();
@@ -333,7 +383,7 @@ public sealed class ProviderTransportTests
     }
 
     [Fact]
-    public async Task Copilot_billing_usage_rejects_invalid_target_and_does_not_send_without_configuration()
+    public async Task Copilot_billing_usage_separates_invalid_configuration_from_missing_token_without_io()
     {
         var sent = false;
         var store = new InMemoryCredentialStore();
@@ -341,11 +391,11 @@ public sealed class ProviderTransportTests
         var adapter = new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })), store, "bad/org", "user");
 
         var invalidOrg = await adapter.FetchAsync("ignored", default);
-        Assert.Equal(FetchStatus.Unsupported, invalidOrg.Status);
+        Assert.Equal(FetchStatus.ConfigurationError, invalidOrg.Status);
         Assert.False(sent);
 
         var noToken = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })), new InMemoryCredentialStore(), "org", "user").FetchAsync("ignored", default);
-        Assert.Equal(FetchStatus.NoData, noToken.Status);
+        Assert.Equal(FetchStatus.Unauthorized, noToken.Status);
         Assert.False(sent);
     }
 
@@ -369,8 +419,20 @@ public sealed class ProviderTransportTests
 
         var result = await adapter.FetchAsync("ignored", default);
 
-        Assert.Equal(FetchStatus.Unsupported, result.Status);
+        Assert.Equal(FetchStatus.ConfigurationError, result.Status);
         Assert.False(sent);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_returns_no_data_for_valid_empty_usage()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "token", default);
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"org\",\"usageItems\":[]}"))),
+            store, "org", "user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.NoData, result.Status);
     }
 
     [Theory]
@@ -415,7 +477,12 @@ public sealed class ProviderTransportTests
         Assert.Equal(QuotaSource.Official, snapshot.Source);
     }
 
-    private static HttpResponseMessage Json(HttpStatusCode status, string content) => new(status) { Content = new StringContent(content) };
+    private static HttpResponseMessage Json(HttpStatusCode status, string content, params (string Name, string Value)[] headers)
+    {
+        var response = new HttpResponseMessage(status) { Content = new StringContent(content) };
+        foreach (var header in headers) response.Headers.TryAddWithoutValidation(header.Name, header.Value);
+        return response;
+    }
 
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
     {

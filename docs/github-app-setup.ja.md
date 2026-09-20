@@ -15,7 +15,7 @@ QuotaSightは認証にGitHub Appを使います。認証とCopilot Billing Usage
 7. Appを作成し、App IDではなく**Client ID**をコピーします。
 8. QuotaSight SettingsにはClient IDだけを入力します。
 
-QuotaSightはdesktop利用者にclient secretやprivate keyを要求しません。Device Flowにはどちらも不要で、アプリ内でinstallation access tokenを発行することもありません。
+QuotaSightはdesktop利用者にclient secretやprivate keyを要求しません。Device Flowにはどちらも不要で、アプリ内でinstallation access tokenを発行することもありません。GitHub Appのユーザーアクセストークンは従来のOAuth scopeを使わず、App permissionsと認証ユーザー自身の権限の共通部分で制限されます。
 
 Device Flowを完了するか、`gh auth status` probeを使います。Device Flow成功はGitHubが利用者を認証したことを示すだけで、organization Billing Usageの参照権限を示しません。
 
@@ -27,13 +27,13 @@ usageを取得するには、さらに次を行います。
 2. Appのorganization permissionsで**Administration: Read-only**を設定します。
 3. GitHub Appを対象organizationへinstallします。
 4. organization ownerにinstallationと要求権限を承認してもらいます。Billing Usage経路ではinstallationとowner承認が必須です。organizationのaccess restrictionやSAML SSO承認も完了します。
-5. 必要なorganization管理権限を持つユーザーでDevice Flowを完了します。QuotaSightはそのDevice Flow tokenを使い、別token入力欄はありません。
+5. 対象organizationのownerなど、必要なorganization管理権限を持つユーザーでDevice Flowを完了します。QuotaSightはそのDevice Flow tokenを使い、別token入力欄はありません。
 
 QuotaSightが呼ぶendpointは次です。
 
 `GET /organizations/{org}/settings/billing/ai_credit/usage`
 
-現在のyear/monthを指定し、ログインユーザーのusageを取得します。Device Flowが成功していても、一般のseat tokenでは**403 Forbidden**になる可能性があります。organization installation、owner approval、管理者権限、organization slugはそれぞれ別の要件です。
+このBilling Usage requestには`X-GitHub-Api-Version: 2026-03-10`を指定します。現在のyear/monthを指定し、ログインユーザーのusageを取得します。Device Flowが成功していても、一般のseat tokenでは**403 Forbidden**になる可能性があります。organization installation、owner approval、管理者権限、organization slugはそれぞれ別の要件です。
 
 対応する公式responseの`unitType`は`credits`です。QuotaSightはgross、discount、net、unit、集計月、取得時刻、反映遅延不明を表示します。billing entityはshared poolなので、個人のremainingは計算しません。GitHub側のreportingには遅延があり、request成功はリアルタイムusageを保証しません。
 
@@ -51,7 +51,7 @@ QuotaSightが呼ぶendpointは次です。
 - [GitHub AppのユーザーアクセストークンとDevice Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
 - [GitHub Appをインストール](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
 - [OrganizationでGitHub Appのインストールを制限](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
-- [請求利用状況REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)
+- [請求利用状況REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2026-03-10)
 - [GitHub Copilot AI usage UI](https://github.com/settings/copilot)
 
 [READMEへ戻る](../README.md) · [日本語版README](../README.ja.md) · [Englishセットアップガイド](github-app-setup.md)

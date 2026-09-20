@@ -39,4 +39,17 @@ public sealed class CopilotOrganizationSettingsTests
         }
         finally { window.Close(); window.ViewModel.Dispose(); }
     }
+
+    [Fact]
+    public void Organization_hint_tells_users_to_refresh_after_saving()
+    {
+        var copy = new UiCopy(UiLanguage.Japanese);
+
+        Assert.Contains("保存後", copy.GithubOrganizationHint, StringComparison.Ordinal);
+        Assert.Contains("変更時に自動保存", copy.GithubOrganizationHint, StringComparison.Ordinal);
+        Assert.Contains("更新", copy.GithubOrganizationHint, StringComparison.Ordinal);
+        Assert.Contains("auto-saved", new UiCopy(UiLanguage.English).GithubOrganizationHint, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("After saving", new UiCopy(UiLanguage.English).GithubOrganizationHint, StringComparison.Ordinal);
+        Assert.Contains("refresh", new UiCopy(UiLanguage.English).GithubOrganizationHint, StringComparison.OrdinalIgnoreCase);
+    }
 }

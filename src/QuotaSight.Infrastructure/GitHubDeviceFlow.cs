@@ -6,7 +6,7 @@ using QuotaSight.Core;
 
 namespace QuotaSight.Infrastructure;
 
-public sealed record DeviceCodeRequest([property: JsonPropertyName("client_id")] string ClientId, [property: JsonPropertyName("scope")] string Scope);
+public sealed record DeviceCodeRequest([property: JsonPropertyName("client_id")] string ClientId);
 public sealed record TokenRequest([property: JsonPropertyName("client_id")] string ClientId, [property: JsonPropertyName("device_code")] string DeviceCode, [property: JsonPropertyName("grant_type")] string GrantType);
 public sealed record DeviceAuthorizationStart(string DeviceCode, string UserCode, Uri VerificationUri, DateTimeOffset ExpiresAt, TimeSpan Interval);
 public sealed record DeviceCodeResponse([property: JsonPropertyName("device_code")] string DeviceCode, [property: JsonPropertyName("user_code")] string UserCode, [property: JsonPropertyName("verification_uri")] string VerificationUri, [property: JsonPropertyName("expires_in")] int ExpiresIn, [property: JsonPropertyName("interval")] int Interval);
@@ -35,16 +35,14 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
     private readonly string clientId;
     private readonly TimeProvider timeProvider;
     private readonly IDeviceFlowDelay delay;
-    private readonly string scope;
     private DeviceAuthorizationStart? started;
 
-    public GitHubDeviceFlowClient(HttpClient client, string clientId, TimeProvider? timeProvider = null, IDeviceFlowDelay? delay = null, string scope = "read:user read:org")
+    public GitHubDeviceFlowClient(HttpClient client, string clientId, TimeProvider? timeProvider = null, IDeviceFlowDelay? delay = null)
     {
         this.client = client;
         this.clientId = clientId;
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.delay = delay ?? new TimeProviderDeviceFlowDelay(this.timeProvider);
-        this.scope = scope;
     }
 
     public async ValueTask<FetchResult<DeviceAuthorizationStart>> StartAsync(CancellationToken cancellationToken)
@@ -56,8 +54,7 @@ public sealed class GitHubDeviceFlowClient : IGitHubAuthenticator
             request.Headers.Accept.ParseAdd("application/json");
             request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["client_id"] = clientId,
-                ["scope"] = scope
+                ["client_id"] = clientId
             });
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode) return new(FetchStatus.TransientFailure);

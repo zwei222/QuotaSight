@@ -31,7 +31,7 @@ internal partial class CopilotBillingJsonContext : JsonSerializerContext;
 public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
 {
     private const string TokenKey = "github";
-    private const string ApiVersion = "2022-11-28";
+    private const string ApiVersion = "2026-03-10";
     private static readonly TimeSpan FreshnessTtl = TimeSpan.FromHours(1);
     private readonly HttpClient client;
     private readonly ICredentialStore credentials;
@@ -61,15 +61,17 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
 
     public async ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken)
     {
-        if (!GitHubOrganizationSlug.IsValid(organization) || string.IsNullOrWhiteSpace(user)) return new(FetchStatus.Unsupported, Error: "GitHub organization configuration is invalid.");
+        if (!HasValidConfiguration()) return new(FetchStatus.ConfigurationError, Error: "GitHub organization or user configuration is invalid.");
         var token = await credentials.GetAsync(TokenKey, cancellationToken);
-        if (string.IsNullOrWhiteSpace(token)) return new(FetchStatus.NoData);
+        if (string.IsNullOrWhiteSpace(token)) return new(FetchStatus.Unauthorized);
 
         return await FetchWithTokenAsync(account, token, cancellationToken);
     }
 
     public async ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchWithTokenAsync(string account, string token, CancellationToken cancellationToken)
     {
+        if (!HasValidConfiguration()) return new(FetchStatus.ConfigurationError, Error: "GitHub organization or user configuration is invalid.");
+        if (string.IsNullOrWhiteSpace(token)) return new(FetchStatus.Unauthorized);
         var now = clock.GetUtcNow();
         var year = now.Year;
         var month = now.Month;
@@ -97,8 +99,13 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
                 return new(FetchStatus.TransientFailure, Error: "GitHub billing usage response did not match the requested period, organization, or user.");
 
             if (payload.UsageItems.Count == 0) return new(FetchStatus.NoData);
+            if (payload.UsageItems.Any(item => string.IsNullOrWhiteSpace(item.Product) || string.IsNullOrWhiteSpace(item.UnitType)))
+                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage contained an incomplete item.");
 
-            var target = payload.UsageItems.Where(item => string.Equals(item.Product, "Copilot", StringComparison.OrdinalIgnoreCase) && string.Equals(item.UnitType, "credits", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var copilotItems = payload.UsageItems.Where(item => string.Equals(item.Product, "Copilot", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (copilotItems.Any(item => !string.Equals(item.UnitType, "credits", StringComparison.OrdinalIgnoreCase)))
+                return new(FetchStatus.Unsupported);
+            var target = copilotItems;
             if (target.Length == 0) return new(FetchStatus.NoData);
             if (target.Any(item => item.GrossQuantity is null || item.DiscountQuantity is null || item.NetQuantity is null || item.GrossQuantity < 0 || item.DiscountQuantity < 0 || item.NetQuantity < 0))
                 return new(FetchStatus.TransientFailure, Error: "GitHub billing usage quantities were invalid.");
@@ -138,9 +145,11 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
     private static FetchResult<IReadOnlyList<QuotaSnapshot>> MapStatus(HttpResponseMessage response)
     {
         if (response.StatusCode == HttpStatusCode.Unauthorized) return new(FetchStatus.Unauthorized);
-        if (response.StatusCode == HttpStatusCode.Forbidden) return new(response.Headers.TryGetValues("X-RateLimit-Remaining", out var values) && values.FirstOrDefault() == "0" ? FetchStatus.RateLimited : FetchStatus.Forbidden);
+        if (response.StatusCode == HttpStatusCode.Forbidden) return new(response.Headers.Contains("Retry-After") || response.Headers.TryGetValues("X-RateLimit-Remaining", out var values) && values.FirstOrDefault() == "0" ? FetchStatus.RateLimited : FetchStatus.Forbidden);
         if (response.StatusCode == HttpStatusCode.NotFound) return new(FetchStatus.Unsupported);
         if ((int)response.StatusCode == 429) return new(FetchStatus.RateLimited);
         return (int)response.StatusCode >= 500 ? new(FetchStatus.TransientFailure) : new(FetchStatus.Unsupported);
     }
+
+    private bool HasValidConfiguration() => GitHubOrganizationSlug.IsValid(organization) && !string.IsNullOrWhiteSpace(user);
 }
