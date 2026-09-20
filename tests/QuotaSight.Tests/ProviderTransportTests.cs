@@ -186,6 +186,32 @@ public sealed class ProviderTransportTests
     }
 
     [Fact]
+    public async Task Copilot_billing_usage_accepts_ai_credits_for_generic_model_rows_and_normalizes_the_snapshot_unit()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = """
+            {"timePeriod":{"year":2026,"month":6},"organization":"acme-org","user":"octo-user","usageItems":[
+              {"product":"Copilot","sku":"Copilot AI Credits","unitType":"ai-credits","grossQuantity":4.5,"discountQuantity":0.5,"netQuantity":4.0},
+              {"product":"Copilot","sku":"Copilot AI Credits","unitType":"ai-credits","grossQuantity":2.25,"discountQuantity":0.25,"netQuantity":2.0}
+            ]}
+            """;
+
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero)))
+            .FetchAsync("ignored", default);
+
+        Assert.True(result.IsSuccess);
+        var snapshot = Assert.Single(result.Value!);
+        Assert.Equal(6.75m, snapshot.Used);
+        Assert.Equal(6.75m, snapshot.CopilotUsage!.GrossQuantity);
+        Assert.Equal(0.75m, snapshot.CopilotUsage.DiscountQuantity);
+        Assert.Equal(6m, snapshot.CopilotUsage.NetQuantity);
+        Assert.Equal("credits", snapshot.Unit);
+    }
+
+    [Fact]
     public async Task Copilot_billing_usage_rejects_a_nested_period_that_does_not_match_the_request()
     {
         var store = new InMemoryCredentialStore();
@@ -276,6 +302,38 @@ public sealed class ProviderTransportTests
             new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
             new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
         Assert.Equal(FetchStatus.Unsupported, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_combines_case_insensitive_credits_aliases()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"Credits\",\"grossQuantity\":1,\"discountQuantity\":0.1,\"netQuantity\":0.9},{\"product\":\"Copilot\",\"unitType\":\"AI-CREDITS\",\"grossQuantity\":2,\"discountQuantity\":0.2,\"netQuantity\":1.8}]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+
+        Assert.True(result.IsSuccess);
+        var snapshot = Assert.Single(result.Value!);
+        Assert.Equal(3m, snapshot.CopilotUsage!.GrossQuantity);
+        Assert.Equal(0.3m, snapshot.CopilotUsage.DiscountQuantity);
+        Assert.Equal(2.7m, snapshot.CopilotUsage.NetQuantity);
+        Assert.Equal("credits", snapshot.Unit);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_rejects_unknown_unit_when_mixed_with_supported_aliases()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":1,\"discountQuantity\":0,\"netQuantity\":1},{\"product\":\"Copilot\",\"unitType\":\"ai_credits\",\"grossQuantity\":2,\"discountQuantity\":0,\"netQuantity\":2}]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.Unsupported, result.Status);
+        Assert.Null(result.Value);
     }
 
     [Fact]

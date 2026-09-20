@@ -103,7 +103,7 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
                 return new(FetchStatus.TransientFailure, Error: "GitHub billing usage contained an incomplete item.");
 
             var copilotItems = payload.UsageItems.Where(item => string.Equals(item.Product, "Copilot", StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (copilotItems.Any(item => !string.Equals(item.UnitType, "credits", StringComparison.OrdinalIgnoreCase)))
+            if (copilotItems.Any(item => !IsAiCreditsUnit(item.UnitType!)))
                 return new(FetchStatus.Unsupported);
             var target = copilotItems;
             if (target.Length == 0) return new(FetchStatus.NoData);
@@ -150,6 +150,10 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
         if ((int)response.StatusCode == 429) return new(FetchStatus.RateLimited);
         return (int)response.StatusCode >= 500 ? new(FetchStatus.TransientFailure) : new(FetchStatus.Unsupported);
     }
+
+    private static bool IsAiCreditsUnit(string unitType) =>
+        string.Equals(unitType, "credits", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(unitType, "ai-credits", StringComparison.OrdinalIgnoreCase);
 
     private bool HasValidConfiguration() => GitHubOrganizationSlug.IsValid(organization) && !string.IsNullOrWhiteSpace(user);
 }

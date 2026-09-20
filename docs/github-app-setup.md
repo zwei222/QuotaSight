@@ -35,7 +35,7 @@ QuotaSight calls:
 
 QuotaSight sends `X-GitHub-Api-Version: 2026-03-10` for this Billing Usage request. The response is requested for the current reporting year and month and is filtered to the signed-in user. A general seat token may receive **403 Forbidden** even when Device Flow succeeded. Organization installation, owner approval, administrator access, and the organization slug are all separate requirements.
 
-The supported response uses official `unitType: credits`. QuotaSight displays gross, discount, net, unit, aggregation month, retrieval time, and the fact that reporting delay is unknown. The billing entity is a shared pool; QuotaSight does not calculate a personal remaining balance. GitHub reporting can lag, so a successful request is not proof of real-time usage.
+The official OpenAPI example uses `unitType: credits`; live GitHub Billing Usage responses may also use `unitType: ai-credits`. QuotaSight normalizes both case-insensitive variants to the same AI Credits semantic and keeps the snapshot unit as `credits`. Unknown unit values remain unsupported. QuotaSight displays gross, discount, net, unit, aggregation month, retrieval time, and the fact that reporting delay is unknown. The billing entity is a shared pool; QuotaSight does not calculate a personal remaining balance. GitHub reporting can lag, so a successful request is not proof of real-time usage.
 
 ## 3. Troubleshooting and fallback
 

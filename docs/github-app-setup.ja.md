@@ -35,7 +35,7 @@ QuotaSightが呼ぶendpointは次です。
 
 このBilling Usage requestには`X-GitHub-Api-Version: 2026-03-10`を指定します。現在のyear/monthを指定し、ログインユーザーのusageを取得します。Device Flowが成功していても、一般のseat tokenでは**403 Forbidden**になる可能性があります。organization installation、owner approval、管理者権限、organization slugはそれぞれ別の要件です。
 
-対応する公式responseの`unitType`は`credits`です。QuotaSightはgross、discount、net、unit、集計月、取得時刻、反映遅延不明を表示します。billing entityはshared poolなので、個人のremainingは計算しません。GitHub側のreportingには遅延があり、request成功はリアルタイムusageを保証しません。
+公式OpenAPI exampleの`unitType`は`credits`ですが、live GitHub Billing Usage responseでは`unitType: ai-credits`も観測されます。QuotaSightは両方のvariantを大文字小文字を区別せず同じAI Creditsとして正規化し、snapshotのunitは`credits`を維持します。未知のunit値はUnsupportedのままです。QuotaSightはgross、discount、net、unit、集計月、取得時刻、反映遅延不明を表示します。billing entityはshared poolなので、個人のremainingは計算しません。GitHub側のreportingには遅延があり、request成功はリアルタイムusageを保証しません。
 
 ## 3. トラブルシュートとfallback
 
