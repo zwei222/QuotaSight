@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 
@@ -143,6 +144,263 @@ public sealed class ProviderTransportTests
             Assert.Equal(pair.Value, result.Status);
             Assert.Null(result.Value);
             Assert.DoesNotContain(responseBody, result.Error ?? "", StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_aggregates_all_ai_credit_models_and_preserves_quantities()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        HttpRequestMessage? captured = null;
+        const string json = """
+            {"timePeriod":{"year":2026,"month":6},"organization":"acme-org","user":"octo-user","usageItems":[
+              {"product":"Copilot","sku":"premium-model-a","unitType":"credits","grossQuantity":1.25,"discountQuantity":0.25,"netQuantity":1.0},
+              {"product":"Copilot","sku":"premium-model-b","unitType":"credits","grossQuantity":2,"discountQuantity":0,"netQuantity":2},
+              {"product":"Copilot","sku":"legacy","unitType":"requests","grossQuantity":99,"discountQuantity":0,"netQuantity":99},
+              {"product":"Other","sku":"x","unitType":"credits","grossQuantity":500,"discountQuantity":0,"netQuantity":500}
+            ]}
+            """;
+
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(request => { captured = request; return Json(HttpStatusCode.OK, json); })),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero)))
+            .FetchAsync("ignored", default);
+
+        Assert.True(result.IsSuccess);
+        var snapshot = Assert.Single(result.Value!);
+        Assert.Equal(3.25m, snapshot.Used);
+        Assert.Equal(3.25m, snapshot.CopilotUsage!.GrossQuantity);
+        Assert.Equal(0.25m, snapshot.CopilotUsage.DiscountQuantity);
+        Assert.Equal(3m, snapshot.CopilotUsage.NetQuantity);
+        Assert.Null(snapshot.Limit);
+        Assert.Null(snapshot.ReportedPercent);
+        Assert.Equal(QuotaSource.Delayed, snapshot.Source);
+        Assert.Equal(QuotaConfidence.Official, snapshot.Confidence);
+        Assert.Equal("Bearer github-token", captured!.Headers.Authorization!.ToString());
+        Assert.Equal("application/vnd.github+json", captured.Headers.Accept.Single().MediaType);
+        Assert.Contains("/organizations/acme-org/settings/billing/ai_credit/usage", captured.RequestUri!.AbsolutePath);
+        Assert.Contains("year=2026", captured.RequestUri.Query);
+        Assert.Contains("month=6", captured.RequestUri.Query);
+        Assert.Contains("user=octo-user", captured.RequestUri.Query);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_rejects_a_nested_period_that_does_not_match_the_request()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = """
+            {"timePeriod":{"year":2025,"month":6},"organization":"acme-org","user":"octo-user","usageItems":[
+              {"product":"Copilot","sku":"premium-model-a","unitType":"credits","grossQuantity":1,"discountQuantity":0,"netQuantity":1}
+            ]}
+            """;
+
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero)))
+            .FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.TransientFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_rejects_a_response_for_a_different_user()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = """
+            {"timePeriod":{"year":2026,"month":6},"organization":"acme-org","user":"someone-else","usageItems":[
+              {"product":"Copilot","sku":"premium-model-a","unitType":"credits","grossQuantity":1,"discountQuantity":0,"netQuantity":1}
+            ]}
+            """;
+
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))),
+            store, "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero)))
+            .FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.TransientFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_accepts_optional_month_and_user_when_absent()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026},\"organization\":\"acme-org\",\"usageItems\":[]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.NoData, result.Status);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    public async Task Copilot_billing_usage_validates_envelope_before_empty_usage_decision(string json)
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.TransientFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_rejects_day_and_missing_organization()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        foreach (var json in new[]
+        {
+            "{\"timePeriod\":{\"year\":2026,\"month\":6,\"day\":1},\"organization\":\"acme-org\",\"usageItems\":[]}",
+            "{\"timePeriod\":{\"year\":2026,\"month\":6,\"day\":null},\"organization\":\"acme-org\",\"usageItems\":[]}",
+            "{\"timePeriod\":{\"year\":2026,\"month\":6},\"usageItems\":[]}"
+        })
+        {
+            var result = await new CopilotBillingUsageAdapter(
+                new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+                new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+            Assert.Equal(FetchStatus.TransientFailure, result.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_ignores_unrecognized_units()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"ai_credits\",\"grossQuantity\":1,\"discountQuantity\":0,\"netQuantity\":1}]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.NoData, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_uses_ttl_and_org_user_identity()
+    {
+        var now = new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero);
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":1,\"discountQuantity\":0,\"netQuantity\":1}]}";
+        var result = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user", new FixedTimeProvider(now)).FetchAsync("ignored", default);
+        var snapshot = Assert.Single(result.Value!);
+        Assert.Equal("acme-org/octo-user", snapshot.Account);
+        Assert.Equal(now.AddHours(1), snapshot.FreshUntil);
+        Assert.Equal(new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), snapshot.Window.End);
+        Assert.True(snapshot.IsStale(now.AddDays(1)));
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_explicit_token_path_sets_bearer_header()
+    {
+        HttpRequestMessage? captured = null;
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":1,\"discountQuantity\":0,\"netQuantity\":1}]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(request => { captured = request; return Json(HttpStatusCode.OK, json); })),
+            new InMemoryCredentialStore(), "acme-org", "octo-user", new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero)))
+            .FetchWithTokenAsync("ignored", "explicit-token", default);
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Bearer explicit-token", captured!.Headers.Authorization!.ToString());
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_maps_sum_overflow_to_transient_failure()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "github-token", default);
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"acme-org\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":79228162514264337593543950335,\"discountQuantity\":0,\"netQuantity\":1},{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":79228162514264337593543950335,\"discountQuantity\":0,\"netQuantity\":1}]}";
+        var result = await new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, json))), store, "acme-org", "octo-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero))).FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.TransientFailure, result.Status);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_identity_includes_organization_to_separate_accounts()
+    {
+        var now = new DateTimeOffset(2026, 6, 15, 0, 0, 0, TimeSpan.Zero);
+        static string Response(string org) => "{\"timePeriod\":{\"year\":2026,\"month\":6},\"organization\":\"" + org + "\",\"user\":\"octo-user\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":1,\"discountQuantity\":0,\"netQuantity\":1}]}";
+        var first = new InMemoryCredentialStore();
+        var second = new InMemoryCredentialStore();
+        await first.SetAsync("github", "token", default);
+        await second.SetAsync("github", "token", default);
+        var a = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, Response("org-a")))), first, "org-a", "octo-user", new FixedTimeProvider(now)).FetchAsync("ignored", default);
+        var b = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, Response("org-b")))), second, "org-b", "octo-user", new FixedTimeProvider(now)).FetchAsync("ignored", default);
+        Assert.NotEqual(Assert.Single(a.Value!).Account, Assert.Single(b.Value!).Account);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_rejects_invalid_target_and_does_not_send_without_configuration()
+    {
+        var sent = false;
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "token", default);
+        var adapter = new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })), store, "bad/org", "user");
+
+        var invalidOrg = await adapter.FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.Unsupported, invalidOrg.Status);
+        Assert.False(sent);
+
+        var noToken = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })), new InMemoryCredentialStore(), "org", "user").FetchAsync("ignored", default);
+        Assert.Equal(FetchStatus.NoData, noToken.Status);
+        Assert.False(sent);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("-acme")]
+    [InlineData("acme-")]
+    [InlineData("acme--engineering")]
+    [InlineData("acme_engineering")]
+    [InlineData("acmé")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public async Task Copilot_billing_usage_rejects_every_invalid_github_organization_slug_without_io(string organization)
+    {
+        var sent = false;
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "token", default);
+        var adapter = new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => { sent = true; return Json(HttpStatusCode.OK, "{}"); })),
+            store, organization, "user");
+
+        var result = await adapter.FetchAsync("ignored", default);
+
+        Assert.Equal(FetchStatus.Unsupported, result.Status);
+        Assert.False(sent);
+    }
+
+    [Theory]
+    [InlineData("a")]
+    [InlineData("acme")]
+    [InlineData("acme-engineering")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public void GitHub_organization_slug_accepts_valid_boundaries(string organization)
+    {
+        Assert.True(GitHubOrganizationSlug.IsValid(organization));
+    }
+
+    [Fact]
+    public async Task Copilot_billing_usage_maps_http_failures_without_exposing_token_or_body()
+    {
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "secret-token", default);
+        foreach (var status in new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound, (HttpStatusCode)429, HttpStatusCode.InternalServerError })
+        {
+            var result = await new CopilotBillingUsageAdapter(new HttpClient(new Handler(_ => Json(status, "secret response body"))), store, "org", "user").FetchAsync("ignored", default);
+            Assert.DoesNotContain("secret-token", result.Error ?? "", StringComparison.Ordinal);
+            Assert.DoesNotContain("secret response body", result.Error ?? "", StringComparison.Ordinal);
+            Assert.Equal(status switch
+            {
+                HttpStatusCode.Unauthorized => FetchStatus.Unauthorized,
+                HttpStatusCode.Forbidden => FetchStatus.Forbidden,
+                HttpStatusCode.NotFound => FetchStatus.Unsupported,
+                (HttpStatusCode)429 => FetchStatus.RateLimited,
+                _ => FetchStatus.TransientFailure
+            }, result.Status);
         }
     }
 

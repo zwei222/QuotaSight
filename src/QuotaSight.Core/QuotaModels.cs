@@ -17,6 +17,8 @@ public sealed record QuotaWindow(
     public bool Contains(DateTimeOffset instant) => instant >= Start && instant < End;
 }
 
+public sealed record CopilotUsageBreakdown(decimal? GrossQuantity, decimal? DiscountQuantity, decimal? NetQuantity);
+
 public sealed record QuotaSnapshot(
     ProviderKind Provider,
     string Account,
@@ -31,7 +33,8 @@ public sealed record QuotaSnapshot(
     QuotaSource Source,
     QuotaConfidence Confidence,
     DateTimeOffset? FreshUntil,
-    string DisplayName = "")
+    string DisplayName = "",
+    CopilotUsageBreakdown? CopilotUsage = null)
 {
     public decimal? UsedPercent => Limit is > 0 && Used is { } used ? used / Limit.Value * 100m : null;
     public decimal? EffectivePercent => UsedPercent ?? ReportedPercent;

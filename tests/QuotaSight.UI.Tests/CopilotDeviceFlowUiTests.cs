@@ -28,7 +28,7 @@ public sealed class CopilotDeviceFlowUiTests
         var provider = new RecordingCopilotProvider
         {
             StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
-            PollResult = FetchResult<string>.Success("stored")
+            PollResult = new GitHubDeviceFlowResult(true, FetchStatus.Success)
         };
         var window = CreateWindow(provider);
 
@@ -52,7 +52,7 @@ public sealed class CopilotDeviceFlowUiTests
         var provider = new RecordingCopilotProvider
         {
             StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
-            PollResult = FetchResult<string>.Success("stored")
+            PollResult = new GitHubDeviceFlowResult(true, FetchStatus.Success)
         };
         var launcher = new RecordingBrowserLauncher();
         var window = CreateWindow(provider, launcher);
@@ -70,7 +70,7 @@ public sealed class CopilotDeviceFlowUiTests
         var provider = new RecordingCopilotProvider
         {
             StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
-            PollResult = new FetchResult<string>(FetchStatus.TransientFailure, Error: "authorization pending")
+            PollResult = new GitHubDeviceFlowResult(false, FetchStatus.TransientFailure, "authorization pending")
         };
         provider.PollRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = CreateWindow(provider);
@@ -96,7 +96,7 @@ public sealed class CopilotDeviceFlowUiTests
         var provider = new RecordingCopilotProvider
         {
             StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
-            PollResult = new FetchResult<string>(FetchStatus.TransientFailure, Error: "authorization pending")
+            PollResult = new GitHubDeviceFlowResult(false, FetchStatus.TransientFailure, "authorization pending")
         };
         provider.PollRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = CreateWindow(provider);
@@ -121,7 +121,7 @@ public sealed class CopilotDeviceFlowUiTests
         var provider = new RecordingCopilotProvider
         {
             StartResult = new FetchResult<DeviceAuthorizationStart>(FetchStatus.Success, new DeviceAuthorizationStart("device", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero)),
-            PollResult = FetchResult<string>.Success("must not complete")
+            PollResult = new GitHubDeviceFlowResult(true, FetchStatus.Success)
         };
         provider.PollRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = CreateWindow(provider, new RecordingBrowserLauncher());
@@ -228,7 +228,7 @@ public sealed class CopilotDeviceFlowUiTests
     private sealed class RecordingCopilotProvider : IProviderUiService
     {
         public FetchResult<DeviceAuthorizationStart> StartResult { get; init; } = new(FetchStatus.TransientFailure);
-        public FetchResult<string> PollResult { get; init; } = new(FetchStatus.TransientFailure);
+        public GitHubDeviceFlowResult PollResult { get; init; } = new(false, FetchStatus.TransientFailure);
         public TaskCompletionSource PollStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource PollCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -238,7 +238,7 @@ public sealed class CopilotDeviceFlowUiTests
         public ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string key, CancellationToken token) => ValueTask.FromResult(new ProviderConnectionResult(false, "unused"));
         public ValueTask<string> ProbeGitHubCliAsync(CancellationToken token) => ValueTask.FromResult("unused");
         public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken token) { StartCalls++; return ValueTask.FromResult(StartResult); }
-        public async ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token)
+        public async ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token)
         {
             PollCalls++;
             PollStarted.TrySetResult();

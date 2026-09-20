@@ -4,7 +4,7 @@
 
 - Core: quota snapshot、quota window、overage、freshness、source confidence、fetch status の副作用なしの契約。
 - Application: provider を束ねる dashboard refresh、30 日 history、settings、credential lifecycle、export のユースケース。
-- Infrastructure: ChatGPT Codexのdevice OAuthとUndocumented/Experimental `wham/usage` adapter、Claudeのmanual URL、OpenCode Go usage endpoint、Copilot の gh/device flow/manual fallback、OS credential backend、JSONL repository。
+- Infrastructure: ChatGPT Codexのdevice OAuthとUndocumented/Experimental `wham/usage` adapter、Claudeのmanual URL、OpenCode Go usage endpoint、Copilotのgh/device flowとBilling Usage API/manual fallback、OS credential backend、JSONL repository。
 - UI: Avalonia の dashboard/history/settings、tray、notification と fallback。ViewModel は Application 契約を呼びます。
 
 ## Data flow

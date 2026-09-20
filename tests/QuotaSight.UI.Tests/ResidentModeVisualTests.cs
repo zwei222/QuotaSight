@@ -132,6 +132,30 @@ public sealed class ResidentModeVisualTests
     }
 
     [AvaloniaFact]
+    public async Task Compact_quantity_rows_hide_gauge_and_percent_text()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "org/user", "AI credits",
+            new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)), 1950, null, null,
+            "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.AddHours(1),
+            "GitHub Copilot", new(1950, 1200, 750));
+        var vm = new MainViewModel(new SingleCardSource([QuotaPresentationFormatter.Format(snapshot, now)]));
+        var window = new CompactQuotaWindow(vm);
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var card = window.FindControl<ItemsControl>("CompactProviderCards")!;
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,950 credits used");
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,200 included");
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "750 additional");
+            Assert.DoesNotContain(card.GetVisualDescendants().OfType<ProgressBar>(), gauge => gauge.IsVisible);
+            Assert.DoesNotContain(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains('%') == true);
+        }
+        finally { window.Close(); vm.Dispose(); }
+    }
+
+    [AvaloniaFact]
     public void Compact_accessibility_names_follow_localized_copy()
     {
         var vm = new MainViewModel(new EmptyDashboardSource());

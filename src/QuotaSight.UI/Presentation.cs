@@ -43,6 +43,12 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public QuotaSource Source { get; init; }
     public QuotaWindowKind WindowKind { get; init; }
     public UsageBand Band { get; init; }
+    public bool IsQuantityOnly { get; init; }
+    public bool IsGaugeVisible => !IsQuantityOnly;
+    public bool IsQuantityVisible => IsQuantityOnly;
+    public string QuantityGrossText { get; init; } = string.Empty;
+    public string QuantityDiscountText { get; init; } = string.Empty;
+    public string QuantityNetText { get; init; } = string.Empty;
     public bool IsAttention => Band == UsageBand.Attention;
     public bool IsDanger => Band == UsageBand.Danger;
     public bool IsOverLimit => Band == UsageBand.OverLimit;
@@ -57,19 +63,47 @@ public static class QuotaPresentationFormatter
 {
     public static QuotaRowViewModel Format(QuotaSnapshot snapshot, DateTimeOffset now, UiLanguage language = UiLanguage.English)
     {
-        var percent = snapshot.EffectivePercent;
-        var numeric = percent ?? 0m;
-        var visual = (double)Math.Clamp(numeric, 0m, 100m);
-        var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
         var japanese = language == UiLanguage.Japanese;
-        var percentText = percent is null ? (japanese ? "使用量を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用済み {numeric:0.#}%" : $"使用済み {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
-        var status = percent is null ? (japanese ? "未取得" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
         var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now, language) : japanese ? "リセット時刻は不明" : "Reset time unavailable";
         var stale = snapshot.IsStale(now);
         var freshness = stale ? (japanese ? $"データが古い可能性があります（最終更新: {FormatAge(snapshot.Fetched, now, language)}）" : "Stale · last updated " + FormatAge(snapshot.Fetched, now, language)) : (japanese ? $"{FormatAge(snapshot.Fetched, now, language)}に更新" : "Updated " + FormatAge(snapshot.Fetched, now, language));
         var source = japanese ? snapshot.Source switch { QuotaSource.Manual => "手動", QuotaSource.Experimental => "実験的", QuotaSource.Delayed => "遅延", _ => "公式" } : snapshot.Source.ToString();
+        if (snapshot.Provider == ProviderKind.Copilot && snapshot.CopilotUsage is { } usage)
+        {
+            var gross = FormatQuantity(usage.GrossQuantity, japanese ? "クレジットを使用" : "credits used", japanese);
+            var discount = FormatQuantity(usage.DiscountQuantity, japanese ? "含まれる分" : "included", japanese);
+            var net = FormatQuantity(usage.NetQuantity, japanese ? "追加課金対象" : "additional", japanese);
+            var period = japanese ? $"集計期間: {snapshot.Window.Start:yyyy年M月d日}〜{snapshot.Window.End:yyyy年M月d日}" : $"Aggregation period: {snapshot.Window.Start:yyyy-MM-dd} – {snapshot.Window.End:yyyy-MM-dd}";
+            var retrieved = japanese ? $"取得時刻: {snapshot.Fetched.ToLocalTime():yyyy年M月d日 HH:mm}" : $"Retrieved: {snapshot.Fetched.ToLocalTime():yyyy-MM-dd HH:mm zzz}";
+            var delay = japanese ? "反映遅延: 不明" : "Reporting delay: unknown";
+            var quantityStatus = japanese ? "割合・個人残量は算出していません" : "Percentage and individual remaining balance are not calculated";
+            var quantityFreshness = $"{freshness} · {period} · {retrieved} · {delay}";
+            return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), 0, string.Empty, quantityStatus, period, source, quantityFreshness, stale, quantityStatus)
+            {
+                FetchedAt = snapshot.Fetched,
+                WindowEnd = snapshot.Window.End,
+                FreshUntil = snapshot.FreshUntil,
+                ResetAt = snapshot.Window.ResetAt,
+                UsedPercent = null,
+                Source = snapshot.Source,
+                WindowKind = snapshot.Window.Kind,
+                Band = UsageBand.Normal,
+                Snapshot = snapshot,
+                IsQuantityOnly = true,
+                QuantityGrossText = gross,
+                QuantityDiscountText = discount,
+                QuantityNetText = net
+            };
+        }
+        var percent = snapshot.EffectivePercent;
+        var numeric = percent ?? 0m;
+        var visual = (double)Math.Clamp(numeric, 0m, 100m);
+        var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
+        var percentText = percent is null ? (japanese ? "使用量を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用済み {numeric:0.#}%" : $"使用済み {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
+        var status = percent is null ? (japanese ? "未取得" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
         return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, percentText, status, reset, source, freshness, stale, BuildProgressLabel(percentText, status, reset, language)) { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
     }
+    private static string FormatQuantity(decimal? value, string label, bool japanese) => value is null ? (japanese ? $"不明 · {label}" : $"Unavailable · {label}") : $"{value.Value.ToString("#,0.##", CultureInfo.InvariantCulture)} {label}";
 
     public static QuotaRowViewModel Relocalize(QuotaRowViewModel row, DateTimeOffset now, UiLanguage language) => row.Snapshot is { } snapshot ? Format(snapshot, now, language) : row;
 
@@ -180,6 +214,7 @@ public sealed class SettingsState
     public decimal OverallThreshold { get; private set; } = 80;
     public Dictionary<ProviderKind, decimal> ProviderOverrides { get; } = [];
     public string GithubOAuthClientId { get; set; } = string.Empty;
+    public string GithubOrganization { get; set; } = string.Empty;
     public bool ReduceMotionSupported => true;
     public bool HighContrastSupported => true;
     public bool TrySetRefreshMinutes(int value) => UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(value)) && (RefreshMinutes = value) > 0;
@@ -214,6 +249,25 @@ public sealed class ManualQuotaEntry
 public sealed record HistoryUiEntry(Guid Id, string Provider, string Account, string Window, decimal? UsedPercent, DateTimeOffset Observed, QuotaSource Source, QuotaConfidence Confidence)
 {
     public string WindowDisplay { get; init; } = Window;
+    public decimal? GrossQuantity { get; init; }
+    public decimal? DiscountQuantity { get; init; }
+    public decimal? NetQuantity { get; init; }
+    public string Unit { get; init; } = string.Empty;
+    public DateTimeOffset? PeriodStart { get; init; }
+    public DateTimeOffset? PeriodEnd { get; init; }
+    public string QuantityGrossText => GrossQuantity is { } value ? value.ToString("#,0.###", CultureInfo.InvariantCulture) : string.Empty;
+    public string QuantityDiscountText => DiscountQuantity is { } value ? value.ToString("#,0.###", CultureInfo.InvariantCulture) : string.Empty;
+    public string QuantityNetText => NetQuantity is { } value ? value.ToString("#,0.###", CultureInfo.InvariantCulture) : string.Empty;
+    public bool IsQuantity => GrossQuantity is not null || DiscountQuantity is not null || NetQuantity is not null;
+    public bool IsPercent => !IsQuantity;
+    public string QuantityGrossLabel { get; init; } = "Gross";
+    public string QuantityDiscountLabel { get; init; } = "Included";
+    public string QuantityNetLabel { get; init; } = "Net";
+    public string QuantityUnitLabel { get; init; } = "Unit";
+    public string QuantityGrossDisplay => $"{QuantityGrossLabel}: {QuantityGrossText}";
+    public string QuantityDiscountDisplay => $"{QuantityDiscountLabel}: {QuantityDiscountText}";
+    public string QuantityNetDisplay => $"{QuantityNetLabel}: {QuantityNetText}";
+    public string QuantityUnitDisplay => $"{QuantityUnitLabel}: {Unit}";
 }
 public interface IUiDispatcher
 {
@@ -931,11 +985,27 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
         return (entries, error);
     }
 
-    private static HistoryUiEntry ToEntry(Guid id, QuotaSnapshot snapshot) => new(id, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence);
+    private static HistoryUiEntry ToEntry(Guid id, QuotaSnapshot snapshot)
+    {
+        var entry = new HistoryUiEntry(id, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, snapshot.Window.Kind.ToString(), snapshot.EffectivePercent, snapshot.Observed, snapshot.Source, snapshot.Confidence)
+        {
+            Unit = snapshot.Unit,
+            PeriodStart = snapshot.Window.Start,
+            PeriodEnd = snapshot.Window.End
+        };
+        return snapshot.CopilotUsage is { } usage ? entry with { GrossQuantity = usage.GrossQuantity, DiscountQuantity = usage.DiscountQuantity, NetQuantity = usage.NetQuantity } : entry;
+    }
 
     private static HistorySnapshotState Build(HistorySnapshotState input)
     {
-        var filtered = input.Raw.Where(e => (input.AccountFilter == "All accounts" || e.Account == input.AccountFilter) && (input.WindowFilter == "All windows" || e.Window == input.WindowFilter)).Select(e => e with { WindowDisplay = input.Language == UiLanguage.Japanese && Enum.TryParse<QuotaWindowKind>(e.Window, true, out var kind) ? QuotaPresentationFormatter.LocalizeWindow(kind) : e.Window }).ToArray();
+        var filtered = input.Raw.Where(e => (input.AccountFilter == "All accounts" || e.Account == input.AccountFilter) && (input.WindowFilter == "All windows" || e.Window == input.WindowFilter)).Select(e => e with
+        {
+            WindowDisplay = input.Language == UiLanguage.Japanese && Enum.TryParse<QuotaWindowKind>(e.Window, true, out var kind) ? QuotaPresentationFormatter.LocalizeWindow(kind) : e.Window,
+            QuantityGrossLabel = input.Language == UiLanguage.Japanese ? "総量" : "Gross",
+            QuantityDiscountLabel = input.Language == UiLanguage.Japanese ? "含まれる分" : "Included",
+            QuantityNetLabel = input.Language == UiLanguage.Japanese ? "正味" : "Net",
+            QuantityUnitLabel = input.Language == UiLanguage.Japanese ? "単位" : "Unit"
+        }).ToArray();
         var pageCount = Math.Max(1, (filtered.Length + PageSize - 1) / PageSize);
         var page = Math.Clamp(input.RequestedPage, 0, pageCount - 1);
         var displayed = filtered.Skip(page * PageSize).Take(PageSize).ToArray();
@@ -959,6 +1029,12 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
                 writer.WriteString("window", entry.Window);
                 if (entry.UsedPercent is { } percent) writer.WriteNumber("usedPercent", percent);
                 else writer.WriteNull("usedPercent");
+                if (entry.GrossQuantity is { } gross) writer.WriteNumber("grossQuantity", gross); else writer.WriteNull("grossQuantity");
+                if (entry.DiscountQuantity is { } discount) writer.WriteNumber("discountQuantity", discount); else writer.WriteNull("discountQuantity");
+                if (entry.NetQuantity is { } net) writer.WriteNumber("netQuantity", net); else writer.WriteNull("netQuantity");
+                writer.WriteString("unit", entry.Unit);
+                if (entry.PeriodStart is { } periodStart) writer.WriteString("periodStart", periodStart.ToString("O", CultureInfo.InvariantCulture));
+                if (entry.PeriodEnd is { } periodEnd) writer.WriteString("periodEnd", periodEnd.ToString("O", CultureInfo.InvariantCulture));
                 writer.WriteString("observed", entry.Observed.ToString("O", CultureInfo.InvariantCulture));
                 writer.WriteString("source", entry.Source.ToString());
                 writer.WriteString("confidence", entry.Confidence.ToString());
@@ -968,7 +1044,13 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
         }
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
-    private static string SerializeCsv(IReadOnlyList<HistoryUiEntry> entries) => "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", entries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString("0.##") ?? string.Empty)},{e.Observed:O},{e.Source},{e.Confidence}"));
+    private static string SerializeCsv(IReadOnlyList<HistoryUiEntry> entries)
+    {
+        if (!entries.Any(entry => entry.GrossQuantity is not null || entry.DiscountQuantity is not null || entry.NetQuantity is not null))
+            return "Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n" + string.Join("\n", entries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)},{e.Observed.ToString("O", CultureInfo.InvariantCulture)},{e.Source},{e.Confidence}"));
+        var rows = entries.Select(e => $"{EscapeCsv(e.Provider)},{EscapeCsv(e.Account)},{EscapeCsv(e.Window)},{(e.UsedPercent?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)},{(e.GrossQuantity?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)},{(e.DiscountQuantity?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)},{(e.NetQuantity?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)},{EscapeCsv(e.Unit)},{e.PeriodStart?.ToString("O", CultureInfo.InvariantCulture)},{e.PeriodEnd?.ToString("O", CultureInfo.InvariantCulture)},{e.Observed.ToString("O", CultureInfo.InvariantCulture)},{e.Source},{e.Confidence}").ToArray();
+        return "Provider,Account,Window,UsedPercent,GrossQuantity,DiscountQuantity,NetQuantity,Unit,PeriodStart,PeriodEnd,Observed,Source,Confidence\n" + string.Join("\n", rows);
+    }
     private static string EscapeCsv(string value) => value.Any(character => character is ',' or '"' or '\r' or '\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
 }
 public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
@@ -983,6 +1065,10 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
 }
 
 public sealed record ProviderConnectionResult(bool Success, string Message, FetchStatus Status = FetchStatus.Success);
+public sealed record GitHubDeviceFlowResult(bool Success, FetchStatus Status, string? Error = null)
+{
+    public bool IsSuccess => Success;
+}
 public interface IGitHubClientFactory { GitHubDeviceFlowClient Create(string clientId); }
 public sealed class GitHubClientFactory(HttpClient client) : IGitHubClientFactory
 {
@@ -993,7 +1079,7 @@ public interface IProviderUiService
     ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string sessionApiKey, CancellationToken cancellationToken);
     ValueTask<string> ProbeGitHubCliAsync(CancellationToken cancellationToken);
     ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken cancellationToken);
-    ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken);
+    ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken);
     ValueTask<CodexUiResult> StartCodexAsync(CancellationToken cancellationToken);
     ValueTask<CodexUiResult> PollCodexAsync(CancellationToken cancellationToken);
     ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken cancellationToken);
@@ -1056,12 +1142,19 @@ public sealed class UiProviderFacade : IProviderUiService
     }
     public void UpdateGitHubClientId(string clientId) { github = githubFactory?.Create(clientId) ?? github; }
     public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken cancellationToken) => github is null ? ValueTask.FromResult<FetchResult<DeviceAuthorizationStart>>(new(FetchStatus.Unsupported, Error: "GitHub Client ID is not configured.")) : github.StartAsync(cancellationToken);
-    public async ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken)
+    public async ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken)
     {
-        if (github is null) return new(FetchStatus.Unsupported, Error: "GitHub Client ID is not configured.");
+        if (github is null) return new(false, FetchStatus.Unsupported, "GitHub Client ID is not configured.");
         var result = await github.PollAsync(authorization, cancellationToken);
-        if (result.IsSuccess && result.Value is { } token && credentialStore is not null) await credentialStore.SetAsync("github", token, cancellationToken);
-        return result;
+        if (result.IsSuccess && result.Value is { } token)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (credentialStore is not null)
+                await credentialStore.SetAsync("github", token, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new(true, FetchStatus.Success);
+        }
+        return new(false, result.Status, result.Error);
     }
 
     public async ValueTask<CodexUiResult> StartCodexAsync(CancellationToken cancellationToken)
@@ -1281,8 +1374,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
     public void Notify(string title, string reason) => notificationService.Notify(title, reason);
-    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode);
+    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Settings.GithubOrganization = dto.GithubOrganization.Trim(); Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization);
     public async Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) { Settings.Theme = value; UiSettings.ApplyTheme(value); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task SetLanguageAsync(UiLanguage value, CancellationToken cancellationToken = default) { Language = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task<bool> SetRefreshMinutesAsync(int value, CancellationToken cancellationToken = default) { if (!Settings.TrySetRefreshMinutes(value)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
@@ -1291,6 +1384,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void RestoreResidentMode(bool value) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); }
     public async Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) { if (!Settings.TrySetThreshold(value, out _)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
     public async Task SetGithubClientIdAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOAuthClientId = value.Trim(); githubFactory?.Create(Settings.GithubOAuthClientId); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public async Task SetGithubOrganizationAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOrganization = value.Trim(); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public void Navigate(AppPage page) => CurrentPage = page;
     public void Refresh() => _ = RefreshAsync(RefreshOrigin.Manual);
     public Task RefreshAsync(CancellationToken cancellationToken = default) => RefreshAsync(RefreshOrigin.Manual, cancellationToken);
@@ -1343,10 +1437,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             .ToHashSet();
         var missingProviders = previousProviderIdentities
             .Where(identity => !currentProviderIdentities.Contains(identity))
+            .Where(identity => !IsReplacedIdentity(identity, snapshots, refreshResult.ActiveAccounts))
+            .Where(identity => !refreshResult.NoDataProviders.Contains(identity.Provider))
             .Select(identity => identity.Provider)
             .Distinct()
             .ToList();
         var partialFailure = missingProviders.Count > 0;
+        RemoveReplacedAutomaticCopilotCards(snapshots, refreshResult.ActiveAccounts);
+        var noDataProvidersWithPreviousAutomaticValue = refreshResult.NoDataProviders
+            .Where(provider => Cards.Any(card => card.Provider == provider && card.Windows.Any(window => window.Snapshot is { Source: not QuotaSource.Manual })))
+            .ToHashSet();
         if (snapshots.Count > 0)
         {
             MergeLastKnownSnapshots(snapshots);
@@ -1360,6 +1460,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
             else if (partialFailure)
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
+            else if (refreshResult.NoDataProviders.Count > 0)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
             else
                 notificationService.Clear();
             PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
@@ -1371,6 +1473,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
             else if (partialFailure)
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
+            else if (refreshResult.NoDataProviders.Count > 0)
+                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
             else
                 notificationService.Clear();
             PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
@@ -1460,6 +1564,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
+    private static bool IsReplacedIdentity((ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind) identity, IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyDictionary<ProviderKind, string> activeAccounts)
+    {
+        if (!activeAccounts.TryGetValue(identity.Provider, out var activeAccount) || string.IsNullOrWhiteSpace(activeAccount) || string.Equals(identity.Account, activeAccount, StringComparison.Ordinal)) return false;
+        return snapshots.Any(snapshot => snapshot.Provider == identity.Provider && snapshot.Source != QuotaSource.Manual && string.Equals(snapshot.Account, activeAccount, StringComparison.Ordinal));
+    }
+
+    private void RemoveReplacedAutomaticCopilotCards(IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyDictionary<ProviderKind, string> activeAccounts)
+    {
+        var observedAccounts = snapshots.Where(snapshot => snapshot.Provider == ProviderKind.Copilot && snapshot.Source != QuotaSource.Manual)
+            .Select(snapshot => snapshot.Account).ToHashSet(StringComparer.Ordinal);
+        var currentAccount = activeAccounts.GetValueOrDefault(ProviderKind.Copilot);
+        if (!string.IsNullOrWhiteSpace(currentAccount)) observedAccounts.Add(currentAccount);
+        if (observedAccounts.Count == 0) return;
+        var replacedAccounts = lastKnownSnapshots
+            .Where(snapshot => snapshot.Provider == ProviderKind.Copilot && snapshot.Source != QuotaSource.Manual)
+            .Where(snapshot => !observedAccounts.Contains(snapshot.Account))
+            .Select(snapshot => snapshot.Account).ToHashSet(StringComparer.Ordinal);
+        if (replacedAccounts.Count == 0) return;
+        lastKnownSnapshots.RemoveAll(snapshot => snapshot.Provider == ProviderKind.Copilot && snapshot.Source != QuotaSource.Manual && replacedAccounts.Contains(snapshot.Account));
+        for (var index = Cards.Count - 1; index >= 0; index--)
+        {
+            var card = Cards[index];
+            if (card.Provider != ProviderKind.Copilot || !replacedAccounts.Contains(card.Account)) continue;
+            var retainedWindows = card.Windows.Where(window => window.Snapshot is { Source: QuotaSource.Manual }).ToArray();
+            if (retainedWindows.Length == 0) Cards.RemoveAt(index);
+            else Cards[index] = card with { Windows = retainedWindows };
+        }
+        OnPropertyChanged(nameof(HasCards));
+        OnPropertyChanged(nameof(HasEmptyState));
+        OnPropertyChanged(nameof(IsEmpty));
+    }
+
     private HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> ExpectedAutomaticIdentities()
     {
         return lastKnownSnapshots

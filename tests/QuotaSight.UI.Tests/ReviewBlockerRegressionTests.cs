@@ -330,6 +330,49 @@ public sealed class ReviewBlockerRegressionTests
         vm.Dispose();
     }
 
+    [Fact]
+    public async Task No_data_is_not_a_refresh_failure_and_keeps_last_success()
+    {
+        var successful = Snapshot(42) with { Provider = ProviderKind.Copilot, Account = "org/user" };
+        var application = new MutableResultApplication(new QuotaRefreshResult([successful], []));
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
+
+        await vm.RefreshAsync();
+        application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot });
+        await vm.RefreshAsync();
+
+        Assert.Equal(PresentationState.Ready, vm.PresentationState);
+        Assert.False(vm.IsError);
+        Assert.Single(vm.Cards);
+        Assert.Contains("no data", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("last", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task Organization_and_user_switch_replaces_only_active_automatic_copilot_card()
+    {
+        var old = Snapshot(20) with { Provider = ProviderKind.Copilot, Account = "org-a/user-a" };
+        var other = Snapshot(30) with { Provider = ProviderKind.OpenCode, Account = "other" };
+        var application = new MutableResultApplication(new QuotaRefreshResult([old, other], []));
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
+
+        await vm.RefreshAsync();
+        application.Result = new QuotaRefreshResult(
+            [old with { Account = "org-b/user-b", Used = 40 }, other with { Used = 35 }],
+            [],
+            activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
+        await vm.RefreshAsync();
+
+        Assert.DoesNotContain(vm.Cards, card => card.Provider == ProviderKind.Copilot && card.Account == "org-a/user-a");
+        Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.Copilot && card.Account == "org-b/user-b");
+        Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode && card.Account == "other");
+        Assert.Equal(PresentationState.Ready, vm.PresentationState);
+        Assert.False(vm.IsError);
+        Assert.False(vm.IsNotificationVisible);
+        vm.Dispose();
+    }
+
     // B8: page-shrinking mutations must never let a HasPreviousPage notification observe a
     // stale previous-page value.
     [Fact]
@@ -488,6 +531,12 @@ public sealed class ReviewBlockerRegressionTests
     internal sealed class SingleResultApplication(QuotaRefreshResult result) : IQuotaApplication
     {
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) => ValueTask.FromResult(result);
+    }
+
+    internal sealed class MutableResultApplication(QuotaRefreshResult result) : IQuotaApplication
+    {
+        public QuotaRefreshResult Result { get; set; } = result;
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Result);
     }
 
     internal sealed class FailingApplication : IQuotaApplication

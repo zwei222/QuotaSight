@@ -149,6 +149,7 @@ public partial class MainWindow : Window
             effectiveResidentMode = persistedResidentMode;
             this.FindControl<CheckBox>("ResidentModeBox")!.IsChecked = persistedResidentMode;
             this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
+            this.FindControl<TextBox>("GithubOrganizationBox")!.Text = ViewModel.Settings.GithubOrganization;
             accountFilter.SelectedIndex = 0;
             windowFilter.SelectedIndex = 0;
         }
@@ -350,6 +351,12 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) { }
     }
+    private async void GithubOrganizationChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (isInitializing || sender is not TextBox box) return;
+        try { await RunTrackedAsync(token => ViewModel.SetGithubOrganizationAsync(box.Text ?? string.Empty, token)); }
+        catch (OperationCanceledException) { }
+    }
     private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.AccountFilter = choice.Value; }
     private void HistoryWindowFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.WindowFilter = choice.Value; }
     private void HistoryPreviousClick(object? sender, RoutedEventArgs e) => ViewModel.History.PreviousPage();
@@ -433,7 +440,8 @@ public partial class MainWindow : Window
     private async Task PollCopilotAsync(DeviceAuthorizationStart auth, CancellationToken token)
     {
         var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
-        ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.IsSuccess ? CopilotUiState.Completed : CopilotStateFor(result.Status, result.Error), result.Error);
+        ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.Success ? CopilotUiState.Completed : CopilotStateFor(result.Status, result.Error), result.Error);
+        if (result.Success) await ViewModel.RefreshAsync(token);
     }
     private async void CopilotProbeClick(object? sender, RoutedEventArgs e)
     {

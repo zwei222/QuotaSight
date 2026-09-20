@@ -2,42 +2,53 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is not an API billing, token-billing, or pay-as-you-go cost tracker. It shows observed quota values together with their source and confidence; it does not turn estimates, stale data, manual entries, or experimental endpoints into authoritative real-time usage.
+QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is not an API billing, token-billing, or pay-as-you-go cost tracker. It shows observed values with source, confidence, freshness, and reporting limits; it does not turn estimates, stale data, manual entries, or experimental endpoints into authoritative real-time usage.
 
 ## Current capabilities
 
-- Safe demo mode with sample dashboard data.
-- Avalonia dashboard, history, and settings screens.
-- Runtime English/Japanese switching and a narrow-width layout.
-- Optional resident mode with a compact quota window on tray-icon click, plus full-window, refresh, and explicit exit actions in the tray menu. If a native tray host is unavailable or disappears, QuotaSight keeps or restores the normal window instead of hiding without a recovery path.
-- Thirty days of quota snapshots stored as daily JSONL history.
-- Windows Credential Manager and Linux Secret Service/`secret-tool` integration, with session-only credential storage when a secure store is unavailable.
+- Avalonia dashboard, history, settings, runtime English/Japanese switching, and narrow-width layout.
+- Thirty days of quota snapshots in daily JSONL history.
+- Windows Credential Manager and Linux Secret Service/`secret-tool`, with session-only storage when a secure store is unavailable.
 - No telemetry. Tokens, plaintext credentials, and raw provider responses are not stored or displayed.
-- Theme selection (System, Light, Dark), refresh interval, notification preferences, thresholds, and a runtime GitHub App Client ID in settings. The Client ID is not a secret.
+- Theme, refresh, notification, threshold, GitHub App Client ID, and GitHub organization slug settings.
+- Optional resident mode with a compact quota window and an explicit exit action.
 
 ## Provider matrix and limits
 
 | Provider | Current method | What it does and does not promise |
 |---|---|---|
-| ChatGPT Codex | QuotaSight's OpenAI device OAuth and undocumented/experimental `wham/usage` endpoint | Covers the Codex allowance for one ChatGPT account, not all ChatGPT Plus/Pro usage. The public client ID and endpoints are visible in the official Codex implementation, but a stable third-party contract and permission to reuse that client ID have not been confirmed. It is therefore never labeled Official; live login is unverified. Failures fall back to manual entry and the official ChatGPT subscription page. |
-| Claude Pro | Manual entry plus the official URL | The user enters quota and reset information from the official page. QuotaSight does not call a billing API. |
-| OpenCode Go | Explicit API key plus a usage endpoint | Shows only the subscription quota returned by that endpoint. Delayed or missing responses are represented as stale/unknown rather than guessed. QuotaSight does not read OpenCode's internal credential files. |
-| GitHub Copilot | `gh auth status` probe or GitHub App Device Flow | Current implementation authenticates/checks status only. `CopilotAdapter` returns Unsupported for quota retrieval, so Copilot uses manual fallback. Successful GitHub login is not successful quota API retrieval. See the [GitHub App setup guide](docs/github-app-setup.md). |
+| ChatGPT Codex | QuotaSight's OpenAI device OAuth and undocumented/experimental `wham/usage` endpoint | Covers one account's Codex allowance, not all ChatGPT Plus/Pro usage. It is never labeled Official; failures fall back to manual entry and the official subscription page. |
+| Claude Pro | Manual entry plus the official URL | The user enters quota and reset information. QuotaSight does not call a billing API. |
+| OpenCode Go | Explicit API key plus usage endpoint | Shows only the subscription quota returned by that endpoint; delayed or missing responses are stale/unknown. Internal OpenCode credential files are not read. |
+| GitHub Copilot | GitHub App Device Flow or `gh auth status` probe, then optional Billing Usage retrieval | Authentication and usage access are separate. A configured organization slug and an administrator token with `Administration: read` are required for `GET /organizations/{org}/settings/billing/ai_credit/usage`. The official `credits` quantity is shown as gross, discount, and net; percentage and individual remaining are not calculated. |
 
-For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex credential files, does not request or retain a client secret, and stores tokens only in the OS secure store or session memory. Provider states remain distinguishable as Manual, Official, Delayed, or Experimental.
+## Copilot authentication and Billing Usage
 
-### Copilot terminology and manual fallback
+Authentication only:
 
-Copilot seats, organization metrics, and AI-credit usage are not the same thing as an individual's real-time remaining quota. Business credits are a shared pool; QuotaSight must not hardcode a fixed personal allowance. Until an official Copilot data contract is implemented, enter the relevant value manually and keep its source and freshness explicit.
+1. Create a GitHub App with Device Flow enabled.
+2. Put only its Client ID in Settings. QuotaSight does not ask the desktop user for a private key or client secret.
+3. Complete Device Flow, or use the safe `gh auth status` probe.
 
-The GitHub App guide explains installation, owner approval, organization access, SAML SSO approval, and the security boundary. The app currently needs only the Client ID for Device Flow. Do not enter a client secret or private key; a private key is not needed for this flow.
+Billing Usage retrieval is a separate, optional step:
+
+1. Set the target GitHub Organization slug in Settings.
+2. In the GitHub App settings, grant the `Administration: read` organization permission.
+3. Install the App in the target organization and obtain owner approval of the requested permission. This installation and approval are required for the Billing Usage path.
+4. Complete Device Flow with a user who has the required organization administration permission. QuotaSight uses the Device Flow token; there is no separate token input field.
+5. A general seat token may receive 403.
+6. QuotaSight calls `GET /organizations/{org}/settings/billing/ai_credit/usage` for the current reporting month.
+
+Device Flow success does not prove usage permission. Usage is associated with a shared billing-entity pool, not an individual remaining balance. GitHub may report usage after a delay, so the card shows the aggregation period, retrieval time, and unknown reporting delay. If the slug, installation, owner approval, permission, or endpoint is unavailable, use the official Copilot page or manual fallback. Do not infer personal remaining from seats, metrics, or billing totals. See the [GitHub App setup guide](docs/github-app-setup.md).
+
+For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex credential files, and does not request or retain a client secret. Provider states remain distinguishable as Manual, Official, Delayed, or Experimental.
 
 ## Requirements
 
 - .NET SDK 10.0.x.
 - Windows x64 or Linux x64.
-- On Linux, GUI/tray/notification support depends on the environment's GTK, D-Bus, notification daemon, and optionally Secret Service. Missing components use the documented fallback where possible.
-- `gh` to check existing GitHub CLI authentication; a browser for Device Flow.
+- On Linux, GUI/tray/notification support depends on GTK, D-Bus, a notification daemon, and optionally Secret Service.
+- `gh` for an existing GitHub CLI status probe; a browser for Device Flow.
 
 ## Build and run
 
@@ -47,31 +58,21 @@ dotnet build QuotaSight.slnx -c Release --no-restore
 dotnet test QuotaSight.slnx -c Release --no-build --no-restore
 dotnet format QuotaSight.slnx --verify-no-changes --no-restore
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj
-# Check the headless startup contract
+# headless startup contract
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 ```
 
-`--smoke-test` starts without showing the UI, checks startup and basic dependencies, and exits.
-
-### Optional resident mode
-
-Enable **Resident mode** under **Settings → Refresh and alerts**. Closing the full window then keeps QuotaSight in the tray. A normal tray-icon click opens the compact quota view; the context menu opens the full window, refreshes quota data, or exits the process explicitly. Both windows share one application state and refresh scheduler. Resident mode defaults to off and remains unavailable when the platform has no working native tray host.
-
-## Release ZIP
-
-The release workflow builds a self-contained .NET 10 Native AOT binary on the target OS and publishes `QuotaSight-<version>-<rid>.zip` for `linux-x64` or `win-x64`. Extract the ZIP and run `QuotaSight.UI` on Linux or `QuotaSight.UI.exe` on Windows. On Linux, grant execute permission if needed and install the GUI/tray/notification dependencies required by the environment. MSIX, deb, and AppImage packages are not currently provided.
-
 ## Security and privacy
 
-QuotaSight is local-first and sends no external telemetry. History is retained for 30 days as daily JSONL. Provider CLI credential files are not read or parsed. Tokens, API keys, cookies, passwords, raw provider responses, and complete CLI output are not written to settings, history, logs, crash reports, exports, tests, or UI text. Persistent secrets use Windows Credential Manager or Linux Secret Service; if unavailable or locked, credentials stay in memory for the current session only. See [security details](docs/security.md).
+QuotaSight is local-first and sends no telemetry. Provider CLI credential files are not read or parsed. Tokens, API keys, cookies, passwords, raw provider responses, and complete CLI output are not written to settings, history, logs, crash reports, exports, tests, or UI text. Persistent secrets use Windows Credential Manager or Linux Secret Service; if unavailable or locked, credentials stay in memory for the current session only. See [security details](docs/security.md).
 
-Quota windows remain separate (rolling, daily, weekly, monthly, or custom). The dashboard representative is the tightest known window; unrelated windows are not added together. Over-100% values are preserved, with only visual progress indicators clamped. Reset times, freshness, source confidence, and stale/manual/experimental states remain explicit.
+Quota windows remain separate. The representative window is the tightest known window; unrelated windows are not added together. Over-100% values are preserved, with only visual progress indicators clamped. Reset times, freshness, source confidence, and stale/manual/experimental states remain explicit.
 
 ## Roadmap
 
 - More provider packages when a documented service contract and public quota endpoint are available.
 - More native notification backends.
-- Official Copilot data retrieval is not part of the current implementation.
+- Broader Copilot organization coverage only when GitHub exposes a documented permission and response contract.
 
 ## Official references
 
@@ -79,8 +80,6 @@ Quota windows remain separate (rolling, daily, weekly, monthly, or custom). The 
 - [GitHub App user access tokens and Device Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
 - [Install a GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
 - [Control GitHub App installation in an organization](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
-- [Copilot user and seat REST API](https://docs.github.com/en/rest/copilot/copilot-user-management?apiVersion=2022-11-28)
-- [Copilot usage metrics REST API](https://docs.github.com/en/rest/copilot/copilot-usage-metrics?apiVersion=2022-11-28)
 - [Billing usage REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)
 - [GitHub Copilot AI usage UI](https://github.com/settings/copilot)
 

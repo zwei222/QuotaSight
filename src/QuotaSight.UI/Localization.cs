@@ -84,6 +84,13 @@ public sealed class UiCopy
         var joined = IsJapanese ? string.Join("、", names) : names.Count switch { 0 => string.Empty, 1 => names[0], _ => string.Join(", ", names[..^1]) + " and " + names[^1] };
         return IsJapanese ? $"今回は{joined}のデータを取得できませんでした。接続状態を確認してください。" : $"{joined} data could not be retrieved this time. Check the connection.";
     }
+    public string RefreshNoData(IEnumerable<ProviderKind> providers, IReadOnlySet<ProviderKind> providersWithPreviousValue)
+    {
+        var messages = providers.Distinct().Select(provider => providersWithPreviousValue.Contains(provider)
+            ? (IsJapanese ? $"{RefreshProviderName(provider)}は当期データなし。前回の取得値を保持しています。" : $"{RefreshProviderName(provider)}: no data for the current period. Showing the last successful value.")
+            : (IsJapanese ? $"{RefreshProviderName(provider)}は当期データがありません。" : $"{RefreshProviderName(provider)}: no data for the current period.")).ToList();
+        return string.Join(" ", messages);
+    }
     public string QuotaThresholdTitle(ProviderKind provider) => IsJapanese ? $"{provider switch { ProviderKind.ChatGpt => "ChatGPT", ProviderKind.OpenCode => "OpenCode Go", ProviderKind.Claude => "Claude", ProviderKind.Copilot => "GitHub Copilot", _ => provider.ToString() }}の利用枠のしきい値" : $"{provider} quota threshold";
     public string QuotaThresholdReason(decimal percent) => IsJapanese ? $"使用率 {percent:0.#}%" : $"{percent:0.#}% used";
     public string Appearance => IsJapanese ? "表示" : "Appearance";
@@ -107,6 +114,8 @@ public sealed class UiCopy
     public string ProviderOverrides => IsJapanese ? "プロバイダーごとにしきい値を設定できます。" : "Provider overrides can be configured per account.";
     public string Integrations => IsJapanese ? "連携" : "Integrations";
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
+    public string GithubOrganization => IsJapanese ? "GitHub Organization slug（秘密情報ではありません）" : "GitHub organization slug (not a secret)";
+    public string GithubOrganizationHint => IsJapanese ? "Billing Usage APIで参照する組織のslug。空欄または無効な値は安全に無効化されます。" : "The organization slug used by the Billing Usage API. Blank or invalid values are safely disabled.";
     public string Autostart => IsJapanese ? "自動起動: 現在利用できません（プラットフォーム機能が未導入）" : "Autostart: Unsupported · platform backend not installed";
     public string AccountWatermark => IsJapanese ? "個人" : "Personal";
     public string UsedPercentWatermark => IsJapanese ? "0以上" : "0 or more";
@@ -145,8 +154,8 @@ public sealed class UiCopy
         _ => "OpenCode Goからの応答を処理できませんでした。"
     } : result.Message;
     public string CopilotQuotaNotice => IsJapanese
-        ? "認証に成功しても利用枠の取得には成功していません。Copilot Business個人の月次残量を返す公式APIは確認できないため、公式画面または手動入力を利用してください。"
-        : "Authorization does not mean quota was retrieved. GitHub has no confirmed official API for an individual Copilot Business monthly remaining balance; use the official page or enter it manually.";
+        ? "権限を持つ組織管理者はBilling Usage API（/organizations/{org}/settings/billing/ai_credit/usage）からユーザー別AIクレジット使用量を取得できます。1席あたり月1,900 AIクレジットが請求主体単位で共有されるため、個人の残量は算出できません。設定または権限が不足する場合は公式画面または手動入力を利用してください。反映には遅延があります。"
+        : "An organization administrator with the required access can retrieve per-user AI credit quota usage from the Billing Usage API (/organizations/{org}/settings/billing/ai_credit/usage). The allowance is 1,900 AI credits per seat per month, shared at the billing-entity level; it does not provide an individual remaining balance. If configuration or permissions are insufficient, use the official page or manual entry; GitHub may report usage with delay.";
     public string CopilotStatus(CopilotUiState state) => IsJapanese ? state switch
     {
         CopilotUiState.Idle => "Copilotの認証はまだ開始されていません。",

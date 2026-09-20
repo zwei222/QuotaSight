@@ -3,6 +3,11 @@ using QuotaSight.Core;
 namespace QuotaSight.Application;
 
 public interface IQuotaAdapter { ProviderKind Provider { get; } ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken); }
+public sealed record ActiveAccountFetchResult(FetchResult<IReadOnlyList<QuotaSnapshot>> Result, string? ActiveAccount = null);
+public interface IActiveAccountQuotaAdapter : IQuotaAdapter
+{
+    ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken);
+}
 public interface IManualQuotaService { ValueTask<QuotaSnapshot> SetAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken); }
 public interface ICredentialStore { CredentialStoreAvailability Availability { get; } ValueTask<string?> GetAsync(string account, CancellationToken cancellationToken); ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken); ValueTask RemoveAsync(string account, CancellationToken cancellationToken); }
 public enum CredentialStoreAvailability { SecureStore, SessionOnly, InMemoryFallback, Unavailable, Locked }
@@ -12,6 +17,20 @@ public interface IGitHubAuthenticator { ValueTask<FetchResult<string>> Authentic
 public interface IRefreshScheduler { ValueTask RunAsync(Func<CancellationToken, ValueTask> refresh, CancellationToken cancellationToken); }
 public interface INotificationSink { ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken); }
 public sealed record ProviderFailure(ProviderKind Provider, FetchStatus Status, TimeSpan? RetryAfter = null);
-public sealed record QuotaRefreshResult(IReadOnlyList<QuotaSnapshot> Snapshots, IReadOnlyList<ProviderFailure> Failures);
+public sealed record QuotaRefreshResult
+{
+    public QuotaRefreshResult(IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyList<ProviderFailure> failures, IReadOnlySet<ProviderKind>? noDataProviders = null, IReadOnlyDictionary<ProviderKind, string>? activeAccounts = null)
+    {
+        Snapshots = snapshots;
+        Failures = failures;
+        NoDataProviders = noDataProviders ?? new HashSet<ProviderKind>();
+        ActiveAccounts = activeAccounts ?? new Dictionary<ProviderKind, string>();
+    }
+
+    public IReadOnlyList<QuotaSnapshot> Snapshots { get; }
+    public IReadOnlyList<ProviderFailure> Failures { get; }
+    public IReadOnlySet<ProviderKind> NoDataProviders { get; }
+    public IReadOnlyDictionary<ProviderKind, string> ActiveAccounts { get; }
+}
 public interface IQuotaApplication { ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken); }
 public sealed record NotificationKey(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Window, decimal Threshold);

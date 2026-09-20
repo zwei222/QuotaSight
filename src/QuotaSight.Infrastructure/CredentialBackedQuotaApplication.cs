@@ -10,17 +10,20 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     private readonly Func<string, IQuotaAdapter> adapterFactory;
     private readonly ICredentialStore credentials;
     private readonly CodexSessionManager? codexSessionManager;
+    private readonly IQuotaAdapter? copilotAdapter;
     private readonly TimeSpan providerTimeout;
 
     public CredentialBackedQuotaApplication(
         Func<string, IQuotaAdapter> adapterFactory,
         ICredentialStore credentials,
         CodexSessionManager? codexSessionManager = null,
-        TimeSpan? providerTimeout = null)
+        TimeSpan? providerTimeout = null,
+        IQuotaAdapter? copilotAdapter = null)
     {
         this.adapterFactory = adapterFactory;
         this.credentials = credentials;
         this.codexSessionManager = codexSessionManager;
+        this.copilotAdapter = copilotAdapter;
         this.providerTimeout = providerTimeout ?? TimeSpan.FromSeconds(30);
     }
 
@@ -28,13 +31,43 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     {
         var openCodeTask = FetchOpenCodeAsync(cancellationToken).AsTask();
         var codexTask = FetchCodexAsync(cancellationToken).AsTask();
-        await Task.WhenAll(openCodeTask, codexTask);
+        var copilotTask = FetchCopilotAsync(cancellationToken).AsTask();
+        await Task.WhenAll(openCodeTask, codexTask, copilotTask);
         var openCode = await openCodeTask;
         var codex = await codexTask;
-        var results = new[] { openCode, codex };
+        var copilot = await copilotTask;
+        var results = new[] { openCode, codex, copilot };
         var snapshots = results.SelectMany(result => result.Snapshots).ToArray();
         var failures = results.SelectMany(result => result.Failures).ToArray();
-        return new(snapshots, failures);
+        var noDataProviders = results.SelectMany(result => result.NoDataProviders).ToHashSet();
+        var activeAccounts = results.SelectMany(result => result.ActiveAccounts).ToDictionary(pair => pair.Key, pair => pair.Value);
+        return new(snapshots, failures, noDataProviders, activeAccounts);
+    }
+
+    private async ValueTask<QuotaRefreshResult> FetchCopilotAsync(CancellationToken cancellationToken)
+    {
+        if (copilotAdapter is null) return Empty(ProviderKind.Copilot);
+        using var providerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        providerCancellation.CancelAfter(providerTimeout);
+        try
+        {
+            if (copilotAdapter is IActiveAccountQuotaAdapter activeAccountAdapter)
+            {
+                var result = await activeAccountAdapter.FetchWithAccountAsync("GitHub Copilot", providerCancellation.Token);
+                return ToRefreshResult(ProviderKind.Copilot, result.Result, result.ActiveAccount);
+            }
+
+            var fallbackResult = await copilotAdapter.FetchAsync("GitHub Copilot", providerCancellation.Token);
+            return ToRefreshResult(ProviderKind.Copilot, fallbackResult);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Failure(ProviderKind.Copilot, FetchStatus.TransientFailure);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Failure(ProviderKind.Copilot, FetchStatus.TransientFailure);
+        }
     }
 
     private async ValueTask<QuotaRefreshResult> FetchOpenCodeAsync(CancellationToken cancellationToken)
@@ -88,8 +121,13 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     private static QuotaRefreshResult Failure(ProviderKind provider, FetchStatus status, TimeSpan? retryAfter = null) =>
         new([], [new(provider, status, retryAfter)]);
 
-    private static QuotaRefreshResult ToRefreshResult(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result) =>
+    private static QuotaRefreshResult ToRefreshResult(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result, string? activeAccount = null) =>
         result.IsSuccess
-            ? new(result.Value ?? [], [])
-            : Failure(provider, result.Status, result.RetryAfter);
+            ? new(result.Value ?? [], [], activeAccounts: ActiveAccounts(provider, activeAccount ?? result.Value?.FirstOrDefault()?.Account))
+            : result.Status == FetchStatus.NoData
+                ? new([], [], new HashSet<ProviderKind> { provider }, ActiveAccounts(provider, activeAccount))
+                : new([], [new(provider, result.Status, result.RetryAfter)], activeAccounts: ActiveAccounts(provider, activeAccount));
+
+    private static IReadOnlyDictionary<ProviderKind, string> ActiveAccounts(ProviderKind provider, string? activeAccount) =>
+        string.IsNullOrWhiteSpace(activeAccount) ? new Dictionary<ProviderKind, string>() : new Dictionary<ProviderKind, string> { [provider] = activeAccount };
 }
