@@ -253,7 +253,7 @@ public sealed class CopilotCompositionIntegrationTests
                 BillingRequestSeen.TrySetResult(true);
                 await BillingRelease.Task.WaitAsync(cancellationToken);
                 var now = DateTimeOffset.UtcNow;
-                return Json($"{{\"timePeriod\":{{\"year\":{now.Year},\"month\":{now.Month}}},\"organization\":\"acme\",\"user\":\"octocat\",\"usageItems\":[{{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":3,\"discountQuantity\":0,\"netQuantity\":3}}]}}");
+                return Json($"{{\"timePeriod\":{{\"year\":{now.Year},\"month\":{now.Month}}},\"organization\":\"acme\",\"user\":\"octocat\",\"usageItems\":[{{\"product\":\"Copilot\",\"sku\":\"Copilot AI Credits\",\"unitType\":\"ai-credits\",\"grossQuantity\":3,\"discountQuantity\":0,\"netQuantity\":3}}]}}");
             }
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
