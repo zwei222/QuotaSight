@@ -144,7 +144,22 @@ public sealed class RealFeatureTests
 
         var rows = Assert.Single(DashboardAggregation.ToCards(snapshots, now)).Windows;
 
-        Assert.Equal(["Custom metric", "Rolling metric", "Daily metric", "Monthly metric"], rows.Select(row => row.Metric));
+        Assert.Equal(["Rolling metric", "Custom metric", "Daily metric", "Monthly metric"], rows.Select(row => row.Metric));
+    }
+
+    [Fact]
+    public void Window_ordering_uses_semantic_fallback_for_equal_or_invalid_durations()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var snapshots = Enum.GetValues<QuotaWindowKind>().Select(kind => Snapshot(10) with
+        {
+            Metric = kind.ToString(),
+            Window = kind == QuotaWindowKind.Custom
+                ? new(kind, now.AddDays(2), now.AddDays(1))
+                : new(kind, now.AddDays(-1), now)
+        });
+
+        Assert.Equal([QuotaWindowKind.Daily, QuotaWindowKind.Rolling, QuotaWindowKind.Weekly, QuotaWindowKind.Monthly, QuotaWindowKind.Custom], QuotaWindowOrdering.OrderSnapshots(snapshots).Select(snapshot => snapshot.Window.Kind));
     }
 
     [Fact]

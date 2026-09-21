@@ -46,6 +46,13 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public bool IsQuantityOnly { get; init; }
     public bool IsGaugeVisible => !IsQuantityOnly;
     public bool IsQuantityVisible => IsQuantityOnly;
+    public bool IsQuantityCompositionVisible { get; init; }
+    public decimal IncludedCompositionRatio { get; init; }
+    public decimal AdditionalCompositionRatio { get; init; }
+    public decimal CompositionRatioTotal => IncludedCompositionRatio + AdditionalCompositionRatio;
+    public string CompositionBarLabel { get; init; } = string.Empty;
+    public string CompositionIncludedLabel { get; init; } = string.Empty;
+    public string CompositionAdditionalLabel { get; init; } = string.Empty;
     public string QuantityGrossText { get; init; } = string.Empty;
     public string QuantityDiscountText { get; init; } = string.Empty;
     public string QuantityNetText { get; init; } = string.Empty;
@@ -70,13 +77,24 @@ public static class QuotaPresentationFormatter
         var source = japanese ? snapshot.Source switch { QuotaSource.Manual => "手動", QuotaSource.Experimental => "実験的", QuotaSource.Delayed => "遅延", _ => "公式" } : snapshot.Source.ToString();
         if (snapshot.Provider == ProviderKind.Copilot && snapshot.CopilotUsage is { } usage)
         {
+            var grossValue = usage.GrossQuantity.GetValueOrDefault();
+            var includedValue = Math.Max(0m, usage.DiscountQuantity.GetValueOrDefault());
+            var additionalValue = Math.Max(0m, usage.NetQuantity.GetValueOrDefault());
+            var compositionVisible = grossValue > 0m;
+            var includedRatio = compositionVisible ? SafeCompositionRatio(includedValue, grossValue, 1m) : 0m;
+            var additionalRatio = compositionVisible ? SafeCompositionRatio(additionalValue, grossValue, 1m - includedRatio) : 0m;
             var gross = FormatQuantity(usage.GrossQuantity, japanese ? "クレジットを使用" : "credits used", japanese);
             var discount = FormatQuantity(usage.DiscountQuantity, japanese ? "含まれる分" : "included", japanese);
-            var net = FormatQuantity(usage.NetQuantity, japanese ? "追加課金対象" : "additional", japanese);
+            var net = FormatQuantity(usage.NetQuantity, japanese ? "追加" : "additional", japanese);
             var period = japanese ? $"集計期間: {snapshot.Window.Start:yyyy年M月d日}〜{snapshot.Window.End:yyyy年M月d日}" : $"Aggregation period: {snapshot.Window.Start:yyyy-MM-dd} – {snapshot.Window.End:yyyy-MM-dd}";
             var retrieved = japanese ? $"取得時刻: {snapshot.Fetched.ToLocalTime():yyyy年M月d日 HH:mm}" : $"Retrieved: {snapshot.Fetched.ToLocalTime():yyyy-MM-dd HH:mm zzz}";
             var delay = japanese ? "反映遅延: 不明" : "Reporting delay: unknown";
-            var quantityStatus = japanese ? "割合・個人残量は算出していません" : "Percentage and individual remaining balance are not calculated";
+            var quantityStatus = japanese ? "Gross構成のみを表示しています。割合ゲージではありません" : "Gross composition only; this is not a percentage gauge";
+            var includedLabel = japanese ? $"含まれる分 {includedRatio:P1} · {discount}" : $"Included {includedRatio:P1} · {discount}";
+            var additionalLabel = japanese ? $"追加 {additionalRatio:P1} · {net}" : $"Additional {additionalRatio:P1} · {net}";
+            var compositionLabel = japanese
+                ? $"総量の構成バー。含まれる分 {includedRatio:P1}、追加 {additionalRatio:P1}。総量: {gross}。"
+                : $"Gross composition bar. Included {includedRatio:P1}, Additional {additionalRatio:P1}. Total: {gross}.";
             var quantityFreshness = $"{freshness} · {period} · {retrieved} · {delay}";
             return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), 0, string.Empty, quantityStatus, period, source, quantityFreshness, stale, quantityStatus)
             {
@@ -90,6 +108,12 @@ public static class QuotaPresentationFormatter
                 Band = UsageBand.Normal,
                 Snapshot = snapshot,
                 IsQuantityOnly = true,
+                IsQuantityCompositionVisible = compositionVisible,
+                IncludedCompositionRatio = includedRatio,
+                AdditionalCompositionRatio = additionalRatio,
+                CompositionBarLabel = compositionLabel,
+                CompositionIncludedLabel = includedLabel,
+                CompositionAdditionalLabel = additionalLabel,
                 QuantityGrossText = gross,
                 QuantityDiscountText = discount,
                 QuantityNetText = net
@@ -104,6 +128,7 @@ public static class QuotaPresentationFormatter
         return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, percentText, status, reset, source, freshness, stale, BuildProgressLabel(percentText, status, reset, language)) { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
     }
     private static string FormatQuantity(decimal? value, string label, bool japanese) => value is null ? (japanese ? $"不明 · {label}" : $"Unavailable · {label}") : $"{value.Value.ToString("#,0.##", CultureInfo.InvariantCulture)} {label}";
+    private static decimal SafeCompositionRatio(decimal value, decimal gross, decimal upperBound) => value <= 0m || gross <= 0m || upperBound <= 0m ? 0m : value >= gross ? upperBound : Math.Min(value / gross, upperBound);
 
     public static QuotaRowViewModel Relocalize(QuotaRowViewModel row, DateTimeOffset now, UiLanguage language) => row.Snapshot is { } snapshot ? Format(snapshot, now, language) : row;
 
@@ -160,6 +185,37 @@ public sealed class PersistentDashboardSource(IQuotaHistory history, TimeProvide
         return DashboardAggregation.ToCards(snapshots, clock.GetUtcNow(), UiLanguage.English);
     }
 }
+public static class QuotaWindowOrdering
+{
+    public static int FallbackRank(QuotaWindowKind kind) => kind switch
+    {
+        QuotaWindowKind.Daily => 0,
+        QuotaWindowKind.Rolling => 1,
+        QuotaWindowKind.Weekly => 2,
+        QuotaWindowKind.Monthly => 3,
+        QuotaWindowKind.Custom => 4,
+        _ => 5
+    };
+
+    public static IEnumerable<QuotaSnapshot> OrderSnapshots(IEnumerable<QuotaSnapshot> snapshots) => snapshots
+        .OrderBy(snapshot => IsValid(snapshot.Window) ? 0 : 1)
+        .ThenBy(snapshot => IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
+        .ThenBy(snapshot => FallbackRank(snapshot.Window.Kind))
+        .ThenBy(snapshot => snapshot.Window.Start)
+        .ThenBy(snapshot => snapshot.Window.End)
+        .ThenBy(snapshot => snapshot.Metric, StringComparer.Ordinal);
+
+    public static IEnumerable<QuotaRowViewModel> OrderRows(IEnumerable<QuotaRowViewModel> rows) => rows
+        .OrderBy(row => row.Snapshot is { } snapshot && IsValid(snapshot.Window) ? 0 : 1)
+        .ThenBy(row => row.Snapshot is { } snapshot && IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
+        .ThenBy(row => FallbackRank(row.WindowKind))
+        .ThenBy(row => row.Snapshot?.Window.Start ?? DateTimeOffset.MaxValue)
+        .ThenBy(row => row.Snapshot?.Window.End ?? DateTimeOffset.MaxValue)
+        .ThenBy(row => row.Metric, StringComparer.Ordinal);
+
+    private static bool IsValid(QuotaWindow window) => window.End > window.Start;
+}
+
 public static class DashboardAggregation
 {
     public static IReadOnlyList<ProviderCardViewModel> ToCards(IEnumerable<QuotaSnapshot> snapshots, DateTimeOffset now, UiLanguage language = UiLanguage.English)
@@ -173,11 +229,7 @@ public static class DashboardAggregation
             if (group.Key.Provider == ProviderKind.ChatGpt && representative?.Source != QuotaSource.Manual)
                 name = new UiCopy(language).ProviderName(group.Key.Provider);
             var card = new ProviderCardViewModel(group.Key.Provider, name, group.Key.Account, "#405DE6", representative?.IsStale(now) == true ? (japanese ? "更新できませんでした" : "Stale · refresh failed") : (japanese ? "接続済み" : "Connected"), false,
-                windows.OrderBy(s => s.Window.End - s.Window.Start)
-                    .ThenBy(s => s.Window.Start)
-                    .ThenBy(s => s.Window.End)
-                    .ThenBy(s => s.Window.Kind)
-                    .ThenBy(s => s.Metric, StringComparer.Ordinal)
+                QuotaWindowOrdering.OrderSnapshots(windows)
                     .Select(s => QuotaPresentationFormatter.Format(s, now, language)).ToList());
             return (card, percent: representative?.EffectivePercent ?? decimal.MinValue);
         }).OrderByDescending(item => item.percent).Select(item => item.card).ToList();
@@ -199,7 +251,7 @@ public static class DemoData
         {
             var first = new QuotaSnapshot(card.Item1, card.Item3, index == 2 ? "Requests" : "Messages", new(card.Item6, now.AddDays(-3), now.AddDays(4), ResetAt: now.AddHours(index == 1 ? 7 : 42)), card.Item5, 100, null, "requests", now.AddMinutes(-index * 7), now.AddMinutes(-index * 7), card.Item7, card.Item7 == QuotaSource.Manual ? QuotaConfidence.Manual : QuotaConfidence.High, index == 1 ? now.AddHours(-1) : now.AddHours(12), card.Item2);
             var second = first with { Metric = "Fast window", Window = new(QuotaWindowKind.Daily, now.AddHours(-12), now.AddHours(12), ResetAt: now.AddHours(12)), Used = Math.Max(1, card.Item5 - 24), Fetched = now.AddMinutes(-15) };
-            return new ProviderCardViewModel(card.Item1, card.Item2, card.Item3, card.Item4, index == 1 ? "Needs attention" : index == 2 ? "Over limit" : "Healthy", true, [QuotaPresentationFormatter.Format(first, now), QuotaPresentationFormatter.Format(second, now)]);
+            return new ProviderCardViewModel(card.Item1, card.Item2, card.Item3, card.Item4, index == 1 ? "Needs attention" : index == 2 ? "Over limit" : "Healthy", true, QuotaWindowOrdering.OrderRows([QuotaPresentationFormatter.Format(first, now), QuotaPresentationFormatter.Format(second, now)]).ToList());
         }).ToList();
     }
 }
@@ -1513,10 +1565,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var existing = Cards.FirstOrDefault(card => card.Provider == snapshot.Provider && card.Account == snapshot.Account);
         if (existing is not null)
         {
-            var windows = existing.Windows
+            var windows = QuotaWindowOrdering.OrderRows(existing.Windows
                 .Where(item => item.WindowName != row.WindowName || item.Metric != row.Metric)
-                .Append(row)
-                .OrderByDescending(item => item.VisualPercent)
+                .Append(row))
                 .ToList();
             Cards[Cards.IndexOf(existing)] = existing with { Windows = windows };
         }
@@ -1551,13 +1602,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             var first = matches[0];
-            var windows = matches
+            var windows = QuotaWindowOrdering.OrderRows(matches
                 .SelectMany(item => item.card.Windows)
                 .Where(existing => existing.WindowName != row.WindowName || existing.Metric != row.Metric)
                 .Append(row)
                 .GroupBy(existing => (existing.WindowName, existing.Metric))
-                .Select(group => group.Last())
-                .OrderByDescending(existing => existing.VisualPercent)
+                .Select(group => group.Last()))
                 .ToList();
             Cards[first.index] = first.card with { Windows = windows };
             foreach (var duplicate in matches.Skip(1).OrderByDescending(item => item.index)) Cards.RemoveAt(duplicate.index);

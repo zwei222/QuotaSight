@@ -150,7 +150,10 @@ public sealed class ResidentModeVisualTests
             Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,200 included");
             Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "750 additional");
             Assert.DoesNotContain(card.GetVisualDescendants().OfType<ProgressBar>(), gauge => gauge.IsVisible);
-            Assert.DoesNotContain(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains('%') == true);
+            var compositionText = card.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsVisible).Select(text => text.Text ?? string.Empty).ToArray();
+            Assert.Contains(compositionText, text => text.Contains("Included", StringComparison.Ordinal));
+            Assert.Contains(compositionText, text => text.Contains("Additional", StringComparison.Ordinal));
+            Assert.DoesNotContain(compositionText, text => text.Contains("remaining", StringComparison.OrdinalIgnoreCase));
         }
         finally { window.Close(); vm.Dispose(); }
     }

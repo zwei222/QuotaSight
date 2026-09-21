@@ -154,8 +154,8 @@ public sealed class UiCopy
         _ => "OpenCode Goからの応答を処理できませんでした。"
     } : result.Message;
     public string CopilotQuotaNotice => IsJapanese
-        ? "権限を持つ組織管理者はBilling Usage API（/organizations/{org}/settings/billing/ai_credit/usage）からユーザー別AIクレジット使用量を取得できます。1席あたり月1,900 AIクレジットが請求主体単位で共有されるため、個人の残量は算出できません。設定または権限が不足する場合は公式画面または手動入力を利用してください。反映には遅延があります。"
-        : "An organization administrator with the required access can retrieve per-user AI credit quota usage from the Billing Usage API (/organizations/{org}/settings/billing/ai_credit/usage). The allowance is 1,900 AI credits per seat per month, shared at the billing-entity level; it does not provide an individual remaining balance. If configuration or permissions are insufficient, use the official page or manual entry; GitHub may report usage with delay.";
+        ? "権限を持つ組織管理者はBilling Usage API（/organizations/{org}/settings/billing/ai_credit/usage）から使用量の詳細を取得できます。表示する数値は請求主体で共有されるGross構成（含まれる分・追加）であり、個人の利用枠や残量、割合ゲージではありません。設定または権限が不足する場合は公式画面または手動入力を利用してください。反映には遅延があります。"
+        : "An organization administrator with the required access can retrieve usage details from the Billing Usage API (/organizations/{org}/settings/billing/ai_credit/usage). The figures show the shared billing-entity Gross composition (Included and Additional), not a personal quota, remaining balance, or percentage gauge. If configuration or permissions are insufficient, use the official page or manual entry; GitHub may report usage with delay.";
     public string CopilotStatus(CopilotUiState state) => IsJapanese ? state switch
     {
         CopilotUiState.Idle => "Copilotの認証はまだ開始されていません。",
