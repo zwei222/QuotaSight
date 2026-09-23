@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:vm="using:QuotaSight.UI" x:Class="QuotaSight.UI.MainWindow" x:DataType="vm:MainViewModel" Title="QuotaSight" MinWidth="420" MinHeight="520" Width="1100" Height="740">
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:vm="using:QuotaSight.UI" x:Class="QuotaSight.UI.MainWindow" x:DataType="vm:MainViewModel" Icon="avares://QuotaSight.UI/Assets/quotasight.ico" Title="QuotaSight" MinWidth="420" MinHeight="520" Width="1100" Height="740">
   <Window.Styles>
     <Style Selector="TextBlock.title"><Setter Property="FontSize" Value="30"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/></Style>
     <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/></Style>

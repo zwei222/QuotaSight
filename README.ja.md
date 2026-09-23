@@ -17,7 +17,7 @@ QuotaSightは、サブスクリプション契約の利用枠を確認するWind
 
 通知しきい値の初期値は80%で、Settingsから通知を無効にできます。しきい値通知はQuotaSightの実行中に限り、定期更新時に確認されます。手動で入力した割合snapshotは、しきい値に初めて達したときに通知する場合があります。stale/unknownの観測値と、割合を持たないCopilotの数量データは、しきい値通知の対象外です。エラー・状態bannerは、しきい値通知のtoggleとは独立しています。
 
-通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。Windows x64ではWindows App SDK 2.5.1のbackendを使い、portable Native AOT ZIP buildからOS通知の送信を試みます。APIが受け付けたことと画面にpopupが表示されたことは別であり、Windows実機でのpixel-level表示確認は未実施です。両OSでfallbackとしてアプリ内bannerを残しています（ウィンドウが非表示の間はbannerを表示できません）。通常終了時にはWindows通知登録の解除（`UnregisterAll`を含む）を試みますが、異常終了やcleanup失敗時に登録が残る可能性があります。
+通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。Windows x64ではWindows App SDK 2.5.1のbackendを使い、portable Native AOT ZIP buildからOS通知の送信を試みます。APIが受け付けたことと画面にpopupが表示されたことは別です。CIではrestore、format、Release build/test、Native AOT publish/smokeまでを確認し、Windows通知登録と実表示は非昇格のWindows 11 x64 desktopで別途手動検証が必要です。成功したとはまだ記録していません。手順は[Windows通知の受け入れ確認](docs/windows-notification-acceptance.ja.md)を参照してください。両OSでfallbackとしてアプリ内bannerを残しています（ウィンドウが非表示の間はbannerを表示できません）。通常終了時にはWindows通知登録の解除（`UnregisterAll`を含む）を試みますが、異常終了やcleanup失敗時に登録が残る可能性があります。
 
 ## Providerの取得方式と限界
 

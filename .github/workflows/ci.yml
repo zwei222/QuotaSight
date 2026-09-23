@@ -43,6 +43,3 @@ jobs:
       - name: Smoke Native AOT (Windows)
         if: runner.os == 'Windows'
         run: .\publish\QuotaSight.UI.exe --smoke-test
-      - name: Probe Windows notification API
-        if: runner.os == 'Windows'
-        run: .\publish\QuotaSight.UI.exe --notification-probe
