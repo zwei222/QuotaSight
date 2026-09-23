@@ -1108,12 +1108,88 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
 public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
 public sealed class InAppNotificationService : IInAppNotificationService, INotificationSink, INotifyPropertyChanged
 {
+    private readonly IDesktopNotificationBackend? desktopNotificationBackend;
+    private string thresholdBannerText = string.Empty;
+    private QuotaSnapshot? thresholdSnapshot;
+    private decimal? pendingThreshold;
+    private decimal thresholdPercent;
     public UiLanguage Language { get; set; } = UiLanguage.English;
     public string BannerText { get; private set; } = string.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
-    public void Notify(string title, string reason) { BannerText = $"{title}: {reason}"; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
-    public void Clear() { if (BannerText.Length == 0) return; BannerText = string.Empty; PropertyChanged?.Invoke(this, new(nameof(BannerText))); }
-    public ValueTask NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken) { if (snapshot.EffectivePercent is not { } percent) return ValueTask.CompletedTask; var copy = new UiCopy(Language); Notify(copy.QuotaThresholdTitle(snapshot.Provider), copy.QuotaThresholdReason(percent)); return ValueTask.CompletedTask; }
+    public InAppNotificationService(IDesktopNotificationBackend? desktopNotificationBackend = null) => this.desktopNotificationBackend = desktopNotificationBackend;
+    public void Notify(string title, string reason) => SetBannerText($"{title}: {reason}");
+    public void Clear() { thresholdBannerText = string.Empty; thresholdSnapshot = null; SetBannerText(string.Empty); }
+    public void ClearThresholdBanner()
+    {
+        var wasVisible = BannerText == thresholdBannerText;
+        thresholdBannerText = string.Empty;
+        thresholdSnapshot = null;
+        if (wasVisible) SetBannerText(string.Empty);
+    }
+    public void SetThresholdContext(decimal threshold) => pendingThreshold = threshold;
+    public void ReconcileThresholdBanner(IReadOnlyList<QuotaSnapshot> snapshots, DateTimeOffset now, Func<ProviderKind, decimal> thresholdForProvider, bool enabled)
+    {
+        if (!enabled) { ClearThresholdBanner(); return; }
+        if (thresholdSnapshot is not { } current) return;
+        var threshold = thresholdForProvider(current.Provider);
+        if (thresholdPercent > 0 && thresholdPercent != threshold)
+        {
+            ClearThresholdBanner();
+            return;
+        }
+
+        var replacement = snapshots
+            .Where(snapshot => snapshot.Provider == current.Provider && snapshot.Account == current.Account && snapshot.Metric == current.Metric && snapshot.Window.Kind == current.Window.Kind)
+            .OrderByDescending(snapshot => snapshot.Fetched)
+            .FirstOrDefault();
+        if (replacement is null)
+        {
+            if (current.Window.End <= now) ClearThresholdBanner();
+            return;
+        }
+
+        if (replacement.IsStale(now) || replacement.Window.End <= now || replacement.EffectivePercent is not { } percent || percent < threshold)
+        {
+            ClearThresholdBanner();
+            return;
+        }
+
+        thresholdSnapshot = replacement;
+        thresholdPercent = threshold;
+        var copy = new UiCopy(Language);
+        thresholdBannerText = $"{copy.QuotaThresholdTitle(replacement.Provider)}: {copy.QuotaThresholdReason(percent)}";
+        if (BannerText != string.Empty && BannerText == BannerTextFor(current)) SetBannerText(thresholdBannerText);
+    }
+    private string BannerTextFor(QuotaSnapshot snapshot)
+    {
+        if (snapshot.EffectivePercent is not { } percent) return string.Empty;
+        var copy = new UiCopy(Language);
+        return $"{copy.QuotaThresholdTitle(snapshot.Provider)}: {copy.QuotaThresholdReason(percent)}";
+    }
+    public void RestoreThresholdBanner() => SetBannerText(thresholdBannerText);
+    public async ValueTask<bool> NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (snapshot.EffectivePercent is not { } percent) return true;
+        var copy = new UiCopy(Language);
+        var title = copy.QuotaThresholdTitle(snapshot.Provider);
+        var reason = copy.QuotaThresholdReason(percent);
+        thresholdBannerText = $"{title}: {reason}";
+        thresholdSnapshot = snapshot;
+        thresholdPercent = pendingThreshold ?? 0;
+        pendingThreshold = null;
+        SetBannerText(thresholdBannerText);
+        if (desktopNotificationBackend is null) return true;
+        try { return await desktopNotificationBackend.TryNotifyAsync(title, reason, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception) { /* Keep the in-app banner as the delivery fallback. */ return false; }
+    }
+    private void SetBannerText(string text)
+    {
+        if (BannerText == text) return;
+        BannerText = text;
+        PropertyChanged?.Invoke(this, new(nameof(BannerText)));
+    }
 }
 
 public sealed record ProviderConnectionResult(bool Success, string Message, FetchStatus Status = FetchStatus.Success);
@@ -1368,7 +1444,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly TimeProvider timeProvider;
     private readonly IGitHubClientFactory? githubFactory;
     private readonly IQuotaApplication? quotaApplication;
-    private readonly InAppNotificationService notificationService = new();
+    private readonly InAppNotificationService notificationService;
     private readonly NotificationDeduplicator notificationDeduplicator;
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
     private readonly SemaphoreSlim refreshGate = new(1, 1);
@@ -1386,7 +1462,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
@@ -1426,12 +1502,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
     public void Notify(string title, string reason) => notificationService.Notify(title, reason);
-    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Settings.GithubOrganization = dto.GithubOrganization.Trim(); Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
+    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; if (!Settings.NotificationsEnabled) notificationService.ClearThresholdBanner(); Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Settings.GithubOrganization = dto.GithubOrganization.Trim(); Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
     private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization);
     public async Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) { Settings.Theme = value; UiSettings.ApplyTheme(value); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task SetLanguageAsync(UiLanguage value, CancellationToken cancellationToken = default) { Language = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task<bool> SetRefreshMinutesAsync(int value, CancellationToken cancellationToken = default) { if (!Settings.TrySetRefreshMinutes(value)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
-    public async Task SetNotificationsAsync(bool value, CancellationToken cancellationToken = default) { Settings.NotificationsEnabled = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public async Task SetNotificationsAsync(bool value, CancellationToken cancellationToken = default) { Settings.NotificationsEnabled = value; if (!value) notificationService.ClearThresholdBanner(); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public async Task SetResidentModeAsync(bool value, CancellationToken cancellationToken = default) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
     public void RestoreResidentMode(bool value) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); }
     public async Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) { if (!Settings.TrySetThreshold(value, out _)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
@@ -1476,6 +1552,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // state mutation, not only before dispatching.
         if (IsDisposed) return;
         ReevaluateCards(timeProvider.GetUtcNow());
+        notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshError);
         PresentationState = PresentationState.Error;
     }
     private async Task ApplyRefreshResultAsync(QuotaRefreshResult refreshResult, HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> previousProviderIdentities, CancellationToken cancellationToken)
@@ -1502,9 +1579,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (snapshots.Count > 0)
         {
             MergeLastKnownSnapshots(snapshots);
-            if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
             UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
             ReevaluateCards(timeProvider.GetUtcNow());
+            foreach (var snapshot in snapshots) { var threshold = Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold); notificationService.SetThresholdContext(threshold); await notificationDeduplicator.ConsiderAsync(snapshot, threshold, timeProvider.GetUtcNow(), cancellationToken, Settings.NotificationsEnabled); }
             // HistoryState's storage lane is the single owner of history mutations: provider
             // snapshots are appended here instead of by the provider application.
             if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
@@ -1515,7 +1592,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             else if (refreshResult.NoDataProviders.Count > 0)
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
             else
-                notificationService.Clear();
+            {
+                notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
+                notificationService.RestoreThresholdBanner();
+            }
             PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
         }
         else ReevaluateCards(timeProvider.GetUtcNow());
@@ -1528,7 +1608,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             else if (refreshResult.NoDataProviders.Count > 0)
                 notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
             else
-                notificationService.Clear();
+            {
+                notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
+                notificationService.RestoreThresholdBanner();
+            }
             PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
         }
         OnPropertyChanged(nameof(PresentationState));
@@ -1538,9 +1621,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (snapshots.Count == 0 || IsDisposed) return;
         if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
         MergeLastKnownSnapshots(snapshots);
-        if (Settings.NotificationsEnabled) foreach (var snapshot in snapshots) await notificationDeduplicator.ConsiderAsync(snapshot, Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold), timeProvider.GetUtcNow(), cancellationToken);
         UpsertSnapshotCards(snapshots, timeProvider.GetUtcNow());
         ReevaluateCards(timeProvider.GetUtcNow());
+        foreach (var snapshot in snapshots) { var threshold = Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold); notificationService.SetThresholdContext(threshold); await notificationDeduplicator.ConsiderAsync(snapshot, threshold, timeProvider.GetUtcNow(), cancellationToken, Settings.NotificationsEnabled); }
         PresentationState = PresentationState.Ready;
     }
     public string Copy(string key) => Language == UiLanguage.Japanese ? key switch { "Dashboard" => "ダッシュボード", "History" => "履歴", "Settings" => "設定", _ => key } : key;
@@ -1558,6 +1641,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         lastKnownSnapshots.RemoveAll(existing => existing.Provider == snapshot.Provider && existing.Account == snapshot.Account && existing.Window.Kind == snapshot.Window.Kind && existing.Metric == snapshot.Metric);
         lastKnownSnapshots.Add(snapshot);
         ApplyManualSnapshotUi(snapshot);
+        var threshold = Settings.ProviderOverrides.GetValueOrDefault(snapshot.Provider, Settings.OverallThreshold);
+        notificationService.SetThresholdContext(threshold);
+        await notificationDeduplicator.ConsiderAsync(snapshot, threshold, timeProvider.GetUtcNow(), cancellationToken, Settings.NotificationsEnabled);
+        notificationService.ReconcileThresholdBanner([snapshot], timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
     }
     private void ApplyManualSnapshotUi(QuotaSnapshot snapshot)
     {

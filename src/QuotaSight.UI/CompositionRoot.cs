@@ -99,7 +99,9 @@ public static class CompositionRoot
         return primary;
     }
 
-    public static MainViewModel CreateMainViewModel(string? dataDirectory = null, HttpClient? httpClient = null)
+    internal static IDesktopNotificationBackend? CreateDesktopNotificationBackend() => OperatingSystem.IsLinux() ? new LinuxDesktopNotifications() : null;
+
+    public static MainViewModel CreateMainViewModel(string? dataDirectory = null, HttpClient? httpClient = null, IDesktopNotificationBackend? desktopNotificationBackend = null)
     {
         var client = httpClient ?? new HttpClient();
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
@@ -109,10 +111,10 @@ public static class CompositionRoot
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
         var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization);
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
-        return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application);
+        return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
     }
 
-    public static (MainViewModel ViewModel, IProviderUiService Provider) CreateMainWindowParts(string? dataDirectory = null, HttpClient? httpClient = null, ICredentialStore? credentialStore = null)
+    public static (MainViewModel ViewModel, IProviderUiService Provider) CreateMainWindowParts(string? dataDirectory = null, HttpClient? httpClient = null, ICredentialStore? credentialStore = null, IDesktopNotificationBackend? desktopNotificationBackend = null)
     {
         var client = httpClient ?? new HttpClient();
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
@@ -123,7 +125,7 @@ public static class CompositionRoot
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
         var factory = new GitHubClientFactory(client);
         var github = factory.Create(settings.Load().GithubOAuthClientId);
-        var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application);
+        var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
         var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory, codexSessionManager: codex);
         return (viewModel, provider);
     }

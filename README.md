@@ -13,6 +13,12 @@ QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is n
 - Theme, refresh, notification, threshold, GitHub App Client ID, and GitHub organization slug settings.
 - Optional resident mode with a compact quota window and an explicit exit action.
 
+### Notifications
+
+The notification threshold defaults to 80%, and notifications can be turned off in Settings. Threshold notifications are checked during periodic refreshes only while QuotaSight is running. Manual percentage snapshots can trigger a notification when they first reach the threshold; stale or unknown observations and quantity-only Copilot usage do not trigger threshold notifications. Error and status banners are independent of the threshold-notification toggle.
+
+Notifications are best-effort, not guaranteed delivery. On Linux, QuotaSight attempts to send an `org.freedesktop.Notifications` request over the session D-Bus; acceptance by D-Bus does not guarantee that a notification daemon displays it. An in-app banner is retained as a fallback. On Windows, notifications are currently in-app banners only: there is no OS toast backend, and a hidden window cannot display the banner. The notification changes described here are in an unmerged PR.
+
 ## Provider matrix and limits
 
 | Provider | Current method | What it does and does not promise |
@@ -47,7 +53,7 @@ For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex cred
 
 - .NET SDK 10.0.x.
 - Windows x64 or Linux x64.
-- On Linux, GUI/tray/notification support depends on GTK, D-Bus, a notification daemon, and optionally Secret Service.
+- On Linux, the GUI requires GTK. OS notification attempts require a session D-Bus and notification daemon, and daemon acceptance does not guarantee display; Secret Service is optional.
 - `gh` for an existing GitHub CLI status probe; a browser for Device Flow.
 
 ## Build and run
@@ -71,7 +77,7 @@ Quota windows remain separate. The representative window is the tightest known w
 ## Roadmap
 
 - More provider packages when a documented service contract and public quota endpoint are available.
-- More native notification backends.
+- A Windows OS notification backend and real desktop validation remain pending; Windows OS notifications are not currently supported.
 - Broader Copilot organization coverage only when GitHub exposes a documented permission and response contract.
 
 ## Official references

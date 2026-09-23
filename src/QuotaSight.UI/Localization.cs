@@ -102,6 +102,17 @@ public sealed class UiCopy
     public string RefreshAlerts => IsJapanese ? "更新と通知" : "Refresh and alerts";
     public string RefreshInterval => IsJapanese ? "更新間隔（5〜15分）" : "Refresh interval (5–15 minutes)";
     public string EnableNotifications => IsJapanese ? "通知を有効にする" : "Enable notifications";
+    public string NotificationDeliveryDescription => OperatingSystem.IsWindows()
+        ? (IsJapanese
+            ? "しきい値に達するとアプリ内バナーを表示します。WindowsのOS通知には対応していません。ウィンドウを閉じている間はバナーを確認できません。"
+            : "Threshold alerts appear as in-app banners only. Windows system notifications are not supported; banners cannot be seen while the window is closed.")
+        : OperatingSystem.IsLinux()
+            ? (IsJapanese
+                ? "Linuxでは、アプリの実行中にしきい値へ達するとデスクトップ通知を試み、アプリ内にも表示します。OSの設定や集中モードでデスクトップ通知が表示されない場合があります。"
+                : "On Linux, QuotaSight tries a desktop notification at the threshold while running and also shows an in-app banner. OS settings or Focus may suppress the desktop notification.")
+            : (IsJapanese
+                ? "しきい値に達すると、アプリの実行中にアプリ内で表示します。ウィンドウが非表示の間は確認できません。"
+                : "Threshold alerts appear in-app while QuotaSight is running; they cannot be seen while the window is hidden.");
     public string ResidentMode => IsJapanese ? "常駐モードを有効にする" : "Enable resident mode";
     public string ResidentModeDescription => IsJapanese ? "対応環境ではアイコンをクリックして利用枠をすばやく確認できます。ウィンドウを閉じてもトレイに残ります。" : "On supported platforms, click the icon for a quick quota check; closing the window keeps QuotaSight in the tray.";
     public string OpenFullWindow => IsJapanese ? "正式なウィンドウを開く" : "Open full window";
@@ -111,7 +122,7 @@ public sealed class UiCopy
     public string CompactSubtitle => IsJapanese ? "次のリセットまでの概要" : "A quick view before the next reset";
     public string CompactProviders => IsJapanese ? "プロバイダー" : "Quota providers";
     public string OverallThreshold => IsJapanese ? "通知する使用率（%）" : "Overall threshold (%)";
-    public string ProviderOverrides => IsJapanese ? "プロバイダーごとにしきい値を設定できます。" : "Provider overrides can be configured per account.";
+    public string ProviderOverrides => IsJapanese ? "通知しきい値は使用率で計算できる利用枠が対象です。CopilotのGross AIクレジットは個人上限がないため対象外です。" : "The threshold applies to percentage-based quotas. Copilot Gross AI credits have no personal limit and are excluded.";
     public string Integrations => IsJapanese ? "連携" : "Integrations";
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
     public string GithubOrganization => IsJapanese ? "GitHub Organization slug（秘密情報ではありません）" : "GitHub organization slug (not a secret)";

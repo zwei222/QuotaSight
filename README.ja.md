@@ -13,6 +13,12 @@ QuotaSightは、サブスクリプション契約の利用枠を確認するWind
 - theme、更新間隔、通知、しきい値、GitHub App Client ID、GitHub Organization slugの設定。
 - 任意の常駐モード、省スペースの利用枠画面、明示的な終了操作。
 
+### 通知
+
+通知しきい値の初期値は80%で、Settingsから通知を無効にできます。しきい値通知はQuotaSightの実行中に限り、定期更新時に確認されます。手動で入力した割合snapshotは、しきい値に初めて達したときに通知する場合があります。stale/unknownの観測値と、割合を持たないCopilotの数量データは、しきい値通知の対象外です。エラー・状態bannerは、しきい値通知のtoggleとは独立しています。
+
+通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。fallbackとしてアプリ内bannerを残しています。Windowsでは現在アプリ内bannerのみで、OS toast backendはありません。ウィンドウが非表示の場合、bannerは表示できません。ここに記載した通知変更を含むPRは、まだmergeされていません。
+
 ## Providerの取得方式と限界
 
 | Provider | 現在の方式 | できること・できないこと |
@@ -47,7 +53,7 @@ CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexのcredenti
 
 - .NET SDK 10.0.x。
 - Windows x64またはLinux x64。
-- LinuxのGUI/tray/notificationはGTK、D-Bus、notification daemon、必要に応じてSecret Serviceに依存します。
+- LinuxのGUIにはGTKが必要です。OS通知の送信試行にはsession D-Busとnotification daemonが必要ですが、daemonが受け付けても表示は保証されません。Secret Serviceは任意です。
 - 既存のGitHub CLI状態確認には`gh`、Device Flowにはbrowserが必要です。
 
 ## buildと実行
@@ -71,7 +77,7 @@ quota windowは混ぜずに保持します。dashboardの代表値は最も逼�
 ## Roadmap
 
 - 公開されたサービス契約とquota endpointが確認できたproviderの追加。
-- native notification backendの追加。
+- WindowsのOS通知backendと実デスクトップでの検証は未完了です。現時点でWindowsのOS通知には対応していません。
 - GitHubが文書化されたpermissionとresponse contractを提供した場合のCopilot organization対応拡張。
 
 ## 公式リンク
