@@ -316,10 +316,13 @@ public sealed class ThresholdNotificationPresentationTests
     }
 
     [Fact]
-    public void Production_composition_selects_linux_backend_without_calling_it()
+    public void Production_composition_selects_platform_backend_without_calling_it()
     {
         var backend = CompositionRoot.CreateDesktopNotificationBackend();
         if (OperatingSystem.IsLinux()) Assert.IsType<LinuxDesktopNotifications>(backend);
+#if WINDOWS
+        else if (OperatingSystem.IsWindows()) Assert.IsType<WindowsDesktopNotifications>(backend);
+#endif
         else Assert.Null(backend);
     }
 
