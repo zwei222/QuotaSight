@@ -70,7 +70,6 @@ public sealed class NotificationDeduplicator(INotificationSink sink)
         if (notificationsEnabled && percent >= threshold && !state.Delivered && retryReady && (crossedThreshold || state.LastFailedAttempt is not null || newCycle))
         {
             var accepted = await sink.NotifyAsync(snapshot, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
             if (accepted)
             {
                 state.Delivered = true;
@@ -80,6 +79,7 @@ public sealed class NotificationDeduplicator(INotificationSink sink)
             {
                 state.LastFailedAttempt = now;
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         state.PreviousPercent = percent;

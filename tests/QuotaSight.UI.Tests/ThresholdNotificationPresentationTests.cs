@@ -216,6 +216,24 @@ public sealed class ThresholdNotificationPresentationTests
     }
 
     [Fact]
+    public async Task Stale_threshold_banner_is_not_restored_when_clean_refresh_has_no_snapshots()
+    {
+        var fetched = Snapshot(85);
+        var initial = fetched with { FreshUntil = fetched.Fetched.AddMinutes(10), Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
+        var clock = new TestTimeProvider(initial.Fetched);
+        var app = new MutableApplication(new QuotaRefreshResult([initial], []));
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
+        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        Assert.True(vm.IsNotificationVisible);
+
+        clock.Advance(TimeSpan.FromMinutes(11));
+        app.Result = new QuotaRefreshResult([], []);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+
+        Assert.False(vm.IsNotificationVisible);
+    }
+
+    [Fact]
     public async Task Fresh_rolling_replacement_with_same_reset_retains_banner_after_old_snapshot_ttl()
     {
         var initial = RollingSnapshot(85, DateTimeOffset.Parse("2026-09-23T12:00:00Z"));

@@ -1144,7 +1144,7 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
             .FirstOrDefault();
         if (replacement is null)
         {
-            if (current.Window.End <= now) ClearThresholdBanner();
+            if (current.IsStale(now) || current.Window.End <= now) ClearThresholdBanner();
             return;
         }
 

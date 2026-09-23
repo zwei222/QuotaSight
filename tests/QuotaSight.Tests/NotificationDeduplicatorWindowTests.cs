@@ -128,6 +128,20 @@ public sealed class NotificationDeduplicatorWindowTests
     }
 
     [Fact]
+    public async Task Accepted_delivery_is_recorded_before_cancellation_is_observed()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var sink = new CancelAfterAcceptNotificationSink(cancellation);
+        var deduplicator = new NotificationDeduplicator(sink);
+        var snapshot = Snapshot(Now, Now, 85, Now.AddDays(7));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => deduplicator.ConsiderAsync(snapshot, 80, Now, cancellation.Token).AsTask());
+        await deduplicator.ConsiderAsync(snapshot, 80, Now.AddMinutes(1), CancellationToken.None);
+
+        Assert.Single(sink.Snapshots);
+    }
+
+    [Fact]
     public async Task Disabled_tracking_records_threshold_drop_so_reenabled_crossing_notifies()
     {
         var sink = new RecordingNotificationSink();
@@ -184,6 +198,18 @@ public sealed class NotificationDeduplicatorWindowTests
             if (Throw is { } exception) return ValueTask.FromException<bool>(exception);
             Snapshots.Add(snapshot);
             return ValueTask.FromResult(results.Length == 0 || results[Math.Min(callCount++, results.Length - 1)]);
+        }
+    }
+
+    private sealed class CancelAfterAcceptNotificationSink(CancellationTokenSource cancellation) : INotificationSink
+    {
+        public List<QuotaSnapshot> Snapshots { get; } = [];
+
+        public ValueTask<bool> NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken)
+        {
+            Snapshots.Add(snapshot);
+            cancellation.Cancel();
+            return ValueTask.FromResult(true);
         }
     }
 }
