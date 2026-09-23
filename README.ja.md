@@ -17,7 +17,7 @@ QuotaSightは、サブスクリプション契約の利用枠を確認するWind
 
 通知しきい値の初期値は80%で、Settingsから通知を無効にできます。しきい値通知はQuotaSightの実行中に限り、定期更新時に確認されます。手動で入力した割合snapshotは、しきい値に初めて達したときに通知する場合があります。stale/unknownの観測値と、割合を持たないCopilotの数量データは、しきい値通知の対象外です。エラー・状態bannerは、しきい値通知のtoggleとは独立しています。
 
-通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。fallbackとしてアプリ内bannerを残しています。Windowsでは現在アプリ内bannerのみで、OS toast backendはありません。ウィンドウが非表示の場合、bannerは表示できません。ここに記載した通知変更を含むPRは、まだmergeされていません。
+通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。Windows x64ではWindows App SDK 2.5.1のbackendを使い、portable Native AOT ZIP buildからOS通知の送信を試みます。APIが受け付けたことと画面にpopupが表示されたことは別であり、Windows実機でのpixel-level表示確認は未実施です。両OSでfallbackとしてアプリ内bannerを残しています（ウィンドウが非表示の間はbannerを表示できません）。通常終了時にはWindows通知登録の解除（`UnregisterAll`を含む）を試みますが、異常終了やcleanup失敗時に登録が残る可能性があります。
 
 ## Providerの取得方式と限界
 
@@ -45,7 +45,7 @@ Billing Usage取得は別の任意手順です:
 5. 一般のseat tokenでは403になる可能性があります。
 6. QuotaSightは現在のreporting monthについて`GET /organizations/{org}/settings/billing/ai_credit/usage`を呼びます。
 
-Device Flow成功はusage権限を意味しません。usageは個人のremainingではなく、請求主体単位のshared billing-entity poolに関する値です。GitHub側のreporting delayがあるため、cardには集計期間、取得時刻、反映遅延不明を表示します。slug、installation、owner approval、権限、endpointのいずれかが利用できない場合は、公式Copilot pageまたはmanual fallbackを使います。seat、metrics、billing totalから個人remainingを推定しないでください。詳しくは[GitHub Appセットアップガイド](docs/github-app-setup.ja.md)を参照してください。
+Device Flow成功はusage権限を意味しません。GitHubからrefresh tokenを受け取った場合、期限付きuser token bundleをOS資格情報ストアに保存し、access tokenの期限前に更新します。既存の旧形式access tokenにはrefresh tokenがないため、期限切れ後は利用者が明示的に再認証する必要があります。secure storeを利用できない場合はcredentialをセッション中だけ保持するため、アプリ再起動後に再認証が必要です。usageは個人のremainingではなく、請求主体単位のshared billing-entity poolに関する値です。GitHub側のreporting delayがあるため、cardには集計期間、取得時刻、反映遅延不明を表示します。更新に失敗した場合、前回取得値は最新値ではなくstaleとして示します。slug、installation、owner approval、権限、endpointのいずれかが利用できない場合は、公式Copilot pageまたはmanual fallbackを使います。seat、metrics、billing totalから個人remainingを推定しないでください。詳しくは[GitHub Appセットアップガイド](docs/github-app-setup.ja.md)を参照してください。
 
 CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexのcredential fileを読みません。providerの状態はManual、Official、Delayed、Experimentalを区別します。
 
@@ -55,6 +55,10 @@ CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexのcredenti
 - Windows x64またはLinux x64。
 - LinuxのGUIにはGTKが必要です。OS通知の送信試行にはsession D-Busとnotification daemonが必要ですが、daemonが受け付けても表示は保証されません。Secret Serviceは任意です。
 - 既存のGitHub CLI状態確認には`gh`、Device Flowにはbrowserが必要です。
+
+## 配布
+
+正式なrelease artifactはWindows x64またはLinux x64向けのself-contained .NET 10 Native AOT ZIPです。MSIX、deb、AppImageは現在サポート対象外です。
 
 ## buildと実行
 
@@ -77,13 +81,14 @@ quota windowは混ぜずに保持します。dashboardの代表値は最も逼�
 ## Roadmap
 
 - 公開されたサービス契約とquota endpointが確認できたproviderの追加。
-- WindowsのOS通知backendと実デスクトップでの検証は未完了です。現時点でWindowsのOS通知には対応していません。
+- Windows実機でOS通知が画面に表示されることを検証します。APIが受け付けたことだけではpopup表示を確認したことになりません。
 - GitHubが文書化されたpermissionとresponse contractを提供した場合のCopilot organization対応拡張。
 
 ## 公式リンク
 
 - [GitHub Appを登録](https://github.com/settings/apps/new)
 - [GitHub AppのユーザーアクセストークンとDevice Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+- [GitHub Appのユーザーアクセストークンを更新する](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
 - [GitHub Appをインストール](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
 - [OrganizationでGitHub Appのインストールを制限](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
 - [請求利用状況REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)

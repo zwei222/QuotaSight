@@ -17,7 +17,7 @@ QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is n
 
 The notification threshold defaults to 80%, and notifications can be turned off in Settings. Threshold notifications are checked during periodic refreshes only while QuotaSight is running. Manual percentage snapshots can trigger a notification when they first reach the threshold; stale or unknown observations and quantity-only Copilot usage do not trigger threshold notifications. Error and status banners are independent of the threshold-notification toggle.
 
-Notifications are best-effort, not guaranteed delivery. On Linux, QuotaSight attempts to send an `org.freedesktop.Notifications` request over the session D-Bus; acceptance by D-Bus does not guarantee that a notification daemon displays it. An in-app banner is retained as a fallback. On Windows, notifications are currently in-app banners only: there is no OS toast backend, and a hidden window cannot display the banner. The notification changes described here are in an unmerged PR.
+Notifications are best-effort, not guaranteed delivery. On Linux, QuotaSight attempts to send an `org.freedesktop.Notifications` request over the session D-Bus; acceptance by D-Bus does not guarantee that a notification daemon displays it. On Windows x64, the Windows App SDK 2.5.1 backend attempts to send OS notifications in the portable Native AOT ZIP build. API acceptance and an on-screen popup are separate outcomes, and Windows desktop pixel-level display has not been verified on a physical Windows machine. The in-app banner remains available on both operating systems as a fallback (it is not visible while the window is hidden). Normal application shutdown attempts to unregister Windows notification registration, including `UnregisterAll`; abnormal termination or cleanup failure may leave registration behind.
 
 ## Provider matrix and limits
 
@@ -45,7 +45,7 @@ Billing Usage retrieval is a separate, optional step:
 5. A general seat token may receive 403.
 6. QuotaSight calls `GET /organizations/{org}/settings/billing/ai_credit/usage` for the current reporting month.
 
-Device Flow success does not prove usage permission. Usage is associated with a shared billing-entity pool, not an individual remaining balance. GitHub may report usage after a delay, so the card shows the aggregation period, retrieval time, and unknown reporting delay. If the slug, installation, owner approval, permission, or endpoint is unavailable, use the official Copilot page or manual fallback. Do not infer personal remaining from seats, metrics, or billing totals. See the [GitHub App setup guide](docs/github-app-setup.md).
+Device Flow success does not prove usage permission. When GitHub returns a refresh token, QuotaSight stores the expiring user-token bundle in the OS credential store and refreshes it before the access token expires. Existing legacy access-token entries have no refresh token; after they expire, the user must explicitly authenticate again. If a secure credential store is unavailable, credentials are session-only and authentication must be repeated after restarting the app. Usage is associated with a shared billing-entity pool, not an individual remaining balance. GitHub may report usage after a delay, so the card shows the aggregation period, retrieval time, and unknown reporting delay; after refresh failures, previously observed values are identified as stale rather than current. If the slug, installation, owner approval, permission, or endpoint is unavailable, use the official Copilot page or manual fallback. Do not infer personal remaining from seats, metrics, or billing totals. See the [GitHub App setup guide](docs/github-app-setup.md).
 
 For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex credential files, and does not request or retain a client secret. Provider states remain distinguishable as Manual, Official, Delayed, or Experimental.
 
@@ -55,6 +55,10 @@ For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex cred
 - Windows x64 or Linux x64.
 - On Linux, the GUI requires GTK. OS notification attempts require a session D-Bus and notification daemon, and daemon acceptance does not guarantee display; Secret Service is optional.
 - `gh` for an existing GitHub CLI status probe; a browser for Device Flow.
+
+## Distribution
+
+The supported release artifact is the self-contained .NET 10 Native AOT ZIP for Windows x64 or Linux x64. MSIX, deb, and AppImage packages are not currently supported.
 
 ## Build and run
 
@@ -77,13 +81,14 @@ Quota windows remain separate. The representative window is the tightest known w
 ## Roadmap
 
 - More provider packages when a documented service contract and public quota endpoint are available.
-- A Windows OS notification backend and real desktop validation remain pending; Windows OS notifications are not currently supported.
+- Validate Windows OS notification display on physical Windows hardware; API acceptance does not establish that a popup was displayed.
 - Broader Copilot organization coverage only when GitHub exposes a documented permission and response contract.
 
 ## Official references
 
 - [Register a GitHub App](https://github.com/settings/apps/new)
 - [GitHub App user access tokens and Device Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+- [Refreshing GitHub App user access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
 - [Install a GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
 - [Control GitHub App installation in an organization](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
 - [Billing usage REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)

@@ -23,8 +23,10 @@ public sealed class NotificationSettingsCopyTests
             Assert.Contains("Windows", english);
             Assert.Contains("バナー", japanese);
             Assert.Contains("banner", english, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("OS通知には対応していません", japanese);
-            Assert.Contains("system notifications are not supported", english);
+            Assert.Contains("WindowsのOS通知を試み", japanese);
+            Assert.Contains("Windows system notification", english, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("表示されない場合", japanese);
+            Assert.Contains("suppress", english, StringComparison.OrdinalIgnoreCase);
         }
         else if (OperatingSystem.IsLinux())
         {

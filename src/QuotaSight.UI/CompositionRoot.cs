@@ -13,7 +13,7 @@ public static class OfficialUsageUrls
     public const string Copilot = "https://github.com/settings/copilot";
 }
 
-public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore credentials, Func<string> organization) : IActiveAccountQuotaAdapter
+public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore credentials, Func<string> organization, GitHubUserTokenSession? tokenSession = null) : IActiveAccountQuotaAdapter
 {
     public ProviderKind Provider => ProviderKind.Copilot;
 
@@ -31,9 +31,24 @@ public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore cr
         var configuredOrganization = (organization() ?? string.Empty).Trim();
         if (!GitHubOrganizationSlug.IsValid(configuredOrganization))
             return new(new(FetchStatus.ConfigurationError, Error: "GitHub organization is not configured."));
+        FetchResult<string>? sessionToken = null;
+        var token = tokenSession is null
+            ? await credentials.GetAsync("github", cancellationToken)
+            : (sessionToken = await tokenSession.GetAccessTokenResultAsync(cancellationToken)).Value;
+        if (string.IsNullOrWhiteSpace(token)) return new(sessionToken is { IsSuccess: false } failed ? new(failed.Status, RetryAfter: failed.RetryAfter, Error: failed.Error) : new(FetchStatus.Unauthorized));
 
-        var token = await credentials.GetAsync("github", cancellationToken);
-        if (string.IsNullOrWhiteSpace(token)) return new(new(FetchStatus.Unauthorized));
+        var result = await FetchActiveWithTokenAsync(account, token, cancellationToken);
+        if (result.Result.Status != FetchStatus.Unauthorized || tokenSession is null) return result;
+        var refreshed = await tokenSession.GetAccessTokenResultAsync(cancellationToken, forceRefresh: true);
+        if (!refreshed.IsSuccess) return refreshed.Status == FetchStatus.Unauthorized ? result : new(new(refreshed.Status, RetryAfter: refreshed.RetryAfter, Error: refreshed.Error));
+        return await FetchActiveWithTokenAsync(account, refreshed.Value!, cancellationToken);
+    }
+
+    private async ValueTask<ActiveAccountFetchResult> FetchActiveWithTokenAsync(string account, string token, CancellationToken cancellationToken)
+    {
+        var configuredOrganization = (organization() ?? string.Empty).Trim();
+        if (!GitHubOrganizationSlug.IsValid(configuredOrganization))
+            return new(new(FetchStatus.ConfigurationError, Error: "GitHub organization is not configured."));
 
         try
         {
@@ -79,10 +94,12 @@ public static class CompositionRoot
     public static IProviderUiService CreateProviderFacade(HttpClient? httpClient = null, string? clientId = null)
     {
         var client = httpClient ?? new HttpClient();
-        var github = new GitHubDeviceFlowClient(client, clientId ?? new JsonSettingsStore().Load().GithubOAuthClientId);
+        var settings = new AppSettingsStore();
+        var github = new GitHubDeviceFlowClient(client, clientId ?? settings.Load().GithubOAuthClientId);
         var credentials = CreateCredentialStore();
+        var tokenSession = new GitHubUserTokenSession(credentials, () => clientId ?? settings.Load().GithubOAuthClientId, client);
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
-        return new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, codexSessionManager: codex);
+        return new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, codexSessionManager: codex, githubTokenSession: tokenSession);
     }
 
     private static ICredentialStore CreateCredentialStore()
@@ -99,7 +116,13 @@ public static class CompositionRoot
         return primary;
     }
 
-    internal static IDesktopNotificationBackend? CreateDesktopNotificationBackend() => OperatingSystem.IsLinux() ? new LinuxDesktopNotifications() : null;
+    internal static IDesktopNotificationBackend? CreateDesktopNotificationBackend()
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows()) return new WindowsDesktopNotifications();
+#endif
+        return OperatingSystem.IsLinux() ? new LinuxDesktopNotifications() : null;
+    }
 
     public static MainViewModel CreateMainViewModel(string? dataDirectory = null, HttpClient? httpClient = null, IDesktopNotificationBackend? desktopNotificationBackend = null)
     {
@@ -107,9 +130,10 @@ public static class CompositionRoot
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
         var settings = new AppSettingsStore(dataDirectory);
         var credentials = CreateCredentialStore();
+        var tokenSession = new GitHubUserTokenSession(credentials, () => settings.Load().GithubOAuthClientId, client);
         var source = new PersistentDashboardSource(history);
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
-        var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization);
+        var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization, tokenSession);
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
         return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
     }
@@ -120,13 +144,14 @@ public static class CompositionRoot
         var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
         var settings = new AppSettingsStore(dataDirectory);
         var credentials = credentialStore ?? CreateCredentialStore();
+        var tokenSession = new GitHubUserTokenSession(credentials, () => settings.Load().GithubOAuthClientId, client);
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
-        var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization);
+        var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization, tokenSession);
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
         var factory = new GitHubClientFactory(client);
         var github = factory.Create(settings.Load().GithubOAuthClientId);
         var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
-        var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory, codexSessionManager: codex);
+        var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory, codexSessionManager: codex, githubTokenSession: tokenSession);
         return (viewModel, provider);
     }
 

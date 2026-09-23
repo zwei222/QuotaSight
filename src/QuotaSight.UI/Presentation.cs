@@ -1221,16 +1221,17 @@ public sealed class UiProviderFacade : IProviderUiService
     private readonly GhCliProbe ghProbe;
     private readonly IGitHubClientFactory? githubFactory;
     private readonly CodexSessionManager? codexSessionManager;
+    private readonly GitHubUserTokenSession? githubTokenSession;
     private readonly TimeProvider timeProvider;
     private CodexDeviceAuthorization? codexAuthorization;
     private DateTimeOffset nextCodexPollAt;
     private readonly InMemoryCredentialStore sessionCredentials = new();
     private Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess;
     public CredentialStoreAvailability CredentialAvailability => credentialStore?.Availability ?? CredentialStoreAvailability.Unavailable;
-    public UiProviderFacade(Func<string, IQuotaAdapter>? openCodeAdapterFactory = null, GitHubDeviceFlowClient? github = null, ICredentialStore? credentialStore = null, GhCliProbe? ghProbe = null, IGitHubClientFactory? githubFactory = null, Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess = null, CodexSessionManager? codexSessionManager = null, TimeProvider? timeProvider = null)
+    public UiProviderFacade(Func<string, IQuotaAdapter>? openCodeAdapterFactory = null, GitHubDeviceFlowClient? github = null, ICredentialStore? credentialStore = null, GhCliProbe? ghProbe = null, IGitHubClientFactory? githubFactory = null, Func<IReadOnlyList<QuotaSnapshot>, ValueTask>? openCodeSuccess = null, CodexSessionManager? codexSessionManager = null, TimeProvider? timeProvider = null, GitHubUserTokenSession? githubTokenSession = null)
     {
         this.openCodeAdapterFactory = openCodeAdapterFactory ?? (key => new OpenCodeGoAdapter(new HttpClient(), key));
-        this.github = github; this.credentialStore = credentialStore; this.ghProbe = ghProbe ?? new GhCliProbe(); this.githubFactory = githubFactory; this.openCodeSuccess = openCodeSuccess; this.codexSessionManager = codexSessionManager; this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.github = github; this.credentialStore = credentialStore; this.ghProbe = ghProbe ?? new GhCliProbe(); this.githubFactory = githubFactory; this.openCodeSuccess = openCodeSuccess; this.codexSessionManager = codexSessionManager; this.timeProvider = timeProvider ?? TimeProvider.System; this.githubTokenSession = githubTokenSession;
     }
     public void SetOpenCodeSuccessHandler(Func<IReadOnlyList<QuotaSnapshot>, ValueTask> handler) => openCodeSuccess = handler;
     public async ValueTask<string?> GetStoredOpenCodeKeyAsync(CancellationToken cancellationToken)
@@ -1273,12 +1274,17 @@ public sealed class UiProviderFacade : IProviderUiService
     public async ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken cancellationToken)
     {
         if (github is null) return new(false, FetchStatus.Unsupported, "GitHub Client ID is not configured.");
-        var result = await github.PollAsync(authorization, cancellationToken);
-        if (result.IsSuccess && result.Value is { } token)
+        var result = await github.PollTokensAsync(authorization, cancellationToken);
+        if (result.IsSuccess && result.Value is { } tokens)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (credentialStore is not null)
-                await credentialStore.SetAsync("github", token, cancellationToken);
+            if (githubTokenSession is not null)
+            {
+                var saveResult = await githubTokenSession.SaveDeviceFlowTokensAsync(tokens, cancellationToken, authorization.ClientId);
+                if (!saveResult.IsSuccess) return new(false, saveResult.Status, saveResult.Error);
+            }
+            else if (credentialStore is not null)
+                await credentialStore.SetAsync("github", tokens.AccessToken, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             return new(true, FetchStatus.Success);
         }
@@ -1388,6 +1394,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool providerSelectionMade;
     private bool hasCodexCredential;
     private bool codexCredentialPresenceKnown;
+    private bool copilotReauthenticationAvailable;
+    public bool IsCopilotReauthenticationAvailable => copilotReauthenticationAvailable;
+    private bool isCopilotSessionOnly;
+    public bool IsCopilotSessionOnly => isCopilotSessionOnly;
+    public string CopilotSessionStorageNotice => CopyText.CopilotSessionOnlyStorage;
+    public void SetCopilotCredentialAvailability(CredentialStoreAvailability availability, bool authenticationSucceeded)
+    {
+        isCopilotSessionOnly = authenticationSucceeded && availability != CredentialStoreAvailability.SecureStore;
+        OnPropertyChanged(nameof(IsCopilotSessionOnly));
+        OnPropertyChanged(nameof(CopilotSessionStorageNotice));
+    }
+    private void SetCopilotReauthenticationAvailable(bool available)
+    {
+        if (copilotReauthenticationAvailable == available) return;
+        copilotReauthenticationAvailable = available;
+        OnPropertyChanged(nameof(IsCopilotReauthenticationAvailable));
+    }
     public CodexAuthorizationState CodexState => codexResult.State;
     public string CodexStatusText => Language == UiLanguage.Japanese ? CopyText.CodexStatus(codexResult.State, codexResult.Success, codexResult.Status) : codexResult.Message;
     public string CodexUserCode => codexResult.Prompt?.UserCode ?? string.Empty;
@@ -1551,6 +1574,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // The dispatcher may run this action after Dispose; recheck before any collection or
         // state mutation, not only before dispatching.
         if (IsDisposed) return;
+        SetCopilotReauthenticationAvailable(false);
         ReevaluateCards(timeProvider.GetUtcNow());
         notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshError);
         PresentationState = PresentationState.Error;
@@ -1559,6 +1583,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         // An in-flight refresh released after Dispose must not publish state or notifications.
         if (IsDisposed) return;
+        SetCopilotReauthenticationAvailable(refreshResult.Failures.Any(failure => failure.Provider == ProviderKind.Copilot && failure.Status == FetchStatus.Unauthorized));
         var snapshots = refreshResult.Snapshots;
         var currentProviderIdentities = snapshots
             .Where(snapshot => snapshot.Source != QuotaSource.Manual)

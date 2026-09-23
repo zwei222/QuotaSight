@@ -1,6 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
+using System.Net;
+using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
@@ -20,6 +22,83 @@ public sealed class CopilotDeviceFlowUiTests
         Assert.False(string.IsNullOrWhiteSpace(notice!.Text));
         Assert.Contains("quota", notice.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("manual", notice.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [AvaloniaFact]
+    public async Task Copilot_unauthorized_refresh_shows_explicit_reauthentication_action_without_opening_browser()
+    {
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new UnauthorizedCopilotApplication());
+        var launcher = new RecordingBrowserLauncher();
+        var window = new MainWindow(vm, new RecordingCopilotProvider(), null, null, launcher);
+        window.Show();
+
+        Assert.False(window.FindControl<Button>("CopilotReauthenticateButton")!.IsVisible);
+        await vm.RefreshAsync();
+
+        var action = window.FindControl<Button>("CopilotReauthenticateButton")!;
+        Assert.True(action.IsVisible);
+        Assert.Contains("re-auth", action.Content?.ToString(), StringComparison.OrdinalIgnoreCase);
+        action.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+        Assert.True(vm.IsCopilotProviderPanelVisible);
+        Assert.Empty(launcher.LaunchedUris);
+    }
+
+    [Fact]
+    public void Reauthentication_copy_is_cautious_and_localized()
+    {
+        Assert.Contains("try", new UiCopy(UiLanguage.English).CopilotReauthenticate, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("再認証をお試し", new UiCopy(UiLanguage.Japanese).CopilotReauthenticate, StringComparison.Ordinal);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(CredentialStoreAvailability.Unavailable, true)]
+    [InlineData(CredentialStoreAvailability.Locked, true)]
+    [InlineData(CredentialStoreAvailability.SecureStore, false)]
+    public async Task Successful_device_flow_explains_session_only_storage_only_when_secure_store_is_unavailable(CredentialStoreAvailability availability, bool expectedVisible)
+    {
+        var window = CreateWindow(new RecordingCopilotProvider());
+        window.ViewModel.SetCopilotCredentialAvailability(availability, true);
+
+        var notice = window.FindControl<TextBlock>("CopilotSessionStorageNoticeText")!;
+        Assert.Equal(expectedVisible, notice.IsVisible);
+        if (expectedVisible)
+        {
+            Assert.Contains("restarting", notice.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("ABCD-EFGH", notice.Text);
+        }
+    }
+
+    [Fact]
+    public async Task Device_flow_client_id_change_returns_configuration_failure_and_does_not_save_tokens()
+    {
+        var configuredClientId = "started-client";
+        var store = new InMemoryCredentialStore();
+        using var client = new HttpClient(new DeviceFlowSuccessHandler(() => configuredClientId = "changed-client"));
+        var github = new GitHubDeviceFlowClient(client, "started-client", delay: new ImmediateDeviceDelay());
+        var tokenSession = new GitHubUserTokenSession(store, () => configuredClientId,
+            (_, _) => throw new InvalidOperationException("refresh is not expected"));
+        var facade = new UiProviderFacade(github: github, credentialStore: store, githubTokenSession: tokenSession);
+        var start = await facade.StartGitHubDeviceFlowAsync(default);
+        Assert.True(start.IsSuccess);
+
+        var result = await facade.PollGitHubDeviceFlowAsync(start.Value!, default);
+
+        Assert.False(result.Success);
+        Assert.Equal(FetchStatus.ConfigurationError, result.Status);
+        Assert.Null(await store.GetAsync("github", default));
+    }
+
+    [AvaloniaFact]
+    public async Task Unauthorized_failure_from_another_provider_does_not_show_copilot_action()
+    {
+        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new UnauthorizedCopilotApplication(ProviderKind.Claude));
+        var window = new MainWindow(vm, new RecordingCopilotProvider());
+        window.Show();
+
+        await vm.RefreshAsync();
+
+        Assert.False(window.FindControl<Button>("CopilotReauthenticateButton")!.IsVisible);
     }
 
     [AvaloniaFact]
@@ -219,16 +298,42 @@ public sealed class CopilotDeviceFlowUiTests
         return window;
     }
 
+    private sealed class DeviceFlowSuccessHandler(Action onTokenResponse) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath != "/login/device/code") onTokenResponse();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri.AbsolutePath == "/login/device/code"
+                    ? "{\"device_code\":\"device\",\"user_code\":\"user-code\",\"verification_uri\":\"https://github.com/login/device\",\"expires_in\":300,\"interval\":0}"
+                    : "{\"access_token\":\"access-token\",\"refresh_token\":\"refresh-token\",\"expires_in\":3600,\"refresh_token_expires_in\":86400}")
+            });
+        }
+    }
+
+    private sealed class ImmediateDeviceDelay : IDeviceFlowDelay
+    {
+        public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
     private sealed class RecordingBrowserLauncher : IUriLauncher
     {
         public List<Uri> LaunchedUris { get; } = [];
         public Task<bool> LaunchUriAsync(Uri uri) { LaunchedUris.Add(uri); return Task.FromResult(true); }
     }
 
+    private sealed class UnauthorizedCopilotApplication(ProviderKind provider = ProviderKind.Copilot) : QuotaSight.Application.IQuotaApplication
+    {
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new QuotaRefreshResult([], [new(provider, FetchStatus.Unauthorized)]));
+    }
+
     private sealed class RecordingCopilotProvider : IProviderUiService
     {
         public FetchResult<DeviceAuthorizationStart> StartResult { get; init; } = new(FetchStatus.TransientFailure);
         public GitHubDeviceFlowResult PollResult { get; init; } = new(false, FetchStatus.TransientFailure);
+        public CredentialStoreAvailability CredentialAvailability { get; init; } = CredentialStoreAvailability.SecureStore;
         public TaskCompletionSource PollStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource PollCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -38,6 +38,8 @@ public sealed class UiCopy
     public string OpenCodeDescription => IsJapanese ? "APIキーは安全な資格情報ストアを利用できる場合は保存し、利用できない場合はセッション中のみ保持します。キーは表示・記録しません。" : "API key is stored in the secure credential store when available; otherwise it is kept for this session only. It is never displayed or logged.";
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
     public string CopilotDescription => IsJapanese ? "Copilotはghの状態確認またはデバイス認証を使用します。デバイス認証には実行時に設定したGitHub App Client IDが必要ですが、クライアントシークレットは不要です。ghの状態確認にはClient IDは不要です。組織の利用枠を取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub App Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotReauthenticate => IsJapanese ? "再認証をお試しください" : "Try re-authenticating";
+    public string CopilotSessionOnlyStorage => IsJapanese ? "認証情報はこのセッション中のみ保持されます。アプリの再起動後は再認証が必要です。" : "Your sign-in is kept for this session only. You’ll need to authenticate again after restarting the app.";
     public string CopilotFlowWaiting => IsJapanese ? "認証処理中です。ブラウザーでコードを入力するまで待っています。" : "Authentication is in progress. Waiting for you to enter the code in your browser.";
     public string CodexBadge => IsJapanese ? "実験的" : "Experimental";
     public string CodexDescription => IsJapanese ? "OpenAI Codexの実験的な連携です。ChatGPT Plus/ProのCodex枠だけを取得します。Codex CLIは不要で、QuotaSightがブラウザーでデバイス認証を開始します。ブラウザーを開けない場合は、表示されたURLとコードで手動で続行できます。" : "Experimental OpenAI Codex integration for the ChatGPT Plus/Pro Codex allowance only. No Codex CLI installation is required; QuotaSight starts the device login in your browser. If the browser cannot open, continue manually with the displayed URL and code.";
@@ -104,8 +106,8 @@ public sealed class UiCopy
     public string EnableNotifications => IsJapanese ? "通知を有効にする" : "Enable notifications";
     public string NotificationDeliveryDescription => OperatingSystem.IsWindows()
         ? (IsJapanese
-            ? "しきい値に達するとアプリ内バナーを表示します。WindowsのOS通知には対応していません。ウィンドウを閉じている間はバナーを確認できません。"
-            : "Threshold alerts appear as in-app banners only. Windows system notifications are not supported; banners cannot be seen while the window is closed.")
+            ? "しきい値に達するとWindowsのOS通知を試み、アプリ内バナーも表示します。通知はOSの設定などで表示されない場合があります。ウィンドウを閉じている間はバナーを確認できません。"
+            : "At the threshold, QuotaSight tries a Windows system notification and also shows an in-app banner. The OS may suppress notifications; banners cannot be seen while the window is closed.")
         : OperatingSystem.IsLinux()
             ? (IsJapanese
                 ? "Linuxでは、アプリの実行中にしきい値へ達するとデスクトップ通知を試み、アプリ内にも表示します。OSの設定や集中モードでデスクトップ通知が表示されない場合があります。"

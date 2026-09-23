@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Layout;
+using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 
@@ -219,6 +220,13 @@ public partial class MainWindow : Window
     {
         ViewModel.CloseProviderFlow();
         this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = null;
+    }
+    private void CopilotReauthenticateClick(object? sender, RoutedEventArgs e)
+    {
+        ViewModel.Navigate(AppPage.Dashboard);
+        ViewModel.OpenProviderFlow();
+        ViewModel.SelectProvider(ProviderConnectionChoice.Copilot);
+        this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(choice => choice.Choice == ProviderConnectionChoice.Copilot);
     }
     private void ProviderSelected(object? sender, SelectionChangedEventArgs e)
     {
@@ -441,6 +449,7 @@ public partial class MainWindow : Window
     {
         var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
         ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.Success ? CopilotUiState.Completed : CopilotStateFor(result.Status, result.Error), result.Error);
+        ViewModel.SetCopilotCredentialAvailability(providerService is UiProviderFacade facade ? facade.CredentialAvailability : CredentialStoreAvailability.Unavailable, result.Success);
         if (result.Success) await ViewModel.RefreshAsync(token);
     }
     private async void CopilotProbeClick(object? sender, RoutedEventArgs e)

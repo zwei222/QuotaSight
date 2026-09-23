@@ -80,6 +80,25 @@ public sealed class CopilotCompositionIntegrationTests
     }
 
     [Fact]
+    public async Task Unauthorized_user_request_refreshes_once_and_re_resolves_the_account()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), now), default);
+        var handler = new RefreshRetryHandler();
+        using var client = new HttpClient(handler);
+        var session = new GitHubUserTokenSession(store, () => "client-id", client);
+        var adapter = new DynamicCopilotAdapter(client, store, () => "acme", session);
+
+        var result = await adapter.FetchWithAccountAsync("Copilot", default);
+
+        Assert.True(result.Result.IsSuccess);
+        Assert.Equal("acme/new-login", result.ActiveAccount);
+        Assert.Equal(["old-access", "new-access", "new-access"], handler.ApiTokens);
+        Assert.Equal(1, handler.RefreshCount);
+    }
+
+    [Fact]
     public async Task Dynamic_copilot_adapter_reads_shared_fallback_when_secure_store_is_unavailable()
     {
         const string token = "fallback-token-must-not-leak";
@@ -131,6 +150,27 @@ public sealed class CopilotCompositionIntegrationTests
         await Assert.ThrowsAsync<OperationCanceledException>(() => facade.PollGitHubDeviceFlowAsync(authorization, cancellation.Token).AsTask());
         Assert.Null(await facade.GetStoredOpenCodeKeyAsync(default));
         Assert.Null(await store.GetAsync("github", default));
+    }
+
+    private sealed class RefreshRetryHandler : HttpMessageHandler
+    {
+        public List<string> ApiTokens { get; } = [];
+        public int RefreshCount { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/login/oauth/access_token")
+            {
+                RefreshCount++;
+                return Task.FromResult(Json("{\"access_token\":\"new-access\",\"refresh_token\":\"new-refresh\",\"expires_in\":3600,\"refresh_token_expires_in\":86400}"));
+            }
+            var token = request.Headers.Authorization?.Parameter ?? string.Empty;
+            ApiTokens.Add(token);
+            if (request.RequestUri.AbsolutePath == "/user")
+                return Task.FromResult(token == "old-access" ? new HttpResponseMessage(HttpStatusCode.Unauthorized) : Json("{\"login\":\"new-login\"}"));
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(Json($"{{\"timePeriod\":{{\"year\":{now.Year},\"month\":{now.Month}}},\"organization\":\"acme\",\"user\":\"new-login\",\"usageItems\":[{{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":3,\"discountQuantity\":0,\"netQuantity\":3}}]}}"));
+        }
+        private static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK) { Content = new StringContent(value, Encoding.UTF8, "application/json") };
     }
 
     private sealed class ImmediateDeviceDelay : IDeviceFlowDelay
