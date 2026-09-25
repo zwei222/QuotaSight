@@ -327,7 +327,7 @@ public partial class MainWindow : Window
                 effectiveResidentMode = requested && TrayAvailable;
                 ResidentModeChanged?.Invoke(effectiveResidentMode);
                 if (requested && !TrayAvailable)
-                    ViewModel.Notify(ViewModel.CopyText.TrayUnavailableTitle, ViewModel.CopyText.TrayUnavailable);
+                    ViewModel.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
                 break;
             }
         }
@@ -339,7 +339,7 @@ public partial class MainWindow : Window
             effectiveResidentMode = oldEffective;
             box.IsChecked = oldPersisted;
             ResidentModeChanged?.Invoke(oldEffective);
-            ViewModel.Notify(ViewModel.CopyText.RefreshError, ViewModel.CopyText.RefreshError);
+            ViewModel.NotifyLocalized(copy => (copy.ResidentMode, copy.ResidentSaveFailure));
         }
         finally
         {
@@ -554,7 +554,7 @@ public partial class MainWindow : Window
                     if (sender is Button { Tag: Guid id }) await ViewModel.History.DeleteAsync(id, token);
                 }
                 catch (OperationCanceledException) { throw; }
-                catch { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteFailure); }
+                catch { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteFailure)); }
             });
         }
         catch (OperationCanceledException) { }
@@ -567,7 +567,7 @@ public partial class MainWindow : Window
             {
                 try { await ViewModel.History.DeleteAllAsync(token); }
                 catch (OperationCanceledException) { throw; }
-                catch { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteAllFailure); }
+                catch { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteAllFailure)); }
             });
         }
         catch (OperationCanceledException) { }
@@ -595,7 +595,7 @@ public partial class MainWindow : Window
             });
         }
         catch (OperationCanceledException) { }
-        catch (Exception exception) { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, exception.Message); }
+        catch (Exception) { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryExportFailure)); }
     }
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {

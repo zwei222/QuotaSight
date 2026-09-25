@@ -146,9 +146,9 @@ public sealed class ResidentModeVisualTests
             window.Show();
             window.UpdateLayout();
             var card = window.FindControl<ItemsControl>("CompactProviderCards")!;
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,950 credits used");
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,200 included");
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "750 additional");
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Gross 1,950 credits");
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Included 1,200 credits");
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Additional 750 credits");
             Assert.DoesNotContain(card.GetVisualDescendants().OfType<ProgressBar>(), gauge => gauge.IsVisible);
             var compositionText = card.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsVisible).Select(text => text.Text ?? string.Empty).ToArray();
             Assert.Contains(compositionText, text => text.Contains("Included", StringComparison.Ordinal));

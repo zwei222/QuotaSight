@@ -8,6 +8,29 @@ namespace QuotaSight.UI.Tests;
 public sealed class ThresholdNotificationPresentationTests
 {
     [Fact]
+    public async Task Refresh_failure_banner_relocalizes_without_refresh_or_desktop_notification()
+    {
+        var snapshot = Snapshot(50);
+        var failures = new List<ProviderFailure> { new(ProviderKind.Claude, FetchStatus.TransientFailure) };
+        var app = new CountingApplication(new QuotaRefreshResult([snapshot], failures));
+        var backend = new FakeDesktopNotificationBackend();
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
+
+        await vm.RefreshAsync();
+        Assert.Contains("Claude", vm.NotificationBannerText);
+        Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        var backendCalls = backend.Requests.Count;
+        failures.Clear();
+        await vm.SetLanguageAsync(UiLanguage.Japanese);
+        Assert.Contains("Claude", vm.NotificationBannerText);
+        Assert.Contains("失敗", vm.NotificationBannerText);
+        await vm.SetLanguageAsync(UiLanguage.English);
+        Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, app.Calls);
+        Assert.Equal(backendCalls, backend.Requests.Count);
+    }
+
+    [Fact]
     public async Task Scheduled_threshold_notification_remains_visible_and_deduplicates_per_window()
     {
         var snapshot = Snapshot(85);
@@ -326,6 +349,61 @@ public sealed class ThresholdNotificationPresentationTests
         else Assert.Null(backend);
     }
 
+    [Fact]
+    public async Task Localized_failure_then_threshold_language_switch_keeps_threshold_priority()
+    {
+        var backend = new FakeDesktopNotificationBackend();
+        var service = new InAppNotificationService(backend);
+        service.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, "missing providers"));
+        var snapshot = Snapshot(85);
+        service.SetThresholdContext(80);
+        await service.NotifyAsync(snapshot, CancellationToken.None);
+        service.Language = UiLanguage.Japanese;
+        Assert.Contains("使用率", service.BannerText);
+        Assert.DoesNotContain("incomplete", service.BannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(backend.Requests);
+    }
+
+    [Fact]
+    public async Task Threshold_relocalizes_without_desktop_notification_on_language_changes()
+    {
+        var backend = new FakeDesktopNotificationBackend();
+        var service = new InAppNotificationService(backend);
+        service.SetThresholdContext(80);
+        await service.NotifyAsync(Snapshot(85), CancellationToken.None);
+        var count = backend.Requests.Count;
+        service.Language = UiLanguage.Japanese;
+        Assert.Contains("使用率", service.BannerText);
+        service.Language = UiLanguage.English;
+        Assert.Contains("used", service.BannerText);
+        Assert.Equal(count, backend.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Disabling_threshold_after_language_switch_clears_visible_threshold()
+    {
+        var service = new InAppNotificationService();
+        service.SetThresholdContext(80);
+        var snapshot = Snapshot(85);
+        await service.NotifyAsync(snapshot, CancellationToken.None);
+        service.Language = UiLanguage.Japanese;
+        service.ReconcileThresholdBanner([snapshot], snapshot.Fetched, _ => 80m, enabled: false);
+        Assert.Empty(service.BannerText);
+    }
+
+    [Fact]
+    public async Task Same_identity_reconciliation_after_language_switch_uses_replacement_percent()
+    {
+        var service = new InAppNotificationService();
+        var snapshot = Snapshot(85);
+        service.SetThresholdContext(80);
+        await service.NotifyAsync(snapshot, CancellationToken.None);
+        service.Language = UiLanguage.Japanese;
+        var replacement = snapshot with { Used = 93, Fetched = snapshot.Fetched.AddMinutes(1), Observed = snapshot.Observed.AddMinutes(1) };
+        service.ReconcileThresholdBanner([replacement], replacement.Fetched, _ => 80m, enabled: true);
+        Assert.Contains("93", service.BannerText);
+    }
+
     private static QuotaSnapshot Snapshot(decimal percent)
     {
         var now = new DateTimeOffset(2026, 9, 23, 12, 0, 0, TimeSpan.Zero);
@@ -344,6 +422,12 @@ public sealed class ThresholdNotificationPresentationTests
     {
         public QuotaRefreshResult Result { get; set; } = result;
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Result);
+    }
+
+    private sealed class CountingApplication(QuotaRefreshResult result) : IQuotaApplication
+    {
+        public int Calls { get; private set; }
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) { Calls++; return ValueTask.FromResult(result); }
     }
 
     private sealed class FakeDesktopNotificationBackend : IDesktopNotificationBackend

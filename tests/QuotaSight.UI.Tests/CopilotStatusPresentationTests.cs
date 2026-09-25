@@ -8,7 +8,7 @@ namespace QuotaSight.UI.Tests;
 public sealed class CopilotStatusPresentationTests
 {
     [Theory]
-    [InlineData(UiLanguage.Japanese, "GitHub Organizationを設定してください（Settings）")]
+    [InlineData(UiLanguage.Japanese, "設定画面でGitHub Organizationを設定してください。")]
     [InlineData(UiLanguage.English, "Set the GitHub Organization in Settings")]
     public async Task Configuration_error_uses_safe_ui_copy_without_provider_details(UiLanguage language, string expected)
     {

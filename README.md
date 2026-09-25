@@ -9,7 +9,7 @@ QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is n
 - Avalonia dashboard, history, settings, runtime English/Japanese switching, and narrow-width layout.
 - Thirty days of quota snapshots in daily JSONL history.
 - Windows Credential Manager and Linux Secret Service/`secret-tool`, with session-only storage when a secure store is unavailable.
-- No telemetry. Tokens, plaintext credentials, and raw provider responses are not stored or displayed.
+- No telemetry. Sensitive values are not written to settings, history, logs, exports, or UI; tokens may be retained in the OS secure credential store or session memory as described below.
 - Theme, refresh, notification, threshold, GitHub App Client ID, and GitHub organization slug settings.
 - Optional resident mode with a compact quota window and an explicit exit action.
 

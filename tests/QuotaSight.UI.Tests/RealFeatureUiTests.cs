@@ -66,6 +66,18 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
+    public async Task New_alert_replaces_refresh_failure_banner()
+    {
+        var vm = new MainViewModel(new FixedDashboardSource(Snapshot(40)), quotaApplication: new StubApplication([]));
+        await vm.RefreshAsync();
+
+        Assert.Contains("Temporary fetch failure", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Notify("History", "Export failed.");
+
+        Assert.Equal("History: Export failed.", vm.NotificationBannerText);
+    }
+
+    [Fact]
     public async Task Refresh_failure_rebuilds_last_known_cards_at_current_time_and_notifies_error_banner()
     {
         var observed = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
@@ -236,7 +248,7 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
-    public async Task Japanese_history_corruption_notification_is_localized_and_safe()
+    public async Task Initially_English_history_corruption_notification_relocalizes_to_Japanese()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var now = DateTimeOffset.UtcNow;
@@ -246,14 +258,54 @@ public sealed class RealFeatureTests
             var today = DateOnly.FromDateTime(now.UtcDateTime);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
             var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
-            vm.Language = UiLanguage.Japanese;
-
             await vm.InitializeAsync();
+
+            Assert.Equal("History: History data is damaged; showing available entries.", vm.NotificationBannerText);
+            vm.Language = UiLanguage.Japanese;
 
             Assert.Equal("履歴: 履歴データが破損しています。読み込める項目を表示しています。", vm.NotificationBannerText);
             Assert.DoesNotContain("InvalidDataException", vm.NotificationBannerText, StringComparison.Ordinal);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Ui_owned_alert_factory_relocalizes_but_opaque_public_notify_does_not()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryExportFailure));
+        Assert.Equal("History: Unable to export history.", vm.NotificationBannerText);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal("履歴: 履歴をエクスポートできませんでした。", vm.NotificationBannerText);
+
+        vm.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
+        vm.Language = UiLanguage.English;
+        Assert.Equal("Tray unavailable: Tray unavailable. Use the app window instead.", vm.NotificationBannerText);
+        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteFailure));
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal("履歴: この履歴を削除できませんでした。", vm.NotificationBannerText);
+
+        vm.Notify("Caller title", "Caller text");
+        vm.Language = UiLanguage.English;
+        Assert.Equal("Caller title: Caller text", vm.NotificationBannerText);
+    }
+
+    [Fact]
+    public void Refresh_missing_provider_and_no_data_previous_value_factories_relocalize_through_view_model()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        var providers = new[] { ProviderKind.ChatGpt };
+        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(providers)));
+        Assert.Contains("data could not be retrieved", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("今回はCodexのデータを取得できませんでした", vm.NotificationBannerText, StringComparison.Ordinal);
+
+        var previous = new HashSet<ProviderKind> { ProviderKind.ChatGpt };
+        vm.Language = UiLanguage.English;
+        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(providers, previous)));
+        Assert.Contains("Showing the last successful value", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("前回正常に取得した値", vm.NotificationBannerText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -265,7 +317,7 @@ public sealed class RealFeatureTests
 
         await service.NotifyAsync(snapshot, CancellationToken.None);
 
-        Assert.Equal("ChatGPTの利用枠のしきい値: 使用率 90%", service.BannerText);
+        Assert.Equal("ChatGPTの利用率がしきい値に達しました: 使用率 90%", service.BannerText);
         Assert.DoesNotContain("Token", service.BannerText, StringComparison.OrdinalIgnoreCase);
     }
 

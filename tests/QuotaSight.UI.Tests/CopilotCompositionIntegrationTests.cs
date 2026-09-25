@@ -34,9 +34,9 @@ public sealed class CopilotCompositionIntegrationTests
                 var card = Assert.Single(parts.ViewModel.Cards, item => item.Provider == QuotaSight.Core.ProviderKind.Copilot);
                 var row = Assert.Single(card.Windows);
                 Assert.True(row.IsQuantityOnly);
-                Assert.Equal("1,950 credits used", row.QuantityGrossText);
-                Assert.Equal("1,200 included", row.QuantityDiscountText);
-                Assert.Equal("750 additional", row.QuantityNetText);
+                Assert.Equal("Gross 1,950 credits", row.QuantityGrossText);
+                Assert.Equal("Included 1,200 credits", row.QuantityDiscountText);
+                Assert.Equal("Additional 750 credits", row.QuantityNetText);
                 Assert.True(row.FetchedAt > DateTimeOffset.MinValue);
                 Assert.Contains("Monthly", row.WindowName, StringComparison.Ordinal);
                 Assert.Contains("Delayed", row.SourceBadge, StringComparison.Ordinal);
@@ -48,9 +48,9 @@ public sealed class CopilotCompositionIntegrationTests
                 window.Show();
                 var gauges = window.GetVisualDescendants().OfType<ProgressBar>().Where(control => control.Classes.Contains("QuotaGauge")).ToArray();
                 Assert.DoesNotContain(gauges, gauge => gauge.IsVisible && gauge.Classes.Contains("OverLimit"));
-                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,950 credits used");
-                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "1,200 included");
-                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "750 additional");
+                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Gross 1,950 credits");
+                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Included 1,200 credits");
+                Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Additional 750 credits");
                 window.Close();
 
                 var export = await parts.ViewModel.History.ExportJsonAsync();
@@ -245,7 +245,7 @@ public sealed class CopilotCompositionIntegrationTests
 
                 var card = Assert.Single(parts.ViewModel.Cards, item => item.Provider == QuotaSight.Core.ProviderKind.Copilot);
                 var row = Assert.Single(card.Windows);
-                Assert.Equal("3 credits used", row.QuantityGrossText);
+                Assert.Equal("Gross 3 credits", row.QuantityGrossText);
                 Assert.DoesNotContain(token, await parts.ViewModel.History.ExportJsonAsync(), StringComparison.Ordinal);
                 Assert.DoesNotContain(token, parts.ViewModel.NotificationBannerText, StringComparison.Ordinal);
                 Assert.DoesNotContain(token, parts.ViewModel.CopilotDeviceResult, StringComparison.Ordinal);

@@ -83,18 +83,21 @@ public static class QuotaPresentationFormatter
             var compositionVisible = grossValue > 0m;
             var includedRatio = compositionVisible ? SafeCompositionRatio(includedValue, grossValue, 1m) : 0m;
             var additionalRatio = compositionVisible ? SafeCompositionRatio(additionalValue, grossValue, 1m - includedRatio) : 0m;
-            var gross = FormatQuantity(usage.GrossQuantity, japanese ? "クレジットを使用" : "credits used", japanese);
-            var discount = FormatQuantity(usage.DiscountQuantity, japanese ? "含まれる分" : "included", japanese);
-            var net = FormatQuantity(usage.NetQuantity, japanese ? "追加" : "additional", japanese);
+            var grossValueText = FormatQuantity(usage.GrossQuantity, japanese ? "クレジット" : "credits", japanese);
+            var includedValueText = FormatQuantity(usage.DiscountQuantity, japanese ? "クレジット" : "credits", japanese);
+            var additionalValueText = FormatQuantity(usage.NetQuantity, japanese ? "クレジット" : "credits", japanese);
+            var gross = japanese ? $"総量 {grossValueText}" : $"Gross {grossValueText}";
+            var discount = japanese ? $"含まれる分 {includedValueText}" : $"Included {includedValueText}";
+            var net = japanese ? $"追加分 {additionalValueText}" : $"Additional {additionalValueText}";
             var period = japanese ? $"集計期間: {snapshot.Window.Start:yyyy年M月d日}〜{snapshot.Window.End:yyyy年M月d日}" : $"Aggregation period: {snapshot.Window.Start:yyyy-MM-dd} – {snapshot.Window.End:yyyy-MM-dd}";
             var retrieved = japanese ? $"取得時刻: {snapshot.Fetched.ToLocalTime():yyyy年M月d日 HH:mm}" : $"Retrieved: {snapshot.Fetched.ToLocalTime():yyyy-MM-dd HH:mm zzz}";
             var delay = japanese ? "反映遅延: 不明" : "Reporting delay: unknown";
-            var quantityStatus = japanese ? "Gross構成のみを表示しています。割合ゲージではありません" : "Gross composition only; this is not a percentage gauge";
-            var includedLabel = japanese ? $"含まれる分 {includedRatio:P1} · {discount}" : $"Included {includedRatio:P1} · {discount}";
-            var additionalLabel = japanese ? $"追加 {additionalRatio:P1} · {net}" : $"Additional {additionalRatio:P1} · {net}";
+            var quantityStatus = japanese ? "総量の内訳を表示しています（使用率ゲージではありません）" : "Gross composition only; this is not a percentage gauge";
+            var includedLabel = japanese ? $"含まれる分 {includedRatio:P1} · {includedValueText}" : $"Included {includedRatio:P1} · {includedValueText}";
+            var additionalLabel = japanese ? $"追加分 {additionalRatio:P1} · {additionalValueText}" : $"Additional {additionalRatio:P1} · {additionalValueText}";
             var compositionLabel = japanese
-                ? $"総量の構成バー。含まれる分 {includedRatio:P1}、追加 {additionalRatio:P1}。総量: {gross}。"
-                : $"Gross composition bar. Included {includedRatio:P1}, Additional {additionalRatio:P1}. Total: {gross}.";
+                ? $"総量の内訳バー。含まれる分 {includedRatio:P1}、追加分 {additionalRatio:P1}。総量: {grossValueText}。"
+                : $"Gross composition bar. Included {includedRatio:P1}, Additional {additionalRatio:P1}. Total: {grossValueText}.";
             var quantityFreshness = $"{freshness} · {period} · {retrieved} · {delay}";
             return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), 0, string.Empty, quantityStatus, period, source, quantityFreshness, stale, quantityStatus)
             {
@@ -123,8 +126,8 @@ public static class QuotaPresentationFormatter
         var numeric = percent ?? 0m;
         var visual = (double)Math.Clamp(numeric, 0m, 100m);
         var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
-        var percentText = percent is null ? (japanese ? "使用量を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用済み {numeric:0.#}%" : $"使用済み {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
-        var status = percent is null ? (japanese ? "未取得" : "Waiting for quota data · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
+        var percentText = percent is null ? (japanese ? "使用率を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用率 {numeric:0.#}%（残り 0%・上限を{numeric - 100m:0.#}%超過）" : $"使用率 {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
+        var status = percent is null ? (japanese ? "データなし・値: —" : "No quota value · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
         return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, percentText, status, reset, source, freshness, stale, BuildProgressLabel(percentText, status, reset, language)) { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
     }
     private static string FormatQuantity(decimal? value, string label, bool japanese) => value is null ? (japanese ? $"不明 · {label}" : $"Unavailable · {label}") : $"{value.Value.ToString("#,0.##", CultureInfo.InvariantCulture)} {label}";
@@ -162,7 +165,7 @@ public static class QuotaPresentationFormatter
             (window == QuotaWindowKind.Weekly && metric.Equals("weekly", StringComparison.OrdinalIgnoreCase)) ||
             (window == QuotaWindowKind.Daily && metric.Equals("daily", StringComparison.OrdinalIgnoreCase)) ||
             (window == QuotaWindowKind.Rolling && metric.Equals("rolling", StringComparison.OrdinalIgnoreCase))) return string.Empty;
-        return metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "短時間枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codex主要枠", "Codex secondary" => "Codex副枠", _ => metric };
+        return metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "短時間枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codexの主要利用枠", "Codex secondary" => "Codexの副利用枠", _ => metric };
     }
     private static string BuildProgressLabel(string percentText, string status, string reset, UiLanguage language) => language == UiLanguage.Japanese ? $"{percentText}。{status}。{reset}" : $"{percentText}. {status}. {reset}";
 }
@@ -1105,7 +1108,7 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
     }
     private static string EscapeCsv(string value) => value.Any(character => character is ',' or '"' or '\r' or '\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
 }
-public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); }
+public interface IInAppNotificationService { string BannerText { get; } void Notify(string title, string reason); void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy); }
 public sealed class InAppNotificationService : IInAppNotificationService, INotificationSink, INotifyPropertyChanged
 {
     private readonly IDesktopNotificationBackend? desktopNotificationBackend;
@@ -1113,18 +1116,25 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
     private QuotaSnapshot? thresholdSnapshot;
     private decimal? pendingThreshold;
     private decimal thresholdPercent;
-    public UiLanguage Language { get; set; } = UiLanguage.English;
+    private Func<UiCopy, (string Title, string Reason)>? localizedBanner;
+    private enum BannerKind { None, Opaque, Localized, Threshold }
+    private BannerKind visibleKind;
+    public UiLanguage Language { get => language; set { if (language == value) return; language = value; if (visibleKind == BannerKind.Localized) SetLocalizedBanner(); else if (visibleKind == BannerKind.Threshold) { RefreshThresholdText(); SetBannerText(thresholdBannerText); } } }
+    private UiLanguage language = UiLanguage.English;
     public string BannerText { get; private set; } = string.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
     public InAppNotificationService(IDesktopNotificationBackend? desktopNotificationBackend = null) => this.desktopNotificationBackend = desktopNotificationBackend;
-    public void Notify(string title, string reason) => SetBannerText($"{title}: {reason}");
-    public void Clear() { thresholdBannerText = string.Empty; thresholdSnapshot = null; SetBannerText(string.Empty); }
+    // Arbitrary caller-provided strings are intentionally opaque; only known UI-owned alerts use localized payloads.
+    public void Notify(string title, string reason) { localizedBanner = null; visibleKind = BannerKind.Opaque; SetBannerText($"{title}: {reason}"); }
+    public void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy) { localizedBanner = copy; visibleKind = BannerKind.Localized; SetLocalizedBanner(); }
+    private void SetLocalizedBanner() { var (title, reason) = localizedBanner!(new UiCopy(Language)); SetBannerText($"{title}: {reason}"); }
+    public void Clear() { localizedBanner = null; thresholdBannerText = string.Empty; thresholdSnapshot = null; visibleKind = BannerKind.None; SetBannerText(string.Empty); }
     public void ClearThresholdBanner()
     {
-        var wasVisible = BannerText == thresholdBannerText;
+        var wasVisible = visibleKind == BannerKind.Threshold;
         thresholdBannerText = string.Empty;
         thresholdSnapshot = null;
-        if (wasVisible) SetBannerText(string.Empty);
+        if (wasVisible) { visibleKind = BannerKind.None; SetBannerText(string.Empty); }
     }
     public void SetThresholdContext(decimal threshold) => pendingThreshold = threshold;
     public void ReconcileThresholdBanner(IReadOnlyList<QuotaSnapshot> snapshots, DateTimeOffset now, Func<ProviderKind, decimal> thresholdForProvider, bool enabled)
@@ -1156,17 +1166,16 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
 
         thresholdSnapshot = replacement;
         thresholdPercent = threshold;
-        var copy = new UiCopy(Language);
-        thresholdBannerText = $"{copy.QuotaThresholdTitle(replacement.Provider)}: {copy.QuotaThresholdReason(percent)}";
-        if (BannerText != string.Empty && BannerText == BannerTextFor(current)) SetBannerText(thresholdBannerText);
+        RefreshThresholdText();
+        if (visibleKind == BannerKind.Threshold) SetBannerText(thresholdBannerText);
     }
-    private string BannerTextFor(QuotaSnapshot snapshot)
+    private void RefreshThresholdText()
     {
-        if (snapshot.EffectivePercent is not { } percent) return string.Empty;
+        if (thresholdSnapshot?.EffectivePercent is not { } percent) { thresholdBannerText = string.Empty; return; }
         var copy = new UiCopy(Language);
-        return $"{copy.QuotaThresholdTitle(snapshot.Provider)}: {copy.QuotaThresholdReason(percent)}";
+        thresholdBannerText = $"{copy.QuotaThresholdTitle(thresholdSnapshot.Provider)}: {copy.QuotaThresholdReason(percent)}";
     }
-    public void RestoreThresholdBanner() => SetBannerText(thresholdBannerText);
+    public void RestoreThresholdBanner() { if (thresholdSnapshot is null) { if (visibleKind != BannerKind.Threshold) { visibleKind = BannerKind.None; localizedBanner = null; SetBannerText(string.Empty); } return; } RefreshThresholdText(); visibleKind = BannerKind.Threshold; SetBannerText(thresholdBannerText); }
     public async ValueTask<bool> NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1178,6 +1187,8 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
         thresholdSnapshot = snapshot;
         thresholdPercent = pendingThreshold ?? 0;
         pendingThreshold = null;
+        localizedBanner = null;
+        visibleKind = BannerKind.Threshold;
         SetBannerText(thresholdBannerText);
         if (desktopNotificationBackend is null) return true;
         try { return await desktopNotificationBackend.TryNotifyAsync(title, reason, cancellationToken).ConfigureAwait(false); }
@@ -1511,7 +1522,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 return (Snapshots: snapshots, Cards: cards);
             });
             await History.InitializeAsync(cancellationToken);
-            if (History.LoadError is not null) notificationService.Notify(CopyText.HistoryNotificationTitle, CopyText.HistoryCorrupt);
+            if (History.LoadError is not null) notificationService.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryCorrupt));
 
             if (loaded.Snapshots.Count > 0)
             {
@@ -1525,6 +1536,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
     public void Notify(string title, string reason) => notificationService.Notify(title, reason);
+    public void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy) => notificationService.NotifyLocalized(copy);
     public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; if (!Settings.NotificationsEnabled) notificationService.ClearThresholdBanner(); Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Settings.GithubOrganization = dto.GithubOrganization.Trim(); Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
     private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization);
     public async Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) { Settings.Theme = value; UiSettings.ApplyTheme(value); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
@@ -1576,7 +1588,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (IsDisposed) return;
         SetCopilotReauthenticationAvailable(false);
         ReevaluateCards(timeProvider.GetUtcNow());
-        notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshError);
+        notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshError));
         PresentationState = PresentationState.Error;
     }
     private async Task ApplyRefreshResultAsync(QuotaRefreshResult refreshResult, HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> previousProviderIdentities, CancellationToken cancellationToken)
@@ -1595,8 +1607,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             .Where(identity => !refreshResult.NoDataProviders.Contains(identity.Provider))
             .Select(identity => identity.Provider)
             .Distinct()
-            .ToList();
-        var partialFailure = missingProviders.Count > 0;
+            .ToArray();
+        var failures = refreshResult.Failures.ToArray();
+        var noDataProviders = refreshResult.NoDataProviders.ToArray();
+        var partialFailure = missingProviders.Length > 0;
         RemoveReplacedAutomaticCopilotCards(snapshots, refreshResult.ActiveAccounts);
         var noDataProvidersWithPreviousAutomaticValue = refreshResult.NoDataProviders
             .Where(provider => Cards.Any(card => card.Provider == provider && card.Windows.Any(window => window.Snapshot is { Source: not QuotaSource.Manual })))
@@ -1610,34 +1624,46 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // HistoryState's storage lane is the single owner of history mutations: provider
             // snapshots are appended here instead of by the provider application.
             if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
-            if (refreshResult.Failures.Count > 0)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: true));
+            if (failures.Length > 0)
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: true)));
+            }
             else if (partialFailure)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
-            else if (refreshResult.NoDataProviders.Count > 0)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
+            }
+            else if (noDataProviders.Length > 0)
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
+            }
             else
             {
                 notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
                 notificationService.RestoreThresholdBanner();
             }
-            PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
+            PresentationState = failures.Length > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
         }
         else ReevaluateCards(timeProvider.GetUtcNow());
         if (snapshots.Count == 0)
         {
-            if (refreshResult.Failures.Count > 0)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshFailures(refreshResult.Failures, mixedResult: false));
+            if (failures.Length > 0)
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: false)));
+            }
             else if (partialFailure)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshMissingProviders(missingProviders));
-            else if (refreshResult.NoDataProviders.Count > 0)
-                notificationService.Notify(CopyText.RefreshIncompleteTitle, CopyText.RefreshNoData(refreshResult.NoDataProviders, noDataProvidersWithPreviousAutomaticValue));
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
+            }
+            else if (noDataProviders.Length > 0)
+            {
+                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
+            }
             else
             {
                 notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
                 notificationService.RestoreThresholdBanner();
             }
-            PresentationState = refreshResult.Failures.Count > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
+            PresentationState = failures.Length > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
         }
         OnPropertyChanged(nameof(PresentationState));
     }

@@ -412,11 +412,11 @@ public sealed class UiRequirementsTests
 
         var row = QuotaPresentationFormatter.Format(snapshot, now, UiLanguage.Japanese);
 
-        Assert.Equal("使用済み 42%・残り 58%", row.PercentText);
+        Assert.Equal("使用率 42%・残り 58%", row.PercentText);
         Assert.Equal("余裕あり", row.StatusText);
         Assert.Equal("メッセージ", row.Metric);
         Assert.Equal("5分前に更新", row.FreshnessText);
-        Assert.Contains("使用済み", row.ProgressLabel);
+        Assert.Contains("使用率", row.ProgressLabel);
     }
 
     [Fact]
@@ -428,8 +428,8 @@ public sealed class UiRequirementsTests
         Assert.Equal("短時間枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Fast window" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("月次", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "monthly" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal(string.Empty, QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "weekly" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("Codex主要枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex primary" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("Codex副枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex secondary" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal("Codexの主要利用枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex primary" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal("Codexの副利用枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex secondary" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("Custom metric", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Custom metric" }, now, UiLanguage.Japanese).Metric);
     }
 
@@ -441,6 +441,13 @@ public sealed class UiRequirementsTests
         Assert.Equal("利用枠", copy.Window);
         Assert.Equal("使用率（%）", copy.UsedPercent);
         Assert.Equal("リセット日時（任意）", copy.ResetOptional);
+        Assert.Equal("CSVをエクスポート", copy.ExportCsv);
+        Assert.Equal("JSONをエクスポート", copy.ExportJson);
+        Assert.Contains("テレメトリーは送信しません", copy.NoSecretsLeave);
+        Assert.Contains("連携先への認証", copy.NoSecretsLeave);
+        Assert.Contains("セッション中のみ", copy.OpenCodeStatus(new(true, "ignored")));
+        Assert.Contains("トレイを利用できません", copy.TrayUnavailableTitle);
+        Assert.Contains("現在の期間", copy.RefreshNoData([ProviderKind.ChatGpt], new HashSet<ProviderKind>()));
         Assert.DoesNotContain("device flow", copy.CopilotDescription, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Client Secret", copy.CopilotDescription, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("デバイス認証", copy.CodexDescription);
@@ -570,10 +577,10 @@ public sealed class UiRequirementsTests
         var over = QuotaPresentationFormatter.Format(DemoSnapshot(112), now, UiLanguage.Japanese);
         var unknown = QuotaPresentationFormatter.Format(DemoSnapshot(0) with { Used = null, Limit = null }, now, UiLanguage.Japanese);
 
-        Assert.Equal("使用済み 112%", over.PercentText);
+        Assert.Equal("使用率 112%（残り 0%・上限を12%超過）", over.PercentText);
         Assert.Equal("上限を12%超過", over.StatusText);
-        Assert.Equal("使用量を表示できません", unknown.PercentText);
-        Assert.Equal("未取得", unknown.StatusText);
+        Assert.Equal("使用率を表示できません", unknown.PercentText);
+        Assert.Equal("データなし・値: —", unknown.StatusText);
         Assert.Contains("。", unknown.ProgressLabel);
         Assert.DoesNotContain("取得中", unknown.ProgressLabel);
     }

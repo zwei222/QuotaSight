@@ -32,7 +32,7 @@ public sealed class CopilotCompositionVisualTests
             main.UpdateLayout();
             compact.UpdateLayout();
             Assert.Equal("含まれる分", mainVm.Cards.Single().Windows.Single().CompositionIncludedLabel.Split(' ')[0]);
-            Assert.Equal("追加", compactVm.Cards.Single().Windows.Single().CompositionAdditionalLabel.Split(' ')[0]);
+            Assert.Equal("追加分", compactVm.Cards.Single().Windows.Single().CompositionAdditionalLabel.Split(' ')[0]);
         }
         finally
         {

@@ -151,12 +151,12 @@ public partial class App : Avalonia.Application
                             lifecycle.Track(monitor.RunAsync(lifecycle.CancellationToken));
                         }
                         if (window.ViewModel.Settings.ResidentMode && !window.TrayAvailable)
-                            window.ViewModel.Notify(window.ViewModel.CopyText.TrayUnavailableTitle, window.ViewModel.CopyText.TrayUnavailable);
+                            window.ViewModel.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
                     }, lifecycle.CancellationToken);
                     lifecycle.Track(startup);
                     await startup;
                 }
-                catch { if (!lifecycle.IsExiting && window.ViewModel.Settings.ResidentMode) window.ViewModel.Notify(window.ViewModel.CopyText.TrayUnavailableTitle, window.ViewModel.CopyText.TrayUnavailable); }
+                catch { if (!lifecycle.IsExiting && window.ViewModel.Settings.ResidentMode) window.ViewModel.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable)); }
             };
         }
         base.OnFrameworkInitializationCompleted();

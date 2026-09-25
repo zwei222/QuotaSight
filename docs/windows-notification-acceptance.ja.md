@@ -1,37 +1,37 @@
 # Windows通知の受け入れ確認手順
 
-この手動確認では、Windows通知の登録経路と画面上の表示経路をそれぞれ確認します。CIとは別の確認です。GitHub-hosted Windows runnerは昇格した管理者tokenでUACが無効の状態で実行される一方、Windows App SDK 2.5.1の`IsSupported()`は昇格プロセスでfalseを返すため、CIはNative AOTのpublishとsmoke testまでで終了します。smoke test成功や通知APIの登録成功だけを、desktop通知の表示確認として扱ってはいけません。
+この手動確認では、Windows通知の登録経路と、画面に通知が表示される経路を別々に確認します。CIでの確認とは別です。GitHub-hosted Windows runnerは、UACが無効の状態で昇格済み管理者tokenを使って実行されます。一方、Windows App SDK 2.5.1の`IsSupported()`は昇格プロセスでfalseを返します。そのため、CIで確認するのはNative AOTのpublishとsmoke testまでです。smoke testや通知API登録に成功しても、デスクトップ通知が表示された証拠にはなりません。
 
 ## 環境と準備
 
-- 対話ログオン中の実Windows 11 x64 desktopを使用します。
-- サインイン中の標準ユーザーとしてQuotaSightを起動します。昇格して実行（「管理者として実行」）しないでください。プロセスが非昇格であることを確認します。
-- 確認対象commitと同一commitから作成した、自己完結型Windows x64 Native AOT ZIPを用意して、空のdirectoryへ展開します。framework-dependent buildや別commitのbuildは使用しません。
-- テスト前にcommit SHAとZIPのSHA-256を記録します。Windows PowerShellでは`Get-FileHash -Algorithm SHA256 <ZIPのパス>`でZIP digestを取得できます。
-- Windows通知の許可状態と集中モード（Focus assist / Do not disturb）の状態を確認して記録します。アカウント名、organization名、device名など、個人・組織・機器を識別する情報は記録しません。
+- 対話ログオン中の実Windows 11 x64デスクトップ環境を使います。
+- サインイン中のユーザーとしてQuotaSightを通常起動します。標準ユーザーで実行するか、管理者権限のあるユーザーを使う場合は昇格せずに実行します。「管理者として実行」は選ばず、プロセスが非昇格であることを確認します。
+- 確認対象と同じコミットから作成した、自己完結型Windows x64 Native AOT ZIPを用意し、空のフォルダーに展開します。framework-dependent buildや別コミットのbuildは使いません。
+- テスト前にコミットSHAとZIPのSHA-256を記録します。Windows PowerShellでは`Get-FileHash -Algorithm SHA256 <ZIPのパス>`でハッシュを取得できます。
+- Windows通知の許可状態と集中モード（Focus assist / Do not disturb）の状態を確認して記録します。アカウント名、organization名、device名など、個人・組織・機器を識別できる情報は記録しません。
 
 ## 通知登録probe
 
-展開したZIPのdirectoryで、非昇格のterminalから実際の同梱実行ファイルを実行します。
+展開したZIPのフォルダーで、非昇格の端末から実行ファイルを起動します。
 
 ```powershell
 .\QuotaSight.UI.exe --notification-probe
 $LASTEXITCODE
 ```
 
-正確なexit codeと、probeが出力した固定失敗メッセージがあればそれを記録します。exit code `0`は、サポート確認、イベント購読、登録、登録解除、全通知解除、およびイベント購読解除がすべて正常に完了したことを示すプログラム上の証拠です。成功時は通常メッセージを出力しません。成功結果の文字列が出力されることを期待したり、転記したりしないでください。nonzero exit codeと固定失敗メッセージ（出力された場合）は、いずれかの処理が失敗したことを示します。このprobeはpopup表示テストではなく、exit code `0`もWindows通知の表示を証明するものではありません。
+正確なexit codeと、probeが固定の失敗メッセージを出力した場合はその内容を記録します。exit code `0`は、サポート確認、イベント購読、登録、登録解除、全通知登録の解除、およびイベント購読解除がすべて正常に完了したことを示すプログラム上の証拠です。ここでいう`UnregisterAll`は通知登録を解除する処理で、画面上にすでに表示された通知を消す操作ではありません。成功時は通常メッセージを出力しません。成功を示す文字列が出ると期待したり、転記したりしないでください。nonzero exit codeと固定の失敗メッセージ（出力された場合）は、いずれかの処理が失敗したことを示します。このprobeはポップアップ表示の確認ではありません。exit code `0`でもWindows通知が画面に表示されたとは証明できません。
 
 ## しきい値通知の画面表示
 
-1. Windows SettingsでQuotaSightの通知が許可されていることを確認し、観測した状態を記録します。設定を変更する場合は変更前後を記録します。
-2. 集中モード（Focus assist / Do not disturb）の状態を記録します。方針上可能で表示を観測しやすくする場合はオフにし、変更前後を記録します。
-3. 展開済みの`QuotaSight.UI.exe`を通常起動（非昇格）します。UIで先にしきい値通知を有効にし、テスト用しきい値を設定します。その後、freshで新規かつ一意な手動割合snapshotを追加し、その割合がしきい値に初めて到達または超過するようにします。snapshotの保存直後にOS popupを確認してください。単に通知を待つのではありません。手動snapshotによるしきい値表示は`tests/QuotaSight.UI.Tests/ThresholdNotificationPresentationTests.cs`の`Manual_snapshot_threshold_is_presented`で確認されています。手動フォームには架空のテスト用アカウント名が必要ですが、実アカウントの認証情報や本番quota観測値は不要です。
-4. アプリ内bannerをOS通知として扱ってはいけません。
-5. 人がWindows desktopを目視し、OS通知が表示されたかを記録します。結果は「表示を目視確認」「表示されなかった」「未テスト」のいずれかとし、個人を識別する情報を含まない短い観測メモを付けます。表示されない、または未テストの場合、実表示は未確認であることを明記します。
+1. Windowsの設定画面でQuotaSightの通知が許可されていることを確認し、観測した状態を記録します。設定を変更する場合は変更前後を記録します。
+2. 集中モード（Focus assist / Do not disturb）の状態を記録します。方針上可能で、通知を観測しやすくする必要がある場合はオフにし、変更前後を記録します。
+3. 展開した`QuotaSight.UI.exe`を通常起動します（非昇格）。UIで先にしきい値通知を有効にして、テスト用しきい値を設定します。その後、過去に使っておらず、古いデータでもない、一意の手動入力割合スナップショットを新たに入力します。割合はそのしきい値に初めて到達または超過する値にします。スナップショットを保存した直後にOSポップアップを確認してください。通知をただ待つのではありません。手動入力したスナップショットによるしきい値通知の画面上の動作は、`tests/QuotaSight.UI.Tests/ThresholdNotificationPresentationTests.cs`の`Manual_snapshot_threshold_is_presented`で確認されています。このUI testはWindowsのOSポップアップ表示を証明するものではありません。手動入力フォームにはテスト用の架空のアカウント名が必要ですが、実アカウントの認証情報や本番のquota観測値は不要です。
+4. アプリ内バナーをOS通知として扱ってはいけません。
+5. Windowsデスクトップを目視し、OS通知が表示されたかを記録します。結果は「表示を目視確認」「表示されなかった」「未テスト」のいずれかとし、識別情報を含まない短い観測メモを付けます。識別情報を含むスクリーンショットは撮影・共有しないでください。表示されなかった場合や未テストの場合は、実表示が未確認であることを明記します。
 
 ## 結果記録
 
-以下のtemplateをテスト記録へコピーし、実測値を記入します。credential、token、Client ID、organization/device識別子、その他の個人・組織を識別する情報は記載しないでください。
+以下のひな形をテスト記録にコピーし、実測値を記入します。credential、token、Client ID、organization/device識別子、その他の個人・組織を識別する情報は記載しないでください。
 
 - Commit SHA:
 - Windows x64 ZIP SHA-256:
@@ -42,9 +42,9 @@ $LASTEXITCODE
 - Probe exit code（実測値）:
 - Probe固定失敗メッセージ（実測値そのまま、出力された場合）:
 - Probeによる登録ライフサイクル確認（exit code 0 / 失敗 / 実証されず）:
-- 手動snapshotのfreshnessとしきい値設定（識別情報を含めず簡潔に記載）:
-- 人によるOS通知のpixel目視結果: 表示を目視確認 / 表示されなかった / 未テスト
+- 手動入力したスナップショットの鮮度としきい値設定（識別情報を含めず簡潔に記載）:
+- OS通知を人が画面で目視した結果: 表示を目視確認 / 表示されなかった / 未テスト
 - 実表示確認: 合格 / 不合格 / 未テスト
 - 備考（credentialや識別名は記載しない）:
 
-テスト記録が示すのは、記録されたcommit、ZIP hash、OS、設定に対する結果だけです。未テストまたは目視できなかった結果を成功として報告してはいけません。
+テスト記録が示すのは、記録したコミット、ZIPのハッシュ値、OS、設定についての結果だけです。未テストまたは画面で目視できなかった結果を成功として報告してはいけません。

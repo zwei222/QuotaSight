@@ -346,6 +346,19 @@ public sealed class ReviewBlockerRegressionTests
         Assert.Single(vm.Cards);
         Assert.Contains("no data", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("last", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        var providerCallsAfterRefresh = application.CallCount;
+        var cardBeforeLanguageSwitch = Assert.Single(vm.Cards);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("データがありません", vm.NotificationBannerText, StringComparison.Ordinal);
+        Assert.Single(vm.Cards);
+        Assert.Equal(cardBeforeLanguageSwitch.Provider, Assert.Single(vm.Cards).Provider);
+        Assert.Equal("接続済み", Assert.Single(vm.Cards).StateText);
+        vm.Language = UiLanguage.English;
+        Assert.Contains("no data", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(vm.Cards);
+        Assert.Equal(cardBeforeLanguageSwitch.Provider, Assert.Single(vm.Cards).Provider);
+        Assert.Equal(cardBeforeLanguageSwitch.StateText, Assert.Single(vm.Cards).StateText);
+        Assert.Equal(providerCallsAfterRefresh, application.CallCount);
         vm.Dispose();
     }
 
@@ -536,7 +549,8 @@ public sealed class ReviewBlockerRegressionTests
     internal sealed class MutableResultApplication(QuotaRefreshResult result) : IQuotaApplication
     {
         public QuotaRefreshResult Result { get; set; } = result;
-        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Result);
+        public int CallCount { get; private set; }
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) { CallCount++; return ValueTask.FromResult(Result); }
     }
 
     internal sealed class FailingApplication : IQuotaApplication

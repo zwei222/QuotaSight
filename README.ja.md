@@ -2,65 +2,71 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-QuotaSightは、サブスクリプション契約の利用枠を確認するWindows/Linux向けデスクトップダッシュボードです。API料金、トークン課金、従量課金の支出を表示するアプリではありません。取得値には出典、確度、鮮度、反映上の制限を付け、推定値・古い値・手動入力・実験的endpointをリアルタイムの確定値として扱いません。
+QuotaSightは、サブスクリプションの利用枠を確認するWindows/Linux向けデスクトップアプリです。API料金、トークン課金、従量課金の支出を追跡するものではありません。各値に出典、確度、鮮度、反映上の制限を示します。推定値、古い値、手動入力値、実験的な接続先を、リアルタイムの確定値として扱うことはありません。
 
 ## 現在実装されている機能
 
-- Avaloniaのdashboard、history、settings、実行中の日本語/英語切り替え、狭い幅のlayout。
-- quota snapshotの日別JSONL保存（30日間）。
-- Windows Credential Manager、Linux Secret Service/`secret-tool`。安全なcredential storeが使えない場合はセッション中だけ保持します。
-- telemetryなし。token、平文credential、生のprovider responseは保存・表示しません。
-- theme、更新間隔、通知、しきい値、GitHub App Client ID、GitHub Organization slugの設定。
-- 任意の常駐モード、省スペースの利用枠画面、明示的な終了操作。
+- Avalonia製の画面で利用状況と履歴を確認し、設定を変更できます。実行中に日本語と英語を切り替えられ、狭い画面幅にも対応します。
+- 利用枠の記録を日別のJSONL形式で30日間保存します。
+- Windows Credential Manager、Linux Secret Service/`secret-tool`に対応します。安全な資格情報ストアが使えない場合は、セッション中だけメモリに保持します。
+- テレメトリー（利用状況や診断情報を含む）を送信しません。機密値を設定、履歴、ログ、書き出し、画面表示に書き込みません。tokenは、後述のOSの安全な資格情報ストアまたはセッション中のメモリに保持される場合があります。
+- テーマ、更新間隔、通知、しきい値、GitHub App Client ID、GitHub Organization slugを設定できます。
+- 任意で常駐モードを使えます。省スペースの利用枠画面と、明示的な終了操作があります。
 
 ### 通知
 
-通知しきい値の初期値は80%で、Settingsから通知を無効にできます。しきい値通知はQuotaSightの実行中に限り、定期更新時に確認されます。手動で入力した割合snapshotは、しきい値に初めて達したときに通知する場合があります。stale/unknownの観測値と、割合を持たないCopilotの数量データは、しきい値通知の対象外です。エラー・状態bannerは、しきい値通知のtoggleとは独立しています。
+通知しきい値の初期値は80%です。設定画面から通知を無効にできます。しきい値通知はQuotaSightの実行中に限り、定期更新の際に確認されます。手動入力した割合のスナップショットは、しきい値に初めて達したときに通知される場合があります。stale/unknownの観測値と、割合のないCopilotの数量データは、しきい値通知の対象外です。エラーや状態を知らせるバナーは、しきい値通知の設定とは別に表示されます。
 
-通知の配信はbest effortであり、表示を保証するものではありません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みますが、D-Busが要求を受け付けてもnotification daemonによる表示は保証されません。Windows x64ではWindows App SDK 2.5.1のbackendを使い、portable Native AOT ZIP buildからOS通知の送信を試みます。APIが受け付けたことと画面にpopupが表示されたことは別です。CIではrestore、format、Release build/test、Native AOT publish/smokeまでを確認し、Windows通知登録と実表示は非昇格のWindows 11 x64 desktopで別途手動検証が必要です。成功したとはまだ記録していません。手順は[Windows通知の受け入れ確認](docs/windows-notification-acceptance.ja.md)を参照してください。両OSでfallbackとしてアプリ内bannerを残しています（ウィンドウが非表示の間はbannerを表示できません）。通常終了時にはWindows通知登録の解除（`UnregisterAll`を含む）を試みますが、異常終了やcleanup失敗時に登録が残る可能性があります。
+通知は可能な範囲で送信を試みますが、表示を保証しません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みます。D-Busが要求を受け付けても、通知サービスが画面に表示するとは限りません。
 
-## Providerの取得方式と限界
+Windows x64ではWindows App SDK 2.5.1の基盤を使い、portable Native AOT ZIPからOS通知の送信を試みます。APIが要求を受け付けたことと、画面にポップアップが表示されたことは別です。CIで確認するのはrestore、format、Release build/test、Native AOT publish/smokeまでです。Windows通知の登録と画面表示は、非昇格のWindows 11 x64デスクトップで別途手動確認が必要です。成功したという確認記録はまだありません。手順は[Windows通知の受け入れ確認](docs/windows-notification-acceptance.ja.md)を参照してください。
 
-| Provider | 現在の方式 | できること・できないこと |
+両OSとも、代替としてアプリ内バナーを表示します。ただし、ウィンドウが隠れている間は見えません。通常終了時には、`UnregisterAll`を含むWindows通知登録の解除を試みます。これは画面上にすでに表示された通知を消す操作ではありません。異常終了や後片付けの失敗時には、登録が残ることがあります。
+
+## プロバイダーの取得方式と限界
+
+| プロバイダー | 現在の方式 | できること・できないこと |
 |---|---|---|
-| ChatGPT Codex | QuotaSight独自のOpenAI device OAuthとundocumented/experimentalな`wham/usage` endpoint | 1アカウントのCodex枠のみで、ChatGPT Plus/Pro全体ではありません。Officialとは表示せず、失敗時は手動入力と公式subscription pageへfallbackします。 |
-| Claude Pro | 手動入力と公式URL | 利用者が公式ページからquotaとresetを入力します。請求APIは呼びません。 |
-| OpenCode Go | 明示的なAPI keyとusage endpoint | endpointが返すsubscription quotaだけを表示し、遅延・未提供はstale/unknownとします。内部credential fileは読みません。 |
-| GitHub Copilot | GitHub App Device Flowまたは`gh auth status` probe、任意でBilling Usage取得 | 認証とusage参照権限は別です。設定したorganization slugと`Administration: read`を持つ管理者tokenが必要です。endpointは`GET /organizations/{org}/settings/billing/ai_credit/usage`です。公式`credits`数量をgross、discount、netで表示し、割合と個人remainingは算出しません。 |
+| ChatGPT Codex | QuotaSight独自のOpenAI device OAuthと、非公開・実験的な`wham/usage`接続先 | 1アカウントのCodex利用枠だけを扱い、ChatGPT Plus/Pro全体は対象にしません。Officialとは表示しません。取得に失敗した場合は手動入力と公式サブスクリプションページを案内します。 |
+| Claude Pro | 手動入力と公式URL | 利用者が公式ページを見て利用枠とリセット時刻を入力します。請求APIは呼び出しません。 |
+| OpenCode Go | 明示的に入力したAPI keyと利用状況の接続先 | 接続先が返すsubscription quotaだけを表示します。反映が遅れている値や取得できない値はstale/unknownとして扱います。OpenCode内部のcredential fileは読みません。 |
+| GitHub Copilot | GitHub App Device Flowまたは`gh auth status`の確認。Billing Usageの取得は任意です。 | 認証と利用状況の参照権限は別です。`GET /organizations/{org}/settings/billing/ai_credit/usage`には、設定画面に登録したorganization slugと、`Administration: read`権限のある管理者のtokenが必要です。公式の`credits`数量をgross、discount、netに分けて表示し、割合や個人別の残量は計算しません。 |
 
 ## Copilotの認証とBilling Usage
 
-認証だけの手順:
+認証だけを行う場合:
 
 1. Device Flowを有効にしたGitHub Appを作成します。
-2. SettingsにはClient IDだけを入力します。QuotaSightはdesktop利用者にprivate keyやclient secretを要求しません。
-3. Device Flowを完了するか、安全な`gh auth status` probeを使います。
+2. 設定画面にはClient IDだけを入力します。QuotaSightはデスクトップ利用者にprivate keyやclient secretを要求しません。
+3. Device Flowを完了するか、安全な`gh auth status`の確認を使います。
 
-Billing Usage取得は別の任意手順です:
+Billing Usageの取得は、これとは別の任意の手順です:
 
-1. Settingsに対象GitHub Organization slugを設定します。
+1. 設定画面に対象GitHub Organization slugを設定します。
 2. GitHub Appのorganization permissionsで`Administration: Read-only`を設定します。
-3. 対象organizationへAppをinstallし、要求権限をorganization ownerに承認してもらいます。Billing Usage経路ではこのinstallationと承認が必須です。
-4. 必要なorganization管理権限を持つユーザーでDevice Flowを完了します。QuotaSightはDevice Flow tokenを使い、別token入力欄はありません。
-5. 一般のseat tokenでは403になる可能性があります。
-6. QuotaSightは現在のreporting monthについて`GET /organizations/{org}/settings/billing/ai_credit/usage`を呼びます。
+3. 対象organizationにAppをインストールし、要求した権限をorganization ownerに承認してもらいます。このBilling Usage経路では、インストールと承認の両方が必要です。
+4. 必要なorganization管理権限を持つユーザーでDevice Flowを完了します。QuotaSightはDevice Flow tokenを使います。別のtoken入力欄はありません。
+5. 一般のseat tokenでは403になることがあります。
+6. QuotaSightは現在のreporting monthについて`GET /organizations/{org}/settings/billing/ai_credit/usage`を呼び出します。
 
-Device Flow成功はusage権限を意味しません。GitHubからrefresh tokenを受け取った場合、期限付きuser token bundleをOS資格情報ストアに保存し、access tokenの期限前に更新します。既存の旧形式access tokenにはrefresh tokenがないため、期限切れ後は利用者が明示的に再認証する必要があります。secure storeを利用できない場合はcredentialをセッション中だけ保持するため、アプリ再起動後に再認証が必要です。usageは個人のremainingではなく、請求主体単位のshared billing-entity poolに関する値です。GitHub側のreporting delayがあるため、cardには集計期間、取得時刻、反映遅延不明を表示します。更新に失敗した場合、前回取得値は最新値ではなくstaleとして示します。slug、installation、owner approval、権限、endpointのいずれかが利用できない場合は、公式Copilot pageまたはmanual fallbackを使います。seat、metrics、billing totalから個人remainingを推定しないでください。詳しくは[GitHub Appセットアップガイド](docs/github-app-setup.ja.md)を参照してください。
+Device Flowに成功しても、usageを参照できるとは限りません。GitHubからrefresh tokenが返された場合、期限付きuser token bundleをOS資格情報ストアに保存し、access tokenの期限前に更新します。既存の旧形式access tokenにはrefresh tokenがありません。そのtokenの期限が切れた後は、利用者が明示的に再認証する必要があります。安全な資格情報ストアが使えない場合、資格情報はセッション中だけ保持されるため、アプリの再起動後に再認証が必要です。
 
-CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexのcredential fileを読みません。providerの状態はManual、Official、Delayed、Experimentalを区別します。
+usageは請求主体ごとの共有枠に関する値であり、個人別の残量ではありません。カードには集計期間と取得時刻を示し、反映遅延の長さは不明であることも明記します。GitHubからの報告には遅れが生じることがあるため、表示値がいつの利用状況を反映しているかは確定できません。更新に失敗した場合、前回取得した値は最新ではなくstale（古い値）として示します。Organization slug、installation、owner approval、権限、接続先のいずれかを利用できない場合は、公式Copilotページを参照するか、手動入力を使います。seat、metrics、billing totalから個人別の残量を推定してはいけません。詳しくは[GitHub Appセットアップガイド](docs/github-app-setup.ja.md)を参照してください。
+
+CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexの認証情報ファイルを読みません。また、client secretを要求・保持しません。プロバイダーの状態はManual、Official、Delayed、Experimentalを区別して表示します。
 
 ## 必要条件
 
 - .NET SDK 10.0.x。
 - Windows x64またはLinux x64。
-- LinuxのGUIにはGTKが必要です。OS通知の送信試行にはsession D-Busとnotification daemonが必要ですが、daemonが受け付けても表示は保証されません。Secret Serviceは任意です。
+- Linuxの画面表示にはGTKが必要です。OS通知の送信にはsession D-Busと通知サービスが必要ですが、通知サービスが要求を受け付けても画面表示は保証されません。Secret Serviceは任意です。
 - 既存のGitHub CLI状態確認には`gh`、Device Flowにはbrowserが必要です。
 
 ## 配布
 
-正式なrelease artifactはWindows x64またはLinux x64向けのself-contained .NET 10 Native AOT ZIPです。MSIX、deb、AppImageは現在サポート対象外です。
+正式にサポートする配布物は、Windows x64またはLinux x64向けの自己完結型.NET 10 Native AOT ZIPです。MSIX、deb、AppImageは現在サポートしていません。
 
-## buildと実行
+## ビルドと実行
 
 ```bash
 dotnet restore QuotaSight.slnx
@@ -68,21 +74,21 @@ dotnet build QuotaSight.slnx -c Release --no-restore
 dotnet test QuotaSight.slnx -c Release --no-build --no-restore
 dotnet format QuotaSight.slnx --verify-no-changes --no-restore
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj
-# headless起動契約の確認
+# 画面を表示しない起動契約の確認
 dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 ```
 
-## securityとprivacy
+## セキュリティとプライバシー
 
-QuotaSightはlocal-firstで、外部telemetryを送信しません。provider CLIのcredential fileは読み取り・解析しません。token、API key、cookie、password、生のprovider response、完全なCLI出力をsettings、history、log、crash report、export、test、UI textへ書き込みません。永続化するsecretはWindows Credential ManagerまたはLinux Secret Serviceのみを使い、利用不能・ロック時は現在のセッション中だけメモリに保持します。詳しくは[securityの説明](docs/security.md)を参照してください。
+QuotaSightはローカル優先で、テレメトリーを送信しません。プロバイダーCLIの資格情報ファイルは読み取り・解析しません。token、API key、cookie、password、生のプロバイダー応答、完全なCLI出力を、設定、履歴、ログ、クラッシュレポート、書き出し、テスト、画面表示に書き込みません。tokenなどの機密値は、Windows Credential ManagerまたはLinux Secret Serviceに保持される場合があります。安全なストアが利用不能またはロック中の場合、資格情報は現在のセッション中だけメモリに保持します。詳しくは[セキュリティの説明](docs/security.md)を参照してください。
 
-quota windowは混ぜずに保持します。dashboardの代表値は最も逼迫したwindowで、無関係なwindowを合算しません。100%超の値も保持し、clampするのは視覚的なprogress indicatorだけです。reset時刻、freshness、source confidence、stale/manual/experimental状態を明示します。
+利用期間はそれぞれ分けて保持します。代表値には、判明している期間のうち最も逼迫したものを使います。無関係な期間同士は合算しません。100%を超える値も保持し、視覚的な進捗表示だけを100%に合わせます。リセット時刻、データの鮮度、取得元の確度、stale/manual/experimentalの状態を明示します。
 
 ## Roadmap
 
-- 公開されたサービス契約とquota endpointが確認できたproviderの追加。
-- Windows実機でOS通知が画面に表示されることを検証します。APIが受け付けたことだけではpopup表示を確認したことになりません。
-- GitHubが文書化されたpermissionとresponse contractを提供した場合のCopilot organization対応拡張。
+- 公開されたサービス契約と利用枠の接続先を確認できたプロバイダーを追加します。
+- Windows実機でOS通知が画面に表示されることを検証します。APIが要求を受け付けただけではポップアップ表示を確認したことになりません。
+- GitHubが文書化されたpermissionとresponse contractを提供した場合に限り、Copilot organization対応を拡張します。
 
 ## 公式リンク
 
