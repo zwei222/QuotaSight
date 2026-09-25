@@ -33,3 +33,13 @@ jobs:
         run: dotnet build QuotaSight.slnx --configuration Release --no-restore
       - name: Test Release
         run: dotnet test QuotaSight.slnx --configuration Release --no-build --no-restore
+      - name: Restore Native AOT
+        run: dotnet restore QuotaSight.slnx --runtime ${{ runner.os == 'Windows' && 'win-x64' || 'linux-x64' }}
+      - name: Publish Native AOT
+        run: dotnet publish src/QuotaSight.UI/QuotaSight.UI.csproj --configuration Release --runtime ${{ runner.os == 'Windows' && 'win-x64' || 'linux-x64' }} --self-contained true -p:PublishAot=true --no-restore -o publish
+      - name: Smoke Native AOT (Linux)
+        if: runner.os == 'Linux'
+        run: ./publish/QuotaSight.UI --smoke-test
+      - name: Smoke Native AOT (Windows)
+        if: runner.os == 'Windows'
+        run: .\publish\QuotaSight.UI.exe --smoke-test

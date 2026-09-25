@@ -5,12 +5,18 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Layout;
+using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 
 namespace QuotaSight.UI;
 
 public interface IClipboardService { Task SetTextAsync(string text); }
+public interface IUriLauncher { Task<bool> LaunchUriAsync(Uri uri); }
+public sealed class AvaloniaUriLauncher(Func<Uri, Task<bool>> launch) : IUriLauncher
+{
+    public Task<bool> LaunchUriAsync(Uri uri) => launch(uri);
+}
 public interface IHistoryExportDestination
 {
     Task<IHistoryExportFile?> PickAsync(string suggestedName, string contentType);
@@ -44,6 +50,7 @@ public partial class MainWindow : Window
     private readonly IProviderUiService providerService;
     private readonly IClipboardService? clipboardService;
     private readonly IHistoryExportDestination exportDestination;
+    private readonly IUriLauncher uriLauncher;
     public bool TrayAvailable { get; set; }
     public Action<bool>? ResidentModeChanged { get; set; }
     public Func<Task>? ExitRequestedAsync { get; set; }
@@ -61,13 +68,15 @@ public partial class MainWindow : Window
     public MainWindow((MainViewModel ViewModel, IProviderUiService Provider) parts) : this(parts.ViewModel, parts.Provider) { }
     public MainWindow(MainViewModel viewModel) : this(viewModel, new UiProviderFacade(), null) { }
     public MainWindow(MainViewModel viewModel, IProviderUiService providerService) : this(viewModel, providerService, null, null) { }
-    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService) : this(viewModel, providerService, clipboardService, null) { }
-    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination)
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService) : this(viewModel, providerService, clipboardService, null, null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination) : this(viewModel, providerService, clipboardService, exportDestination, null) { }
+    public MainWindow(MainViewModel viewModel, IProviderUiService providerService, IClipboardService? clipboardService, IHistoryExportDestination? exportDestination, IUriLauncher? uriLauncher)
     {
         ViewModel = viewModel;
         this.providerService = providerService;
         this.clipboardService = clipboardService;
         this.exportDestination = exportDestination ?? new AvaloniaHistoryExportDestination(this);
+        this.uriLauncher = uriLauncher ?? new AvaloniaUriLauncher(uri => Launcher.LaunchUriAsync(uri));
         InitializeComponent();
         DataContext = ViewModel;
         if (providerService is UiProviderFacade facade)
@@ -141,6 +150,7 @@ public partial class MainWindow : Window
             effectiveResidentMode = persistedResidentMode;
             this.FindControl<CheckBox>("ResidentModeBox")!.IsChecked = persistedResidentMode;
             this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
+            this.FindControl<TextBox>("GithubOrganizationBox")!.Text = ViewModel.Settings.GithubOrganization;
             accountFilter.SelectedIndex = 0;
             windowFilter.SelectedIndex = 0;
         }
@@ -210,6 +220,13 @@ public partial class MainWindow : Window
     {
         ViewModel.CloseProviderFlow();
         this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = null;
+    }
+    private void CopilotReauthenticateClick(object? sender, RoutedEventArgs e)
+    {
+        ViewModel.Navigate(AppPage.Dashboard);
+        ViewModel.OpenProviderFlow();
+        ViewModel.SelectProvider(ProviderConnectionChoice.Copilot);
+        this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(choice => choice.Choice == ProviderConnectionChoice.Copilot);
     }
     private void ProviderSelected(object? sender, SelectionChangedEventArgs e)
     {
@@ -310,7 +327,7 @@ public partial class MainWindow : Window
                 effectiveResidentMode = requested && TrayAvailable;
                 ResidentModeChanged?.Invoke(effectiveResidentMode);
                 if (requested && !TrayAvailable)
-                    ViewModel.Notify(ViewModel.CopyText.TrayUnavailableTitle, ViewModel.CopyText.TrayUnavailable);
+                    ViewModel.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
                 break;
             }
         }
@@ -322,7 +339,7 @@ public partial class MainWindow : Window
             effectiveResidentMode = oldEffective;
             box.IsChecked = oldPersisted;
             ResidentModeChanged?.Invoke(oldEffective);
-            ViewModel.Notify(ViewModel.CopyText.RefreshError, ViewModel.CopyText.RefreshError);
+            ViewModel.NotifyLocalized(copy => (copy.ResidentMode, copy.ResidentSaveFailure));
         }
         finally
         {
@@ -340,6 +357,12 @@ public partial class MainWindow : Window
         {
             await RunTrackedAsync(async token => { await ViewModel.SetGithubClientIdAsync(clientId, token); if (providerService is UiProviderFacade facade) facade.UpdateGitHubClientId(clientId); });
         }
+        catch (OperationCanceledException) { }
+    }
+    private async void GithubOrganizationChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (isInitializing || sender is not TextBox box) return;
+        try { await RunTrackedAsync(token => ViewModel.SetGithubOrganizationAsync(box.Text ?? string.Empty, token)); }
         catch (OperationCanceledException) { }
     }
     private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.AccountFilter = choice.Value; }
@@ -400,16 +423,34 @@ public partial class MainWindow : Window
     private DeviceAuthorizationStart? githubAuthorization;
     private async void CopilotStartClick(object? sender, RoutedEventArgs e)
     {
+        if (ViewModel.IsCopilotFlowActive) return;
+        ViewModel.SetCopilotFlowActive(true);
         try
         {
             await RunTrackedAsync(async token =>
             {
                 var result = await providerService.StartGitHubDeviceFlowAsync(token);
-                if (result.IsSuccess && result.Value is { } auth) { githubAuthorization = auth; ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started); }
-                else ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotUiState.Failed);
+                if (!result.IsSuccess || result.Value is not { } auth)
+                {
+                    ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, CopilotStateFor(result.Status, result.Error), result.Error);
+                    return;
+                }
+
+                githubAuthorization = auth;
+                ViewModel.SetCopilotDeviceResult(auth.VerificationUri.ToString(), auth.UserCode, CopilotUiState.Started);
+                await uriLauncher.LaunchUriAsync(auth.VerificationUri);
+                await PollCopilotAsync(auth, token);
             });
         }
         catch (OperationCanceledException) { }
+        finally { ViewModel.SetCopilotFlowActive(false); }
+    }
+    private async Task PollCopilotAsync(DeviceAuthorizationStart auth, CancellationToken token)
+    {
+        var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
+        ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.Success ? CopilotUiState.Completed : CopilotStateFor(result.Status, result.Error), result.Error);
+        ViewModel.SetCopilotCredentialAvailability(providerService is UiProviderFacade facade ? facade.CredentialAvailability : CredentialStoreAvailability.Unavailable, result.Success);
+        if (result.Success) await ViewModel.RefreshAsync(token);
     }
     private async void CopilotProbeClick(object? sender, RoutedEventArgs e)
     {
@@ -421,20 +462,29 @@ public partial class MainWindow : Window
     }
     private async void CopilotPollClick(object? sender, RoutedEventArgs e)
     {
-        if (githubAuthorization is not { } auth) return;
+        if (ViewModel.IsCopilotFlowActive || githubAuthorization is not { } auth) return;
+        ViewModel.SetCopilotFlowActive(true);
         try
         {
-            await RunTrackedAsync(async token =>
-            {
-                var result = await providerService.PollGitHubDeviceFlowAsync(auth, token);
-                ViewModel.SetCopilotDeviceResult(string.Empty, string.Empty, result.IsSuccess ? CopilotUiState.Completed : CopilotUiState.Failed);
-            });
+            await RunTrackedAsync(token => PollCopilotAsync(auth, token));
         }
         catch (OperationCanceledException) { }
+        finally { ViewModel.SetCopilotFlowActive(false); }
     }
-    private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = Launcher.LaunchUriAsync(auth.VerificationUri); }
+    private static CopilotUiState CopilotStateFor(FetchStatus status, string? error)
+    {
+        var message = error ?? string.Empty;
+        if (message.Contains("device_flow_disabled", StringComparison.OrdinalIgnoreCase) || message.Contains("device flow is disabled", StringComparison.OrdinalIgnoreCase) || message.Contains("device authorization is disabled", StringComparison.OrdinalIgnoreCase)) return CopilotUiState.DeviceFlowDisabled;
+        if (message.Contains("not configured", StringComparison.OrdinalIgnoreCase) || message.Contains("incorrect_client_credentials", StringComparison.OrdinalIgnoreCase) || message.Contains("client credentials", StringComparison.OrdinalIgnoreCase) || message.Contains("incorrect credentials", StringComparison.OrdinalIgnoreCase)) return CopilotUiState.ConfigurationError;
+        if (status == FetchStatus.Unsupported) return CopilotUiState.Unsupported;
+        if (status == FetchStatus.Unauthorized) return CopilotUiState.Denied;
+        if (error?.Contains("expired", StringComparison.OrdinalIgnoreCase) == true) return CopilotUiState.Expired;
+        if (error?.Contains("pending", StringComparison.OrdinalIgnoreCase) == true) return CopilotUiState.Pending;
+        return CopilotUiState.Failed;
+    }
+    private void CopilotOpenClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) _ = uriLauncher.LaunchUriAsync(auth.VerificationUri); }
     private void CopilotCopyClick(object? sender, RoutedEventArgs e) { if (githubAuthorization is { } auth) TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(auth.UserCode); }
-    private void OpenChatGptClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.ChatGpt));
+    private void OpenChatGptClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.ChatGpt));
     private async void CodexStartClick(object? sender, RoutedEventArgs e)
     {
         try
@@ -487,12 +537,12 @@ public partial class MainWindow : Window
     private async Task OpenCodexBrowserAsync()
     {
         if (ViewModel.CodexVerificationUri is not { } uri) return;
-        try { ViewModel.SetCodexBrowserStatus(await Launcher.LaunchUriAsync(uri)); }
+        try { ViewModel.SetCodexBrowserStatus(await uriLauncher.LaunchUriAsync(uri)); }
         catch (OperationCanceledException) { throw; }
         catch { ViewModel.SetCodexBrowserStatus(false); }
     }
-    private void OpenClaudeClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Claude));
-    private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = Launcher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
+    private void OpenClaudeClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.Claude));
+    private void OpenCopilotClick(object? sender, RoutedEventArgs e) => _ = uriLauncher.LaunchUriAsync(new Uri(OfficialUsageUrls.Copilot));
     private async void DeleteHistoryClick(object? sender, RoutedEventArgs e)
     {
         try
@@ -504,7 +554,7 @@ public partial class MainWindow : Window
                     if (sender is Button { Tag: Guid id }) await ViewModel.History.DeleteAsync(id, token);
                 }
                 catch (OperationCanceledException) { throw; }
-                catch { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteFailure); }
+                catch { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteFailure)); }
             });
         }
         catch (OperationCanceledException) { }
@@ -517,7 +567,7 @@ public partial class MainWindow : Window
             {
                 try { await ViewModel.History.DeleteAllAsync(token); }
                 catch (OperationCanceledException) { throw; }
-                catch { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, ViewModel.CopyText.HistoryDeleteAllFailure); }
+                catch { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteAllFailure)); }
             });
         }
         catch (OperationCanceledException) { }
@@ -545,7 +595,7 @@ public partial class MainWindow : Window
             });
         }
         catch (OperationCanceledException) { }
-        catch (Exception exception) { ViewModel.Notify(ViewModel.CopyText.HistoryNotificationTitle, exception.Message); }
+        catch (Exception) { ViewModel.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryExportFailure)); }
     }
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {

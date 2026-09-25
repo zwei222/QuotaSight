@@ -19,12 +19,13 @@ public sealed class PresentationTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 5, 12, 0, 0, TimeSpan.FromHours(9));
 
-    [Fact] public void Percent_clamps_visual_value_but_preserves_overage() { var s = DemoData.Create(Now)[2].Windows[0]; Assert.Equal(100d, s.VisualPercent); Assert.Contains("over", s.StatusText, StringComparison.OrdinalIgnoreCase); }
+    [Fact] public void Percent_clamps_visual_value_but_preserves_overage() { var s = DemoData.Create(Now).SelectMany(card => card.Windows).Single(row => row.IsOverLimit); Assert.Equal(100d, s.VisualPercent); Assert.Contains("over", s.StatusText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Remaining_percent_is_explicit() { Assert.Contains("remaining", DemoData.Create(Now)[0].Windows[0].PercentText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Relative_reset_uses_local_wording() { Assert.Contains("in", DemoData.Create(Now)[0].Windows[0].ResetText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Manual_snapshot_is_badged_manual() { Assert.Equal("Manual", DemoData.Create(Now)[0].Windows[0].SourceBadge); }
     [Fact] public void Stale_snapshot_is_badged_stale() { Assert.Contains(DemoData.Create(Now), c => c.Windows.Any(w => w.IsStale)); }
     [Fact] public void Four_demo_accounts_are_present() { Assert.Equal(4, DemoData.Create(Now).Count); }
+    [Fact] public void Demo_card_windows_put_the_shortest_actual_period_first_even_when_monthly_is_created_first() { Assert.All(DemoData.Create(Now), card => Assert.Equal(QuotaWindowKind.Daily, card.Windows[0].WindowKind)); }
     [Fact] public void Language_switch_has_two_supported_languages() { Assert.Equal(["English", "日本語"], UiSettings.SupportedLanguages); }
     [Fact] public void Refresh_interval_validation_rejects_short_values() { Assert.False(UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(4))); }
     [Fact] public void Refresh_interval_validation_rejects_long_values() { Assert.False(UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(16))); }

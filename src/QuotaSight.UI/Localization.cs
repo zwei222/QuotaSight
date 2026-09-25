@@ -21,9 +21,9 @@ public sealed class UiCopy
     public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
     public string Subtitle => IsJapanese ? "次回のリセットまでの利用状況を確認できます。" : "A calm view of what is left before your next reset.";
     public string EmptyTitle => IsJapanese ? "利用枠データがありません" : "No quota data yet";
-    public string EmptyDescription => IsJapanese ? "プロバイダーを接続するか、手動の利用枠を追加してください。" : "Connect a provider or add a manual quota to get started.";
+    public string EmptyDescription => IsJapanese ? "プロバイダーを接続するか、利用枠を手動で追加してください。" : "Connect a provider or add a manual quota to get started.";
     public string LocalFirst => "LOCAL-FIRST";
-    public string NoSecretsLeave => IsJapanese ? "秘密情報はこのアプリの外へ出ません" : "No secrets leave this app";
+    public string NoSecretsLeave => IsJapanese ? "テレメトリーは送信しません。認証情報は連携先への認証に使用します。" : "No telemetry is sent. Credentials are used to authenticate with providers.";
     public string DemoBanner => IsJapanese ? "デモモード · サンプル値のみ" : "DEMO MODE · Sample values only";
     public string ConnectManage => IsJapanese ? "プロバイダーを接続・管理" : "Connect or manage providers";
     public string ManualDescription => IsJapanese ? "ChatGPT Plus と Claude Pro の利用枠を手動で入力できます。公式の利用状況ページもブラウザーで開けます。" : "Manual form for ChatGPT Plus and Claude Pro; official usage links open in your browser.";
@@ -37,9 +37,12 @@ public sealed class UiCopy
     public string AddAccount => IsJapanese ? "アカウントを追加" : "Add account";
     public string OpenCodeDescription => IsJapanese ? "APIキーは安全な資格情報ストアを利用できる場合は保存し、利用できない場合はセッション中のみ保持します。キーは表示・記録しません。" : "API key is stored in the secure credential store when available; otherwise it is kept for this session only. It is never displayed or logged.";
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
-    public string CopilotDescription => IsJapanese ? "Copilotはghの状態確認またはデバイス認証を使用します。デバイス認証には実行時に設定したGitHub App Client IDが必要ですが、クライアントシークレットは不要です。ghの状態確認にはClient IDは不要です。組織の利用枠を取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub App Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotDescription => IsJapanese ? "Copilotはghの状態確認またはデバイス認証を使用します。デバイス認証には実行時に設定したGitHub App Client IDが必要ですが、クライアントシークレットは不要です。ghの状態確認にはClient IDは不要です。組織の利用状況を取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub App Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotReauthenticate => IsJapanese ? "再認証をお試しください" : "Try re-authenticating";
+    public string CopilotSessionOnlyStorage => IsJapanese ? "認証情報はこのセッション中のみ保持されます。アプリを再起動すると、再認証が必要です。" : "Your sign-in is kept for this session only. You’ll need to authenticate again after restarting the app.";
+    public string CopilotFlowWaiting => IsJapanese ? "認証中です。ブラウザーでコードを入力してください。" : "Authentication is in progress. Waiting for you to enter the code in your browser.";
     public string CodexBadge => IsJapanese ? "実験的" : "Experimental";
-    public string CodexDescription => IsJapanese ? "OpenAI Codexの実験的な連携です。ChatGPT Plus/ProのCodex枠だけを取得します。Codex CLIは不要で、QuotaSightがブラウザーでデバイス認証を開始します。ブラウザーを開けない場合は、表示されたURLとコードで手動で続行できます。" : "Experimental OpenAI Codex integration for the ChatGPT Plus/Pro Codex allowance only. No Codex CLI installation is required; QuotaSight starts the device login in your browser. If the browser cannot open, continue manually with the displayed URL and code.";
+    public string CodexDescription => IsJapanese ? "OpenAI Codexとの実験的な連携です。ChatGPT Plus/ProのCodex利用枠のみ取得します。Codex CLIは不要です。QuotaSightがブラウザーでデバイス認証を開始します。ブラウザーが開かない場合は、表示されたURLを開いてコードを入力してください。" : "Experimental OpenAI Codex integration for the ChatGPT Plus/Pro Codex allowance only. No Codex CLI installation is required; QuotaSight starts the device login in your browser. If the browser cannot open, continue manually with the displayed URL and code.";
     public string CodexExpires => IsJapanese ? "期限" : "Expires";
     public string CodexConnect => IsJapanese ? "ChatGPTに接続" : "Connect to ChatGPT";
     public string CodexConfirm => IsJapanese ? "認証状態を確認" : "Confirm connection";
@@ -54,9 +57,9 @@ public sealed class UiCopy
     public string Poll => IsJapanese ? "認証状態を確認" : "Poll";
     public string ProbeGh => IsJapanese ? "ghの状態を確認" : "Probe gh status";
     public string OpenOfficialUsage => IsJapanese ? "公式の利用状況を開く" : "Open official usage";
-    public string HistoryDescription => IsJapanese ? "ローカルに保存した30日分の利用状況。エクスポートには安全な表示項目のみ含まれます。" : "30 days of local snapshots. Export contains UI-safe fields only.";
-    public string ExportCsv => "Export CSV";
-    public string ExportJson => "Export JSON";
+    public string HistoryDescription => IsJapanese ? "利用状況の記録を30日分、端末内に保存します。エクスポートには表示用の情報のみ含まれます。" : "30 days of local snapshots. Export contains UI-safe fields only.";
+    public string ExportCsv => IsJapanese ? "CSVをエクスポート" : "Export CSV";
+    public string ExportJson => IsJapanese ? "JSONをエクスポート" : "Export JSON";
     public string DeleteAll => IsJapanese ? "すべて削除" : "Delete all";
     public string UsageTrend => IsJapanese ? "使用状況の推移" : "Usage trend";
     public string HistoryPrevious => IsJapanese ? "前へ" : "Previous";
@@ -65,8 +68,10 @@ public sealed class UiCopy
     public string HistoryNotificationTitle => History;
     public string HistoryDeleteFailure => IsJapanese ? "この履歴を削除できませんでした。" : "Unable to delete this history entry.";
     public string HistoryDeleteAllFailure => IsJapanese ? "履歴を削除できませんでした。" : "Unable to delete history.";
+    public string HistoryExportFailure => IsJapanese ? "履歴をエクスポートできませんでした。" : "Unable to export history.";
+    public string ResidentSaveFailure => IsJapanese ? "常駐モードの設定を保存できませんでした。変更は保存されていません。" : "Unable to save the resident mode setting. Your change was not saved.";
     public string HistoryCorrupt => IsJapanese ? "履歴データが破損しています。読み込める項目を表示しています。" : "History data is damaged; showing available entries.";
-    public string TrayUnavailableTitle => IsJapanese ? "トレイ" : "Tray unavailable";
+    public string TrayUnavailableTitle => IsJapanese ? "トレイを利用できません" : "Tray unavailable";
     public string TrayUnavailable => IsJapanese ? "トレイを利用できません。アプリ内で操作してください。" : "Tray unavailable. Use the app window instead.";
     public string ProviderName(ProviderKind provider) => provider switch
     {
@@ -83,7 +88,14 @@ public sealed class UiCopy
         var joined = IsJapanese ? string.Join("、", names) : names.Count switch { 0 => string.Empty, 1 => names[0], _ => string.Join(", ", names[..^1]) + " and " + names[^1] };
         return IsJapanese ? $"今回は{joined}のデータを取得できませんでした。接続状態を確認してください。" : $"{joined} data could not be retrieved this time. Check the connection.";
     }
-    public string QuotaThresholdTitle(ProviderKind provider) => IsJapanese ? $"{provider switch { ProviderKind.ChatGpt => "ChatGPT", ProviderKind.OpenCode => "OpenCode Go", ProviderKind.Claude => "Claude", ProviderKind.Copilot => "GitHub Copilot", _ => provider.ToString() }}の利用枠のしきい値" : $"{provider} quota threshold";
+    public string RefreshNoData(IEnumerable<ProviderKind> providers, IReadOnlySet<ProviderKind> providersWithPreviousValue)
+    {
+        var messages = providers.Distinct().Select(provider => providersWithPreviousValue.Contains(provider)
+            ? (IsJapanese ? $"{RefreshProviderName(provider)}は現在の期間のデータがありません。前回正常に取得した値を表示しています。" : $"{RefreshProviderName(provider)}: no data for the current period. Showing the last successful value.")
+            : (IsJapanese ? $"{RefreshProviderName(provider)}は現在の期間のデータがありません。" : $"{RefreshProviderName(provider)}: no data for the current period.")).ToList();
+        return string.Join(" ", messages);
+    }
+    public string QuotaThresholdTitle(ProviderKind provider) => IsJapanese ? $"{provider switch { ProviderKind.ChatGpt => "ChatGPT", ProviderKind.OpenCode => "OpenCode Go", ProviderKind.Claude => "Claude", ProviderKind.Copilot => "GitHub Copilot", _ => provider.ToString() }}の利用率がしきい値に達しました" : $"{provider} quota threshold";
     public string QuotaThresholdReason(decimal percent) => IsJapanese ? $"使用率 {percent:0.#}%" : $"{percent:0.#}% used";
     public string Appearance => IsJapanese ? "表示" : "Appearance";
     public string Theme => IsJapanese ? "テーマ" : "Theme";
@@ -94,18 +106,31 @@ public sealed class UiCopy
     public string RefreshAlerts => IsJapanese ? "更新と通知" : "Refresh and alerts";
     public string RefreshInterval => IsJapanese ? "更新間隔（5〜15分）" : "Refresh interval (5–15 minutes)";
     public string EnableNotifications => IsJapanese ? "通知を有効にする" : "Enable notifications";
+    public string NotificationDeliveryDescription => OperatingSystem.IsWindows()
+        ? (IsJapanese
+            ? "しきい値に達するとWindowsの通知を試み、アプリ内バナーも表示します。通知はOSの設定などで表示されない場合があります。ウィンドウを閉じている間はバナーを確認できません。"
+            : "At the threshold, QuotaSight tries a Windows system notification and also shows an in-app banner. The OS may suppress notifications; banners cannot be seen while the window is closed.")
+        : OperatingSystem.IsLinux()
+            ? (IsJapanese
+                ? "Linuxでは、アプリの実行中にしきい値へ達するとデスクトップ通知を試み、アプリ内にも表示します。OSの設定や集中モードでデスクトップ通知が表示されない場合があります。"
+                : "On Linux, QuotaSight tries a desktop notification at the threshold while running and also shows an in-app banner. OS settings or Focus may suppress the desktop notification.")
+            : (IsJapanese
+                ? "しきい値に達すると、アプリの実行中にアプリ内で表示します。ウィンドウが非表示の間は確認できません。"
+                : "Threshold alerts appear in-app while QuotaSight is running; they cannot be seen while the window is hidden.");
     public string ResidentMode => IsJapanese ? "常駐モードを有効にする" : "Enable resident mode";
     public string ResidentModeDescription => IsJapanese ? "対応環境ではアイコンをクリックして利用枠をすばやく確認できます。ウィンドウを閉じてもトレイに残ります。" : "On supported platforms, click the icon for a quick quota check; closing the window keeps QuotaSight in the tray.";
-    public string OpenFullWindow => IsJapanese ? "正式なウィンドウを開く" : "Open full window";
+    public string OpenFullWindow => IsJapanese ? "メインウィンドウを開く" : "Open full window";
     public string TrayUpdate => IsJapanese ? "更新" : "Refresh";
     public string TrayExit => IsJapanese ? "終了" : "Exit";
     public string CompactTitle => IsJapanese ? "利用枠の確認" : "Quota check";
     public string CompactSubtitle => IsJapanese ? "次のリセットまでの概要" : "A quick view before the next reset";
     public string CompactProviders => IsJapanese ? "プロバイダー" : "Quota providers";
     public string OverallThreshold => IsJapanese ? "通知する使用率（%）" : "Overall threshold (%)";
-    public string ProviderOverrides => IsJapanese ? "プロバイダーごとにしきい値を設定できます。" : "Provider overrides can be configured per account.";
+    public string ProviderOverrides => IsJapanese ? "通知しきい値は使用率を計算できる利用枠に適用されます。CopilotのAIクレジット総量には個人別の上限がないため、対象外です。" : "The threshold applies to percentage-based quotas. Copilot Gross AI credits have no personal limit and are excluded.";
     public string Integrations => IsJapanese ? "連携" : "Integrations";
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
+    public string GithubOrganization => IsJapanese ? "GitHub Organization slug（組織名のURL用表記・秘密情報ではありません）" : "GitHub organization slug (not a secret)";
+    public string GithubOrganizationHint => IsJapanese ? "入力内容は変更時に自動保存されます。保存後はダッシュボードで更新してください。例: acme-engineering" : "Changes are auto-saved. After saving, refresh the dashboard. Example: acme-engineering";
     public string Autostart => IsJapanese ? "自動起動: 現在利用できません（プラットフォーム機能が未導入）" : "Autostart: Unsupported · platform backend not installed";
     public string AccountWatermark => IsJapanese ? "個人" : "Personal";
     public string UsedPercentWatermark => IsJapanese ? "0以上" : "0 or more";
@@ -135,7 +160,7 @@ public sealed class UiCopy
             _ => "Codexの状態を確認できません。"
         }
     } : string.Empty;
-    public string OpenCodeStatus(ProviderConnectionResult result) => IsJapanese ? result.Success ? "OpenCode Goに接続しました。資格情報は安全に保存しました。" : result.Status switch
+    public string OpenCodeStatus(ProviderConnectionResult result) => IsJapanese ? result.Success ? "OpenCode Goに接続しました。資格情報は安全なストアを利用できる場合は保存し、それ以外はこのセッション中のみ保持します。" : result.Status switch
     {
         FetchStatus.Unauthorized => "OpenCode GoのAPIキーが拒否されました（401）。",
         FetchStatus.Forbidden => "OpenCode Goへのアクセスが拒否されました（403）。",
@@ -143,20 +168,35 @@ public sealed class UiCopy
         FetchStatus.RateLimited => "OpenCode Goで一時的な利用制限が発生しています（429）。",
         _ => "OpenCode Goからの応答を処理できませんでした。"
     } : result.Message;
+    public string CopilotQuotaNotice => IsJapanese
+        ? "権限を持つ組織管理者はBilling Usage API（/organizations/{org}/settings/billing/ai_credit/usage）から使用量の詳細を取得できます。表示する数値は請求主体で共有される総量の内訳（含まれる分・追加分）であり、個人の利用枠や残量、割合ゲージではありません。設定または権限が不足する場合は公式画面または手動入力を利用してください。反映には遅延があります。"
+        : "An organization administrator with the required access can retrieve usage details from the Billing Usage API (/organizations/{org}/settings/billing/ai_credit/usage). The figures show the shared billing-entity Gross composition (Included and Additional), not a personal quota, remaining balance, or percentage gauge. If configuration or permissions are insufficient, use the official page or manual entry; GitHub may report usage with delay.";
     public string CopilotStatus(CopilotUiState state) => IsJapanese ? state switch
     {
         CopilotUiState.Idle => "Copilotの認証はまだ開始されていません。",
-        CopilotUiState.Started => "Copilotの認証を開始しました。",
-        CopilotUiState.Completed => "Copilotの認証が完了しました。",
-        CopilotUiState.Failed => "Copilotの認証に失敗しました。",
+        CopilotUiState.Started => "認証を開始しました。ブラウザーでコードを入力するまで待っています。入力後は自動で確認します。",
+        CopilotUiState.Pending => "認証を待っています。ブラウザーでコードを入力してください。",
+        CopilotUiState.Completed => "GitHubの認証が完了しました。",
+        CopilotUiState.Denied => "GitHubの認証が拒否されました。",
+        CopilotUiState.Expired => "GitHubのデバイス認証コードの期限が切れました。もう一度開始してください。",
+        CopilotUiState.ConfigurationError => "GitHub App Client IDが設定されていません。設定を確認してください。",
+        CopilotUiState.DeviceFlowDisabled => "GitHubのデバイス認証は無効になっています。別の認証方法または公式ページを利用してください。",
+        CopilotUiState.Unsupported => "このCopilot連携は非対応です。公式ページまたは手動入力を利用してください。",
+        CopilotUiState.Failed => "GitHubの認証を完了できませんでした。詳細を確認して再試行してください。",
         CopilotUiState.GhProbe => "Copilotのgh状態を確認しました。",
         _ => "Copilotの状態を確認できません。"
     } : state switch
     {
         CopilotUiState.Idle => "Copilot authentication has not started yet.",
-        CopilotUiState.Started => "Copilot device flow started.",
+        CopilotUiState.Started => "Device authentication started. Waiting for you to enter the code in your browser; checking continues automatically afterward.",
+        CopilotUiState.Pending => "Waiting for GitHub authorization. Enter the code in your browser.",
         CopilotUiState.Completed => "GitHub authorization completed.",
-        CopilotUiState.Failed => "GitHub authorization failed.",
+        CopilotUiState.Denied => "GitHub authorization was denied.",
+        CopilotUiState.Expired => "The GitHub device code expired. Start again to request a new code.",
+        CopilotUiState.ConfigurationError => "GitHub App Client ID is not configured. Check Settings.",
+        CopilotUiState.DeviceFlowDisabled => "GitHub device flow is disabled. Use another sign-in method or the official page.",
+        CopilotUiState.Unsupported => "This Copilot integration is unsupported. Use the official page or manual entry.",
+        CopilotUiState.Failed => "GitHub authorization could not be completed. Review the details and try again.",
         CopilotUiState.GhProbe => "Copilot gh status checked.",
         _ => "Copilot status unavailable."
     };
@@ -174,10 +214,16 @@ public sealed class UiCopy
         };
         var detail = failure.Status switch
         {
+            FetchStatus.ConfigurationError when failure.Provider == ProviderKind.Copilot => IsJapanese ? "設定画面でGitHub Organizationを設定してください。" : "Set the GitHub Organization in Settings.",
+            FetchStatus.Unauthorized when failure.Provider == ProviderKind.Copilot => IsJapanese ? "GitHub認証が必要です。" : "GitHub authentication is required.",
+            FetchStatus.Forbidden when failure.Provider == ProviderKind.Copilot => IsJapanese ? "Billing権限が不足しています。AppのAdministration: Read-only、対象Organizationへのインストール/承認、認証ユーザーのOrganization管理権限を確認してください。" : "GitHub Billing permission is insufficient. Check the App's Administration: Read-only permission, installation and approval for the target Organization, and the authenticated user's Organization management permission.",
+            FetchStatus.RateLimited when failure.Provider == ProviderKind.Copilot => IsJapanese ? "GitHub Copilotのレート制限です。" : "GitHub Copilot is rate-limited.",
+            FetchStatus.ConfigurationError => IsJapanese ? "設定を確認してください。" : "Check the provider configuration.",
             FetchStatus.Unauthorized => IsJapanese ? "再接続が必要です。手動入力または公式ページを利用してください。" : "Reconnect is required. Use manual input or the official page.",
-            FetchStatus.Forbidden => IsJapanese ? "権限が不足しています。権限を確認してください。" : "Permission is insufficient. Check the account permissions.",
+            FetchStatus.Forbidden => IsJapanese ? "権限が不足しています。" : "Permission is insufficient.",
             FetchStatus.RateLimited => IsJapanese ? "一時的なレート制限です。" : "Temporary rate limit.",
             FetchStatus.TransientFailure => IsJapanese ? "一時的な取得失敗です。" : "Temporary fetch failure.",
+            FetchStatus.Unsupported when failure.Provider == ProviderKind.Copilot => IsJapanese ? "Billing Usageを取得できません。Organization名、アクセス権、対象の対応状況を確認してください。" : "Unable to retrieve Billing Usage. Check the organization name, access permissions, and whether the target is supported.",
             FetchStatus.Unsupported => IsJapanese ? "この連携は対応していません。手動入力または公式ページを利用してください。" : "This integration is unsupported. Use manual input or the official page.",
             _ => IsJapanese ? "取得できませんでした。" : "Could not fetch quota data."
         };

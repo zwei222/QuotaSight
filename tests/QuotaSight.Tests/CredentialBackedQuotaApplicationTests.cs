@@ -170,6 +170,100 @@ public sealed class CredentialBackedQuotaApplicationTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => application.RefreshAsync(cancellation.Token).AsTask());
     }
 
+    [Fact]
+    public async Task Refresh_adds_copilot_without_allowing_its_failure_to_hide_other_providers()
+    {
+        var credentials = new InMemoryCredentialStore();
+        await credentials.SetAsync("OpenCode Go", "open-code-key", default);
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(OpenCodeSnapshot()),
+            credentials,
+            copilotAdapter: new FixedProviderAdapter(ProviderKind.Copilot, new(FetchStatus.Forbidden)));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Single(result.Snapshots);
+        Assert.Equal(ProviderKind.OpenCode, result.Snapshots[0].Provider);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal(ProviderKind.Copilot, failure.Provider);
+        Assert.Equal(FetchStatus.Forbidden, failure.Status);
+    }
+
+    [Fact]
+    public async Task Refresh_preserves_copilot_no_data_as_provider_metadata()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new FixedProviderAdapter(ProviderKind.Copilot, new(FetchStatus.NoData)));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Empty(result.Snapshots);
+        Assert.Empty(result.Failures);
+        Assert.Contains(ProviderKind.Copilot, result.NoDataProviders);
+    }
+
+    [Fact]
+    public async Task Refresh_propagates_copilot_active_account_when_billing_returns_no_data()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.NoData), "org-b/user-b"));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Equal("org-b/user-b", result.ActiveAccounts[ProviderKind.Copilot]);
+        Assert.Contains(ProviderKind.Copilot, result.NoDataProviders);
+    }
+
+    [Fact]
+    public async Task Refresh_propagates_copilot_active_account_when_billing_is_forbidden()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.Forbidden), "org-b/user-b"));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Equal("org-b/user-b", result.ActiveAccounts[ProviderKind.Copilot]);
+        Assert.Equal(FetchStatus.Forbidden, Assert.Single(result.Failures).Status);
+    }
+
+    [Fact]
+    public async Task Refresh_propagates_copilot_configuration_error_as_failure()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.ConfigurationError), "org-b/user-b"));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Equal(FetchStatus.ConfigurationError, Assert.Single(result.Failures).Status);
+        Assert.Empty(result.NoDataProviders);
+    }
+
+    [Fact]
+    public async Task Refresh_propagates_copilot_active_account_when_billing_succeeds()
+    {
+        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "org-b/user-b", "credits",
+            new(QuotaWindowKind.Monthly, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1)),
+            1, 10, null, "credits", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official,
+            QuotaConfidence.Official, null);
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(FetchResult<IReadOnlyList<QuotaSnapshot>>.Success([snapshot]), "org-b/user-b"));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Equal("org-b/user-b", result.ActiveAccounts[ProviderKind.Copilot]);
+        Assert.Equal("org-b/user-b", Assert.Single(result.Snapshots).Account);
+    }
+
     private static CodexSessionManager CreateCodex(InMemoryCredentialStore credentials, HttpStatusCode status = HttpStatusCode.OK, Action? onRequest = null)
     {
         var responseFactory = status == HttpStatusCode.OK
@@ -209,6 +303,19 @@ public sealed class CredentialBackedQuotaApplicationTests
     {
         public ProviderKind Provider => ProviderKind.OpenCode;
         public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(FetchResult<IReadOnlyList<QuotaSnapshot>>.Success(snapshots));
+    }
+
+    private sealed class FixedProviderAdapter(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result) : IQuotaAdapter
+    {
+        public ProviderKind Provider => provider;
+        public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(result);
+    }
+
+    private sealed class ActiveAccountAdapter(FetchResult<IReadOnlyList<QuotaSnapshot>> result, string activeAccount) : IActiveAccountQuotaAdapter
+    {
+        public ProviderKind Provider => ProviderKind.Copilot;
+        public ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(new ActiveAccountFetchResult(result, activeAccount));
+        public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(result);
     }
 
     private sealed class BlockingHandler : HttpMessageHandler

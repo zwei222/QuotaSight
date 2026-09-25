@@ -237,7 +237,9 @@ public sealed class JsonlQuotaHistory : IQuotaHistory, IDisposable
         foreach (var snapshot in await ReadAllAsync(cancellationToken))
         {
             var safe = new ExportQuotaDto(snapshot.DisplayName, snapshot.Provider.ToString(), snapshot.Metric,
-                snapshot.EffectivePercent, snapshot.Unit, snapshot.Observed, snapshot.Source.ToString(), snapshot.Confidence.ToString());
+                snapshot.EffectivePercent, snapshot.Unit, snapshot.Observed, snapshot.Source.ToString(), snapshot.Confidence.ToString(),
+                snapshot.CopilotUsage?.GrossQuantity, snapshot.CopilotUsage?.DiscountQuantity, snapshot.CopilotUsage?.NetQuantity,
+                snapshot.Window.Start, snapshot.Window.End);
             await writer.WriteLineAsync(JsonSerializer.Serialize(safe, QuotaJsonContext.Default.ExportQuotaDto));
         }
     }
@@ -245,11 +247,15 @@ public sealed class JsonlQuotaHistory : IQuotaHistory, IDisposable
     public async ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken)
     {
         await using var writer = new StreamWriter(output, Encoding.UTF8, leaveOpen: true);
-        await writer.WriteLineAsync("displayName,provider,metric,percent,unit,observed,Source,Confidence");
+        await writer.WriteLineAsync("displayName,provider,metric,percent,unit,observed,Source,Confidence,grossQuantity,discountQuantity,netQuantity,periodStart,periodEnd");
         foreach (var snapshot in await ReadAllAsync(cancellationToken))
         {
             var values = new[] { snapshot.DisplayName, snapshot.Provider.ToString(), snapshot.Metric,
-                snapshot.EffectivePercent?.ToString(CultureInfo.InvariantCulture) ?? "", snapshot.Unit, snapshot.Observed.ToString("O", CultureInfo.InvariantCulture), snapshot.Source.ToString(), snapshot.Confidence.ToString() };
+                snapshot.EffectivePercent?.ToString(CultureInfo.InvariantCulture) ?? "", snapshot.Unit, snapshot.Observed.ToString("O", CultureInfo.InvariantCulture), snapshot.Source.ToString(), snapshot.Confidence.ToString(),
+                snapshot.CopilotUsage?.GrossQuantity?.ToString(CultureInfo.InvariantCulture) ?? "",
+                snapshot.CopilotUsage?.DiscountQuantity?.ToString(CultureInfo.InvariantCulture) ?? "",
+                snapshot.CopilotUsage?.NetQuantity?.ToString(CultureInfo.InvariantCulture) ?? "",
+                snapshot.Window.Start.ToString("O", CultureInfo.InvariantCulture), snapshot.Window.End.ToString("O", CultureInfo.InvariantCulture) };
             await writer.WriteLineAsync(string.Join(',', values.Select(EscapeCsv)));
         }
     }
@@ -272,5 +278,18 @@ public sealed class JsonlQuotaHistory : IQuotaHistory, IDisposable
         ? '"' + value.Replace("\"", "\"\"", StringComparison.Ordinal) + '"'
         : value;
 
-    internal sealed record ExportQuotaDto(string DisplayName, string Provider, string Metric, decimal? Percent, string Unit, DateTimeOffset Observed, [property: JsonPropertyName("source")] string Source, [property: JsonPropertyName("confidence")] string Confidence);
+    internal sealed record ExportQuotaDto(
+        string DisplayName,
+        string Provider,
+        string Metric,
+        decimal? Percent,
+        [property: JsonPropertyName("unit")] string Unit,
+        [property: JsonPropertyName("observed")] DateTimeOffset Observed,
+        [property: JsonPropertyName("source")] string Source,
+        [property: JsonPropertyName("confidence")] string Confidence,
+        [property: JsonPropertyName("grossQuantity")] decimal? GrossQuantity,
+        [property: JsonPropertyName("discountQuantity")] decimal? DiscountQuantity,
+        [property: JsonPropertyName("netQuantity")] decimal? NetQuantity,
+        [property: JsonPropertyName("periodStart")] DateTimeOffset PeriodStart,
+        [property: JsonPropertyName("periodEnd")] DateTimeOffset PeriodEnd);
 }

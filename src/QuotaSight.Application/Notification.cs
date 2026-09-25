@@ -28,28 +28,68 @@ public static class SecureCredentialStoreFactory
 
 public sealed class NotificationDeduplicator(INotificationSink sink)
 {
-    private readonly Dictionary<(NotificationKey Key, DateTimeOffset WindowStart), decimal> previous = [];
-    private readonly HashSet<(NotificationKey Key, DateTimeOffset WindowStart)> notified = [];
+    private static readonly TimeSpan FailedDeliveryRetryInterval = TimeSpan.FromMinutes(5);
+    private readonly Dictionary<NotificationKey, NotificationState> states = [];
 
-    public async ValueTask ConsiderAsync(QuotaSnapshot snapshot, decimal threshold, DateTimeOffset now, CancellationToken cancellationToken)
+    public async ValueTask ConsiderAsync(QuotaSnapshot snapshot, decimal threshold, DateTimeOffset now, CancellationToken cancellationToken, bool notificationsEnabled = true)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (snapshot.IsStale(now) || snapshot.EffectivePercent is not { } percent)
         {
             return;
         }
 
         var key = new NotificationKey(snapshot.Provider, snapshot.Account, snapshot.Metric, snapshot.Window.Kind, threshold);
-        var identity = (key, snapshot.Window.Start);
-        if (previous.TryGetValue(identity, out var oldPercent) && oldPercent < threshold && percent >= threshold)
+        var cycleBoundary = snapshot.Window.ResetAt ?? (snapshot.Window.End != default ? snapshot.Window.End : snapshot.Window.Start);
+        var newCycle = false;
+        if (!states.TryGetValue(key, out var state))
         {
-            notified.Remove(identity);
+            state = new NotificationState(cycleBoundary);
+            states.Add(key, state);
+        }
+        else if (cycleBoundary != state.CycleBoundary)
+        {
+            if (state.CycleBoundary <= now && cycleBoundary > state.CycleBoundary)
+            {
+                state.Delivered = false;
+                state.LastFailedAttempt = null;
+                newCycle = true;
+            }
+
+            state.CycleBoundary = cycleBoundary;
         }
 
-        if ((!previous.ContainsKey(identity) || previous[identity] < threshold) && percent >= threshold && notified.Add(identity))
+        if (state.PreviousPercent is { } oldPercent && oldPercent >= threshold && percent < threshold)
         {
-            await sink.NotifyAsync(snapshot, cancellationToken);
+            state.Delivered = false;
+            state.LastFailedAttempt = null;
         }
 
-        previous[identity] = percent;
+        var crossedThreshold = state.PreviousPercent is null || state.PreviousPercent < threshold;
+        var retryReady = state.LastFailedAttempt is not { } failedAt || now - failedAt >= FailedDeliveryRetryInterval;
+        if (notificationsEnabled && percent >= threshold && !state.Delivered && retryReady && (crossedThreshold || state.LastFailedAttempt is not null || newCycle))
+        {
+            var accepted = await sink.NotifyAsync(snapshot, cancellationToken);
+            if (accepted)
+            {
+                state.Delivered = true;
+                state.LastFailedAttempt = null;
+            }
+            else
+            {
+                state.LastFailedAttempt = now;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        state.PreviousPercent = percent;
+    }
+
+    private sealed class NotificationState(DateTimeOffset cycleBoundary)
+    {
+        public DateTimeOffset CycleBoundary { get; set; } = cycleBoundary;
+        public decimal? PreviousPercent { get; set; }
+        public bool Delivered { get; set; }
+        public DateTimeOffset? LastFailedAttempt { get; set; }
     }
 }
