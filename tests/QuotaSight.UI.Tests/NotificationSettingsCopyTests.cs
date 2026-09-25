@@ -23,7 +23,7 @@ public sealed class NotificationSettingsCopyTests
             Assert.Contains("Windows", english);
             Assert.Contains("バナー", japanese);
             Assert.Contains("banner", english, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("WindowsのOS通知を試み", japanese);
+            Assert.Contains("Windowsの通知を試み", japanese);
             Assert.Contains("Windows system notification", english, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("表示されない場合", japanese);
             Assert.Contains("suppress", english, StringComparison.OrdinalIgnoreCase);
