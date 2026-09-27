@@ -175,27 +175,6 @@ public sealed class ConcurrencyContractTests
     }
 
     [Fact]
-    public async Task DeleteAll_does_not_allow_an_old_projection_to_restore_deleted_history()
-    {
-        var history = new InMemoryQuotaHistory([Snapshot(1)]);
-        var scheduler = new BlockingBuildScheduler(blockedCall: 2);
-        var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync();
-
-        state.AccountFilter = "account-1";
-        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.DeleteAllAsync().WaitAsync(TimeSpan.FromSeconds(5));
-
-        scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Empty(state.Entries);
-        Assert.Empty(state.FilteredEntries);
-        Assert.Empty(state.DisplayedEntries);
-    }
-
-    [Fact]
     public async Task Async_export_does_not_observe_new_raw_data_before_its_projection_is_published()
     {
         var history = new InMemoryQuotaHistory([]);

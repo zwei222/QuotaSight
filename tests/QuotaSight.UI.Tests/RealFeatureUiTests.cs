@@ -58,14 +58,6 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
-    public async Task Refresh_failure_keeps_last_known_cards_and_marks_error()
-    {
-        var snapshot = Snapshot(40); var vm = new MainViewModel(new FixedDashboardSource(snapshot), quotaApplication: new StubApplication([]));
-        await vm.RefreshAsync();
-        Assert.Contains(vm.Cards, card => card.Account == "acct"); Assert.True(vm.IsError);
-    }
-
-    [Fact]
     public async Task New_alert_replaces_refresh_failure_banner()
     {
         var vm = new MainViewModel(new FixedDashboardSource(Snapshot(40)), quotaApplication: new StubApplication([]));
@@ -90,7 +82,9 @@ public sealed class RealFeatureTests
         clock.Advance(TimeSpan.FromHours(2));
         await vm.RefreshAsync();
 
-        var row = Assert.Single(Assert.Single(vm.Cards).Windows);
+        var card = Assert.Single(vm.Cards);
+        Assert.Equal("acct", card.Account);
+        var row = Assert.Single(card.Windows);
         Assert.True(row.IsStale);
         Assert.Contains("Stale", row.FreshnessText, StringComparison.Ordinal);
         Assert.True(vm.IsError);
