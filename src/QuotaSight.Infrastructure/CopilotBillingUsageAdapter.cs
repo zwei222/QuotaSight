@@ -52,11 +52,14 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
 
     public async ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken)
     {
-        var result = await FetchAsync(account, cancellationToken);
-        var activeAccount = GitHubOrganizationSlug.IsValid(organization) && !string.IsNullOrWhiteSpace(user) && !result.Status.Equals(FetchStatus.Unsupported)
-            ? $"{organization}/{user}"
-            : null;
-        return new(result, activeAccount);
+        if (!HasValidConfiguration()) return new(new(FetchStatus.ConfigurationError, Error: "GitHub organization or user configuration is invalid."));
+        var token = await credentials.GetAsync(TokenKey, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            var activeAccount = GitHubOrganizationSlug.IsValid(organization) && !string.IsNullOrWhiteSpace(user) ? $"{organization}/{user}" : null;
+            return new(new(FetchStatus.Unauthorized), activeAccount);
+        }
+        return await FetchWithAccountAndTokenAsync(account, token, cancellationToken);
     }
 
     public async ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken)
@@ -70,11 +73,20 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
 
     public async ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchWithTokenAsync(string account, string token, CancellationToken cancellationToken)
     {
-        if (!HasValidConfiguration()) return new(FetchStatus.ConfigurationError, Error: "GitHub organization or user configuration is invalid.");
-        if (string.IsNullOrWhiteSpace(token)) return new(FetchStatus.Unauthorized);
+        return (await FetchWithAccountAndTokenAsync(account, token, cancellationToken)).Result;
+    }
+
+    public async ValueTask<ActiveAccountFetchResult> FetchWithAccountAndTokenAsync(string account, string token, CancellationToken cancellationToken)
+    {
+        string? activeAccount = GitHubOrganizationSlug.IsValid(organization) && !string.IsNullOrWhiteSpace(user) ? $"{organization}/{user}" : null;
+        if (!HasValidConfiguration()) return new(new(FetchStatus.ConfigurationError, Error: "GitHub organization or user configuration is invalid."));
+        if (string.IsNullOrWhiteSpace(token)) return new(new(FetchStatus.Unauthorized), activeAccount);
         var now = clock.GetUtcNow();
         var year = now.Year;
         var month = now.Month;
+        var period = new CopilotRequestedPeriod(year, month, organization, user);
+        ActiveAccountFetchResult WithoutContext(FetchResult<IReadOnlyList<QuotaSnapshot>> result) => new(result, result.Status == FetchStatus.Unsupported ? null : activeAccount);
+        ActiveAccountFetchResult WithContext(FetchResult<IReadOnlyList<QuotaSnapshot>> result) => new(result, activeAccount, period);
         var uri = $"https://api.github.com/organizations/{Uri.EscapeDataString(organization)}/settings/billing/ai_credit/usage?year={year}&month={month}&user={Uri.EscapeDataString(user)}";
         try
         {
@@ -84,11 +96,11 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
             request.Headers.UserAgent.ParseAdd("QuotaSight");
             request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", ApiVersion);
             using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode) return MapStatus(response);
+            if (!response.IsSuccessStatusCode) return WithoutContext(MapStatus(response));
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             using var responseDocument = JsonDocument.Parse(responseBody);
             if (responseDocument.RootElement.TryGetProperty("timePeriod", out var responsePeriod) && responsePeriod.ValueKind == JsonValueKind.Object && responsePeriod.TryGetProperty("day", out _))
-                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage response did not match the requested monthly period.");
+                return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage response did not match the requested monthly period."));
             var payload = JsonSerializer.Deserialize(responseBody, CopilotBillingJsonContext.Default.CopilotUsageResponse);
             if (payload?.TimePeriod?.Year is not { } responseYear || responseYear != year ||
                 payload.TimePeriod.Month is { } responseMonth && responseMonth != month ||
@@ -96,19 +108,19 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
                 string.IsNullOrWhiteSpace(payload.Organization) || !string.Equals(payload.Organization, organization, StringComparison.OrdinalIgnoreCase) ||
                 payload.User is { } responseUser && !string.Equals(responseUser, user, StringComparison.OrdinalIgnoreCase) ||
                 payload.UsageItems is null)
-                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage response did not match the requested period, organization, or user.");
+                return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage response did not match the requested period, organization, or user."));
 
-            if (payload.UsageItems.Count == 0) return new(FetchStatus.NoData);
+            if (payload.UsageItems.Count == 0) return WithContext(new(FetchStatus.NoData));
             if (payload.UsageItems.Any(item => string.IsNullOrWhiteSpace(item.Product) || string.IsNullOrWhiteSpace(item.UnitType)))
-                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage contained an incomplete item.");
+                return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage contained an incomplete item."));
 
             var copilotItems = payload.UsageItems.Where(item => string.Equals(item.Product, "Copilot", StringComparison.OrdinalIgnoreCase)).ToArray();
             if (copilotItems.Any(item => !IsAiCreditsUnit(item.UnitType!)))
-                return new(FetchStatus.Unsupported);
+                return WithoutContext(new(FetchStatus.Unsupported));
             var target = copilotItems;
-            if (target.Length == 0) return new(FetchStatus.NoData);
+            if (target.Length == 0) return WithContext(new(FetchStatus.NoData));
             if (target.Any(item => item.GrossQuantity is null || item.DiscountQuantity is null || item.NetQuantity is null || item.GrossQuantity < 0 || item.DiscountQuantity < 0 || item.NetQuantity < 0))
-                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage quantities were invalid.");
+                return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage quantities were invalid."));
 
             decimal gross;
             decimal discount;
@@ -121,24 +133,24 @@ public sealed class CopilotBillingUsageAdapter : IActiveAccountQuotaAdapter
             }
             catch (OverflowException)
             {
-                return new(FetchStatus.TransientFailure, Error: "GitHub billing usage quantities exceeded the supported range.");
+                return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage quantities exceeded the supported range."));
             }
             var start = new DateTimeOffset(year, month, 1, 0, 0, 0, TimeSpan.Zero);
             var end = start.AddMonths(1);
             var snapshot = new QuotaSnapshot(ProviderKind.Copilot, $"{organization}/{user}", "AI credits", new(QuotaWindowKind.Monthly, start, end, ResetAt: end), gross, null, null, "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.Add(FreshnessTtl), "GitHub Copilot Business", new(gross, discount, net));
-            return FetchResult<IReadOnlyList<QuotaSnapshot>>.Success([snapshot]);
+            return WithContext(FetchResult<IReadOnlyList<QuotaSnapshot>>.Success([snapshot]));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new(FetchStatus.TransientFailure, Error: "GitHub billing usage request timed out.");
+            return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage request timed out."));
         }
         catch (HttpRequestException)
         {
-            return new(FetchStatus.TransientFailure, Error: "GitHub billing usage request failed.");
+            return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage request failed."));
         }
         catch (JsonException)
         {
-            return new(FetchStatus.TransientFailure, Error: "GitHub billing usage response was invalid.");
+            return WithoutContext(new(FetchStatus.TransientFailure, Error: "GitHub billing usage response was invalid."));
         }
     }
 

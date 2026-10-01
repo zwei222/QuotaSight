@@ -38,6 +38,13 @@ public sealed class UiCopy
     public string OpenCodeDescription => IsJapanese ? "APIキーは安全な資格情報ストアを利用できる場合は保存し、利用できない場合はセッション中のみ保持します。キーは表示・記録しません。" : "API key is stored in the secure credential store when available; otherwise it is kept for this session only. It is never displayed or logged.";
     public string TestConnection => IsJapanese ? "接続をテスト" : "Test connection";
     public string CopilotDescription => IsJapanese ? "Copilotはghの状態確認またはデバイス認証を使用します。デバイス認証には実行時に設定したGitHub App Client IDが必要ですが、クライアントシークレットは不要です。ghの状態確認にはClient IDは不要です。組織の利用状況を取得できない場合は手動入力を使えます。" : "Copilot uses gh status or device flow. Device flow requires a runtime-configured GitHub App Client ID, with no client secret. gh status does not require a Client ID. Organization quota may be unavailable, so manual fallback is supported.";
+    public string CopilotNoUsageDetails => IsJapanese ? "利用明細なし" : "No usage details";
+    public string CopilotNoUsageValue => IsJapanese ? "使用量不明" : "usage unavailable";
+    public string CopilotNoUsageState => IsJapanese ? "明細なし" : "No usage details";
+    public string CopilotNoDataDetails => IsJapanese ? "明細なし・使用量不明" : "No usage details · usage unavailable";
+    public string CopilotNoDataAutomation(string period) => $"{period} · {CopilotNoDataDetails}";
+    public string CopilotMonthPeriod(int year, int month) => IsJapanese ? $"{year}年{month}月 · UTC" : $"{new DateTime(year, month, 1).ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)} · UTC";
+
     public string CopilotReauthenticate => IsJapanese ? "再認証をお試しください" : "Try re-authenticating";
     public string CopilotSessionOnlyStorage => IsJapanese ? "認証情報はこのセッション中のみ保持されます。アプリを再起動すると、再認証が必要です。" : "Your sign-in is kept for this session only. You’ll need to authenticate again after restarting the app.";
     public string CopilotFlowWaiting => IsJapanese ? "認証中です。ブラウザーでコードを入力してください。" : "Authentication is in progress. Waiting for you to enter the code in your browser.";

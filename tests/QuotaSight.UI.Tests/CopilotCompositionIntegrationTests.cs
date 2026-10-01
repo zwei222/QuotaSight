@@ -99,6 +99,60 @@ public sealed class CopilotCompositionIntegrationTests
     }
 
     [Fact]
+    public async Task Unauthorized_billing_retry_crossing_utc_month_uses_refreshed_identity_and_empty_period_context()
+    {
+        var clock = new MutableIntegrationTimeProvider(new DateTimeOffset(2026, 10, 31, 23, 59, 59, TimeSpan.Zero));
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), clock.GetUtcNow()), default);
+        var handler = new BillingRetryAcrossMonthHandler(clock);
+        using var client = new HttpClient(handler);
+        var session = new GitHubUserTokenSession(store, () => "client-id", client, clock);
+        var adapter = new DynamicCopilotAdapter(client, store, () => "new-org", session, clock);
+
+        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", default);
+
+        Assert.Equal(QuotaSight.Core.FetchStatus.NoData, result.Result.Status);
+        Assert.Null(result.Result.Value);
+        Assert.Equal("new-org/new-login", result.ActiveAccount);
+        Assert.Equal(new CopilotRequestedPeriod(2026, 11, "new-org", "new-login"), result.RequestedPeriod);
+        Assert.Equal(1, handler.RefreshCount);
+
+        var billingRequests = handler.Requests.Where(request => request.Path.Contains("/organizations/", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(2, billingRequests.Length);
+        Assert.Equal("old-access", billingRequests[0].Authorization);
+        Assert.Equal("/organizations/new-org/settings/billing/ai_credit/usage", billingRequests[0].Path);
+        Assert.Contains("year=2026", billingRequests[0].Query, StringComparison.Ordinal);
+        Assert.Contains("month=10", billingRequests[0].Query, StringComparison.Ordinal);
+        Assert.Contains("user=old-login", billingRequests[0].Query, StringComparison.Ordinal);
+        Assert.Equal("new-access", billingRequests[1].Authorization);
+        Assert.Equal("/organizations/new-org/settings/billing/ai_credit/usage", billingRequests[1].Path);
+        Assert.Contains("year=2026", billingRequests[1].Query, StringComparison.Ordinal);
+        Assert.Contains("month=11", billingRequests[1].Query, StringComparison.Ordinal);
+        Assert.Contains("user=new-login", billingRequests[1].Query, StringComparison.Ordinal);
+        Assert.Equal([("/user", "old-access"), ("/organizations/new-org/settings/billing/ai_credit/usage", "old-access"), ("/login/oauth/access_token", string.Empty), ("/user", "new-access"), ("/organizations/new-org/settings/billing/ai_credit/usage", "new-access")],
+            handler.Requests.Select(request => (request.Path, request.Authorization)).ToArray());
+    }
+
+    [Fact]
+    public async Task Dynamic_copilot_runtime_preserves_authenticated_account_and_validated_empty_period()
+    {
+        var now = new DateTimeOffset(2026, 10, 31, 23, 59, 59, TimeSpan.Zero);
+        var handler = new EmptyPeriodHandler();
+        using var client = new HttpClient(handler);
+        var store = new InMemoryCredentialStore();
+        await store.SetAsync("github", "synthetic-token", default);
+        var adapter = new DynamicCopilotAdapter(client, store, () => "acme", timeProvider: new IntegrationTimeProvider(now));
+
+        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", default);
+
+        Assert.Equal(QuotaSight.Core.FetchStatus.NoData, result.Result.Status);
+        Assert.Equal("acme/octocat", result.ActiveAccount);
+        Assert.Equal(new CopilotRequestedPeriod(2026, 10, "acme", "octocat"), result.RequestedPeriod);
+        Assert.Contains("year=2026", handler.BillingQuery);
+        Assert.Contains("month=10", handler.BillingQuery);
+    }
+
+    [Fact]
     public async Task Dynamic_copilot_adapter_reads_shared_fallback_when_secure_store_is_unavailable()
     {
         const string token = "fallback-token-must-not-leak";
@@ -171,6 +225,44 @@ public sealed class CopilotCompositionIntegrationTests
             return Task.FromResult(Json($"{{\"timePeriod\":{{\"year\":{now.Year},\"month\":{now.Month}}},\"organization\":\"acme\",\"user\":\"new-login\",\"usageItems\":[{{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":3,\"discountQuantity\":0,\"netQuantity\":3}}]}}"));
         }
         private static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK) { Content = new StringContent(value, Encoding.UTF8, "application/json") };
+    }
+
+    private sealed class BillingRetryAcrossMonthHandler(MutableIntegrationTimeProvider clock) : HttpMessageHandler
+    {
+        public List<CapturedRequest> Requests { get; } = [];
+        public int RefreshCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            var token = request.Headers.Authorization?.Parameter;
+            Requests.Add(new(path, request.RequestUri.Query, token ?? string.Empty));
+
+            if (path == "/login/oauth/access_token")
+            {
+                RefreshCount++;
+                return Task.FromResult(Json("""{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600,"refresh_token_expires_in":86400}"""));
+            }
+            if (path == "/user")
+            {
+                return Task.FromResult(token switch
+                {
+                    "old-access" => Json("""{"login":"old-login"}"""),
+                    "new-access" => Json("""{"login":"new-login"}"""),
+                    _ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                });
+            }
+            if (path == "/organizations/new-org/settings/billing/ai_credit/usage" && token == "old-access")
+            {
+                clock.SetUtcNow(new DateTimeOffset(2026, 11, 1, 0, 0, 1, TimeSpan.Zero));
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            }
+            if (path == "/organizations/new-org/settings/billing/ai_credit/usage" && token == "new-access")
+                return Task.FromResult(Json("""{"timePeriod":{"year":2026,"month":11},"organization":"new-org","user":"new-login","usageItems":[]}"""));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static HttpResponseMessage Json(string content) => new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, "application/json") };
     }
 
     private sealed class ImmediateDeviceDelay : IDeviceFlowDelay
@@ -324,6 +416,30 @@ public sealed class CopilotCompositionIntegrationTests
             return Task.FromResult<HttpResponseMessage>(new(HttpStatusCode.NotFound));
         }
         private static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK) { Content = new StringContent(value, Encoding.UTF8, "application/json") };
+    }
+
+    private sealed class EmptyPeriodHandler : HttpMessageHandler
+    {
+        public string BillingQuery { get; private set; } = string.Empty;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/user") return Task.FromResult(Json("{\"login\":\"octocat\"}"));
+            BillingQuery = request.RequestUri.Query;
+            return Task.FromResult(Json("{\"timePeriod\":{\"year\":2026,\"month\":10},\"organization\":\"acme\",\"usageItems\":[]}"));
+        }
+        private static HttpResponseMessage Json(string content) => new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, "application/json") };
+    }
+
+    private sealed class IntegrationTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class MutableIntegrationTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset current = now;
+        public override DateTimeOffset GetUtcNow() => current;
+        public void SetUtcNow(DateTimeOffset value) => current = value;
     }
 
     private sealed record CapturedRequest(string Path, string Query, string Authorization);

@@ -524,6 +524,82 @@ public sealed class ProviderTransportTests
         }
     }
 
+    [Fact]
+    public async Task Copilot_empty_october_response_returns_validated_requested_period_from_single_clock_instant()
+    {
+        var now = new DateTimeOffset(2026, 10, 31, 23, 59, 59, TimeSpan.Zero);
+        var clock = new CountingTimeProvider(now);
+        HttpRequestMessage? captured = null;
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":10},\"organization\":\"acme\",\"user\":\"REQUESTED-USER\",\"usageItems\":[]}";
+        var adapter = new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(request => { captured = request; return Json(HttpStatusCode.OK, json); })),
+            new InMemoryCredentialStore(), "acme", "requested-user", clock);
+
+        var active = await adapter.FetchWithAccountAndTokenAsync("Copilot", "synthetic-token", default);
+
+        Assert.Equal(FetchStatus.NoData, active.Result.Status);
+        Assert.Equal(new CopilotRequestedPeriod(2026, 10, "acme", "requested-user"), active.RequestedPeriod);
+        Assert.Equal("acme/requested-user", active.ActiveAccount);
+        Assert.Equal(1, clock.Calls);
+        Assert.Contains("year=2026", captured!.RequestUri!.Query);
+        Assert.Contains("month=10", captured.RequestUri.Query);
+    }
+
+    [Theory]
+    [InlineData("{\"timePeriod\":{\"year\":2026,\"month\":10},\"organization\":\"acme\"}")]
+    [InlineData("{\"timePeriod\":{\"year\":2025,\"month\":10},\"organization\":\"acme\",\"usageItems\":[]}")]
+    public async Task Copilot_billing_invalid_or_mismatched_empty_response_has_no_requested_period(string body)
+    {
+        var adapter = new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.OK, body))),
+            new InMemoryCredentialStore(), "acme", "requested-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 12, 0, 0, 0, TimeSpan.Zero)));
+
+        var result = await adapter.FetchWithAccountAndTokenAsync("Copilot", "synthetic-token", default);
+
+        Assert.Equal(FetchStatus.TransientFailure, result.Result.Status);
+        Assert.Null(result.RequestedPeriod);
+    }
+
+    [Fact]
+    public async Task Copilot_billing_unauthorized_has_no_requested_period()
+    {
+        var adapter = new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(_ => Json(HttpStatusCode.Unauthorized, "synthetic body"))),
+            new InMemoryCredentialStore(), "acme", "requested-user",
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 12, 0, 0, 0, TimeSpan.Zero)));
+
+        var result = await adapter.FetchWithAccountAndTokenAsync("Copilot", "synthetic-token", default);
+
+        Assert.Equal(FetchStatus.Unauthorized, result.Result.Status);
+        Assert.Null(result.RequestedPeriod);
+    }
+
+    [Fact]
+    public async Task Copilot_success_snapshot_and_requested_period_share_the_single_utc_month()
+    {
+        var now = new DateTimeOffset(2026, 10, 31, 23, 59, 59, TimeSpan.Zero);
+        var clock = new CountingTimeProvider(now);
+        HttpRequestMessage? captured = null;
+        const string json = "{\"timePeriod\":{\"year\":2026,\"month\":10},\"organization\":\"acme\",\"usageItems\":[{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":7,\"discountQuantity\":2,\"netQuantity\":5}]}";
+        var adapter = new CopilotBillingUsageAdapter(
+            new HttpClient(new Handler(request => { captured = request; return Json(HttpStatusCode.OK, json); })),
+            new InMemoryCredentialStore(), "acme", "requested-user", clock);
+
+        var active = await adapter.FetchWithAccountAndTokenAsync("Copilot", "synthetic-token", default);
+        var snapshot = Assert.Single(active.Result.Value!);
+
+        Assert.Equal(new CopilotRequestedPeriod(2026, 10, "acme", "requested-user"), active.RequestedPeriod);
+        Assert.Equal(1, clock.Calls);
+        Assert.Contains("year=2026", captured!.RequestUri!.Query);
+        Assert.Contains("month=10", captured.RequestUri.Query);
+        Assert.Equal(now, snapshot.Fetched);
+        Assert.Equal(now, snapshot.Observed);
+        Assert.Equal(now.AddHours(1), snapshot.FreshUntil);
+        Assert.Equal(new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero), snapshot.Window.Start);
+        Assert.Equal(new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero), snapshot.Window.End);
+    }
+
     private static void AssertSnapshot(QuotaSnapshot snapshot, QuotaWindowKind kind, decimal percent, string resetAt)
     {
         Assert.Equal(kind, snapshot.Window.Kind);
@@ -555,5 +631,11 @@ public sealed class ProviderTransportTests
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class CountingTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public int Calls { get; private set; }
+        public override DateTimeOffset GetUtcNow() { Calls++; return now; }
     }
 }

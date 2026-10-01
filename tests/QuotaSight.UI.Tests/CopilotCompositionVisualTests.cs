@@ -10,6 +10,38 @@ namespace QuotaSight.UI.Tests;
 
 public sealed class CopilotCompositionVisualTests
 {
+    [AvaloniaTheory]
+    [InlineData(UiLanguage.English, 1950, "Gross composition only; this is not a percentage gauge")]
+    [InlineData(UiLanguage.Japanese, 1950, "総量の内訳を表示しています（使用率ゲージではありません）")]
+    [InlineData(UiLanguage.English, 0, "Gross composition only; this is not a percentage gauge")]
+    [InlineData(UiLanguage.Japanese, 0, "総量の内訳を表示しています（使用率ゲージではありません）")]
+    public void Main_and_compact_templates_keep_the_quantity_explanation_visible_without_a_gauge(UiLanguage language, decimal gross, string explanation)
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "octocat", "AI credits", new(QuotaWindowKind.Monthly, now.AddDays(-3), now.AddDays(28)), null, null, null, "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.AddDays(28), "GitHub Copilot Business", new(gross, 0, gross));
+        using var mainVm = new MainViewModel(new FixedSource(snapshot));
+        using var compactVm = new MainViewModel(new FixedSource(snapshot));
+        var main = new MainWindow(mainVm);
+        var compact = new CompactQuotaWindow(compactVm);
+        try
+        {
+            main.Show();
+            compact.Show();
+            mainVm.Language = language;
+            compactVm.Language = language;
+            main.UpdateLayout();
+            compact.UpdateLayout();
+
+            AssertQuantityExplanation(main, mainVm.Cards.Single().Windows.Single(), explanation);
+            AssertQuantityExplanation(compact, compactVm.Cards.Single().Windows.Single(), explanation);
+        }
+        finally
+        {
+            main.Close();
+            compact.Close();
+        }
+    }
+
     [AvaloniaFact]
     public void Main_and_compact_templates_expose_the_same_quantity_composition_semantics_without_a_percentage_gauge()
     {
@@ -52,6 +84,13 @@ public sealed class CopilotCompositionVisualTests
         var compositionLabel = window.DataContext is MainViewModel viewModel ? viewModel.Cards.Single().Windows.Single().CompositionBarLabel : string.Empty;
         Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == compositionLabel);
         Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Total:", StringComparison.Ordinal) == true);
+    }
+
+    private static void AssertQuantityExplanation(Window window, QuotaRowViewModel row, string explanation)
+    {
+        Assert.True(row.IsQuantityOnly);
+        Assert.False(row.IsGaugeVisible);
+        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == explanation);
     }
 
     private sealed class FixedSource(QuotaSnapshot snapshot) : IDashboardSource

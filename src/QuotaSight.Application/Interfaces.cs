@@ -3,7 +3,8 @@ using QuotaSight.Core;
 namespace QuotaSight.Application;
 
 public interface IQuotaAdapter { ProviderKind Provider { get; } ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken); }
-public sealed record ActiveAccountFetchResult(FetchResult<IReadOnlyList<QuotaSnapshot>> Result, string? ActiveAccount = null);
+public sealed record CopilotRequestedPeriod(int Year, int Month, string Organization, string User);
+public sealed record ActiveAccountFetchResult(FetchResult<IReadOnlyList<QuotaSnapshot>> Result, string? ActiveAccount = null, CopilotRequestedPeriod? RequestedPeriod = null);
 public interface IActiveAccountQuotaAdapter : IQuotaAdapter
 {
     ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken);
@@ -19,18 +20,20 @@ public interface INotificationSink { ValueTask<bool> NotifyAsync(QuotaSnapshot s
 public sealed record ProviderFailure(ProviderKind Provider, FetchStatus Status, TimeSpan? RetryAfter = null);
 public sealed record QuotaRefreshResult
 {
-    public QuotaRefreshResult(IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyList<ProviderFailure> failures, IReadOnlySet<ProviderKind>? noDataProviders = null, IReadOnlyDictionary<ProviderKind, string>? activeAccounts = null)
+    public QuotaRefreshResult(IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyList<ProviderFailure> failures, IReadOnlySet<ProviderKind>? noDataProviders = null, IReadOnlyDictionary<ProviderKind, string>? activeAccounts = null, CopilotRequestedPeriod? requestedPeriod = null)
     {
         Snapshots = snapshots;
         Failures = failures;
         NoDataProviders = noDataProviders ?? new HashSet<ProviderKind>();
         ActiveAccounts = activeAccounts ?? new Dictionary<ProviderKind, string>();
+        RequestedPeriod = requestedPeriod;
     }
 
     public IReadOnlyList<QuotaSnapshot> Snapshots { get; }
     public IReadOnlyList<ProviderFailure> Failures { get; }
     public IReadOnlySet<ProviderKind> NoDataProviders { get; }
     public IReadOnlyDictionary<ProviderKind, string> ActiveAccounts { get; }
+    public CopilotRequestedPeriod? RequestedPeriod { get; }
 }
 public interface IQuotaApplication { ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken); }
 public sealed record NotificationKey(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Window, decimal Threshold);

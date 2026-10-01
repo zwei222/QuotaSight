@@ -30,6 +30,93 @@ public sealed class ThresholdNotificationPresentationTests
         Assert.Equal(backendCalls, backend.Requests.Count);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Clean_refresh_preserves_newer_unrelated_banner(bool opaque)
+    {
+        var snapshot = Snapshot(50);
+        var app = new GatedApplication(new QuotaRefreshResult([snapshot], []));
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher());
+        await vm.RefreshAsync();
+        app.GateNextRefresh();
+
+        var refresh = vm.RefreshAsync();
+        await app.RefreshStarted.Task;
+        if (opaque) vm.Notify("History", "new opaque alert");
+        else vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, "new localized alert"));
+        app.Complete(new QuotaRefreshResult([snapshot], []));
+        await refresh;
+
+        Assert.Contains("new", vm.NotificationBannerText);
+        Assert.Contains(opaque ? "opaque alert" : "localized alert", vm.NotificationBannerText);
+    }
+
+    [Fact]
+    public async Task Clean_no_data_refresh_clears_old_refresh_banner_and_restores_retained_threshold_without_redelivery()
+    {
+        var snapshot = Snapshot(85);
+        var backend = new FakeDesktopNotificationBackend();
+        var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
+        await vm.RefreshAsync();
+        var thresholdBanner = vm.NotificationBannerText;
+        Assert.Single(backend.Requests);
+
+        app.Result = new QuotaRefreshResult([], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]);
+        await vm.RefreshAsync();
+        Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+
+        app.Result = new QuotaRefreshResult([snapshot], [], new HashSet<ProviderKind> { ProviderKind.Copilot }, activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org/user" }, requestedPeriod: new CopilotRequestedPeriod(2026, 9, "org", "user"));
+        await vm.RefreshAsync();
+
+        Assert.Equal(thresholdBanner, vm.NotificationBannerText);
+        Assert.DoesNotContain("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(backend.Requests);
+    }
+
+    [Fact]
+    public async Task Clean_refresh_preserves_newer_alert_over_hidden_retained_threshold()
+    {
+        var snapshot = Snapshot(85);
+        var backend = new FakeDesktopNotificationBackend();
+        var app = new GatedApplication(new QuotaRefreshResult([snapshot], []));
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
+        await vm.RefreshAsync();
+        app.Result = new QuotaRefreshResult([snapshot], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]);
+        await vm.RefreshAsync();
+        Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
+        app.GateNextRefresh();
+
+        var refresh = vm.RefreshAsync();
+        await app.RefreshStarted.Task;
+        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, "new history alert"));
+        app.Complete(new QuotaRefreshResult([snapshot], []));
+        await refresh;
+
+        Assert.Contains("new history alert", vm.NotificationBannerText);
+        Assert.Single(backend.Requests);
+    }
+
+    [Fact]
+    public async Task Language_change_during_refresh_relocalizes_without_restarting_or_delivering()
+    {
+        var snapshot = Snapshot(50);
+        var backend = new FakeDesktopNotificationBackend();
+        var app = new GatedApplication(new QuotaRefreshResult([snapshot], []));
+        using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
+        app.GateNextRefresh();
+
+        var refresh = vm.RefreshAsync();
+        await app.RefreshStarted.Task;
+        await vm.SetLanguageAsync(UiLanguage.Japanese);
+        app.Complete(new QuotaRefreshResult([snapshot], []));
+        await refresh;
+
+        Assert.Equal(1, app.Calls);
+        Assert.Empty(backend.Requests);
+    }
+
     [Fact]
     public async Task Scheduled_threshold_notification_remains_visible_and_deduplicates_per_window()
     {
@@ -428,6 +515,30 @@ public sealed class ThresholdNotificationPresentationTests
     {
         public int Calls { get; private set; }
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) { Calls++; return ValueTask.FromResult(result); }
+    }
+
+    private sealed class GatedApplication(QuotaRefreshResult result) : IQuotaApplication
+    {
+        private TaskCompletionSource<QuotaRefreshResult>? next;
+        private TaskCompletionSource<QuotaRefreshResult>? active;
+        public QuotaRefreshResult Result { get; set; } = result;
+        public int Calls { get; private set; }
+        public TaskCompletionSource RefreshStarted { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void GateNextRefresh()
+        {
+            next = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            RefreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        public void Complete(QuotaRefreshResult value) => active!.TrySetResult(value);
+        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (next is not { } pending) return ValueTask.FromResult(Result);
+            RefreshStarted.TrySetResult();
+            active = pending;
+            next = null;
+            return new(pending.Task.WaitAsync(cancellationToken));
+        }
     }
 
     private sealed class FakeDesktopNotificationBackend : IDesktopNotificationBackend

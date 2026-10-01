@@ -44,7 +44,7 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public QuotaWindowKind WindowKind { get; init; }
     public UsageBand Band { get; init; }
     public bool IsQuantityOnly { get; init; }
-    public bool IsGaugeVisible => !IsQuantityOnly;
+    public bool IsGaugeVisible => !IsQuantityOnly && CopilotNoDataPeriod is null;
     public bool IsQuantityVisible => IsQuantityOnly;
     public bool IsQuantityCompositionVisible { get; init; }
     public decimal IncludedCompositionRatio { get; init; }
@@ -60,10 +60,18 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public bool IsDanger => Band == UsageBand.Danger;
     public bool IsOverLimit => Band == UsageBand.OverLimit;
     public QuotaSnapshot? Snapshot { get; init; }
+    public CopilotRequestedPeriod? CopilotNoDataPeriod { get; init; }
+    public bool IsCopilotNoData => CopilotNoDataPeriod is not null;
+    public bool IsNotCopilotNoData => CopilotNoDataPeriod is null;
 }
 public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, string Account, string Accent, string StateText, bool IsDemo, IReadOnlyList<QuotaRowViewModel> Windows)
 {
-    public string AccessibleLabel => $"{Name}, {Account}. {StateText}";
+    public string AccessibleLabel => CopilotNoDataPeriod is { } period
+        ? $"{Name}, {Account}. {new UiCopy(CurrentLanguage).CopilotNoDataAutomation(new UiCopy(CurrentLanguage).CopilotMonthPeriod(period.Year, period.Month))}"
+        : $"{Name}, {Account}. {StateText}";
+    public UiLanguage CurrentLanguage { get; init; }
+    public CopilotRequestedPeriod? CopilotNoDataPeriod { get; init; }
+    public bool IsCopilotNoData => CopilotNoDataPeriod is not null;
 }
 
 public static class QuotaPresentationFormatter
@@ -1118,23 +1126,35 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
     private decimal thresholdPercent;
     private Func<UiCopy, (string Title, string Reason)>? localizedBanner;
     private enum BannerKind { None, Opaque, Localized, Threshold }
+    private enum BannerOwner { Other, Refresh }
     private BannerKind visibleKind;
+    private BannerOwner visibleOwner = BannerOwner.Other;
     public UiLanguage Language { get => language; set { if (language == value) return; language = value; if (visibleKind == BannerKind.Localized) SetLocalizedBanner(); else if (visibleKind == BannerKind.Threshold) { RefreshThresholdText(); SetBannerText(thresholdBannerText); } } }
     private UiLanguage language = UiLanguage.English;
     public string BannerText { get; private set; } = string.Empty;
     public event PropertyChangedEventHandler? PropertyChanged;
     public InAppNotificationService(IDesktopNotificationBackend? desktopNotificationBackend = null) => this.desktopNotificationBackend = desktopNotificationBackend;
     // Arbitrary caller-provided strings are intentionally opaque; only known UI-owned alerts use localized payloads.
-    public void Notify(string title, string reason) { localizedBanner = null; visibleKind = BannerKind.Opaque; SetBannerText($"{title}: {reason}"); }
-    public void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy) { localizedBanner = copy; visibleKind = BannerKind.Localized; SetLocalizedBanner(); }
+    public void Notify(string title, string reason) { localizedBanner = null; visibleKind = BannerKind.Opaque; visibleOwner = BannerOwner.Other; SetBannerText($"{title}: {reason}"); }
+    public void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy) => SetLocalizedBanner(copy, BannerOwner.Other);
+    public void NotifyRefreshLocalized(Func<UiCopy, (string Title, string Reason)> copy) => SetLocalizedBanner(copy, BannerOwner.Refresh);
+    private void SetLocalizedBanner(Func<UiCopy, (string Title, string Reason)> copy, BannerOwner owner) { localizedBanner = copy; visibleKind = BannerKind.Localized; visibleOwner = owner; SetLocalizedBanner(); }
     private void SetLocalizedBanner() { var (title, reason) = localizedBanner!(new UiCopy(Language)); SetBannerText($"{title}: {reason}"); }
-    public void Clear() { localizedBanner = null; thresholdBannerText = string.Empty; thresholdSnapshot = null; visibleKind = BannerKind.None; SetBannerText(string.Empty); }
+    public void Clear() { localizedBanner = null; thresholdBannerText = string.Empty; thresholdSnapshot = null; visibleKind = BannerKind.None; visibleOwner = BannerOwner.Other; SetBannerText(string.Empty); }
     public void ClearThresholdBanner()
     {
         var wasVisible = visibleKind == BannerKind.Threshold;
         thresholdBannerText = string.Empty;
         thresholdSnapshot = null;
-        if (wasVisible) { visibleKind = BannerKind.None; SetBannerText(string.Empty); }
+        if (wasVisible) { visibleKind = BannerKind.None; visibleOwner = BannerOwner.Other; SetBannerText(string.Empty); }
+    }
+    public void ClearRefreshIfOwned()
+    {
+        if (visibleKind != BannerKind.Localized || visibleOwner != BannerOwner.Refresh) return;
+        localizedBanner = null;
+        visibleKind = BannerKind.None;
+        visibleOwner = BannerOwner.Other;
+        SetBannerText(string.Empty);
     }
     public void SetThresholdContext(decimal threshold) => pendingThreshold = threshold;
     public void ReconcileThresholdBanner(IReadOnlyList<QuotaSnapshot> snapshots, DateTimeOffset now, Func<ProviderKind, decimal> thresholdForProvider, bool enabled)
@@ -1175,7 +1195,25 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
         var copy = new UiCopy(Language);
         thresholdBannerText = $"{copy.QuotaThresholdTitle(thresholdSnapshot.Provider)}: {copy.QuotaThresholdReason(percent)}";
     }
-    public void RestoreThresholdBanner() { if (thresholdSnapshot is null) { if (visibleKind != BannerKind.Threshold) { visibleKind = BannerKind.None; localizedBanner = null; SetBannerText(string.Empty); } return; } RefreshThresholdText(); visibleKind = BannerKind.Threshold; SetBannerText(thresholdBannerText); }
+    public void RestoreThresholdBanner()
+    {
+        if (thresholdSnapshot is null)
+        {
+            if (visibleKind == BannerKind.Threshold)
+            {
+                visibleKind = BannerKind.None;
+                visibleOwner = BannerOwner.Other;
+                SetBannerText(string.Empty);
+            }
+            return;
+        }
+        if (visibleKind is not (BannerKind.None or BannerKind.Threshold) && !(visibleKind == BannerKind.Localized && visibleOwner == BannerOwner.Refresh)) return;
+        RefreshThresholdText();
+        visibleKind = BannerKind.Threshold;
+        visibleOwner = BannerOwner.Other;
+        localizedBanner = null;
+        SetBannerText(thresholdBannerText);
+    }
     public async ValueTask<bool> NotifyAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1189,6 +1227,7 @@ public sealed class InAppNotificationService : IInAppNotificationService, INotif
         pendingThreshold = null;
         localizedBanner = null;
         visibleKind = BannerKind.Threshold;
+        visibleOwner = BannerOwner.Other;
         SetBannerText(thresholdBannerText);
         if (desktopNotificationBackend is null) return true;
         try { return await desktopNotificationBackend.TryNotifyAsync(title, reason, cancellationToken).ConfigureAwait(false); }
@@ -1588,7 +1627,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (IsDisposed) return;
         SetCopilotReauthenticationAvailable(false);
         ReevaluateCards(timeProvider.GetUtcNow());
-        notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshError));
+        notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshError));
         PresentationState = PresentationState.Error;
     }
     private async Task ApplyRefreshResultAsync(QuotaRefreshResult refreshResult, HashSet<(ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind)> previousProviderIdentities, CancellationToken cancellationToken)
@@ -1609,10 +1648,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             .Distinct()
             .ToArray();
         var failures = refreshResult.Failures.ToArray();
-        var noDataProviders = refreshResult.NoDataProviders.ToArray();
+        var hasValidatedCopilotNoData = HasValidatedCopilotNoData(refreshResult);
+        var noDataProviders = refreshResult.NoDataProviders
+            .Where(provider => !hasValidatedCopilotNoData || provider != ProviderKind.Copilot)
+            .ToArray();
         var partialFailure = missingProviders.Length > 0;
         RemoveReplacedAutomaticCopilotCards(snapshots, refreshResult.ActiveAccounts);
-        var noDataProvidersWithPreviousAutomaticValue = refreshResult.NoDataProviders
+        if (hasValidatedCopilotNoData)
+            ProjectCopilotNoData(refreshResult.RequestedPeriod!);
+        var noDataProvidersWithPreviousAutomaticValue = noDataProviders
             .Where(provider => Cards.Any(card => card.Provider == provider && card.Windows.Any(window => window.Snapshot is { Source: not QuotaSource.Manual })))
             .ToHashSet();
         if (snapshots.Count > 0)
@@ -1626,19 +1670,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (quotaHistory is not null) await History.AppendAndReloadAsync(snapshots, cancellationToken);
             if (failures.Length > 0)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: true)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: true)));
             }
             else if (partialFailure)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
             }
             else if (noDataProviders.Length > 0)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
             }
             else
             {
                 notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
+                notificationService.ClearRefreshIfOwned();
                 notificationService.RestoreThresholdBanner();
             }
             PresentationState = failures.Length > 0 || partialFailure ? PresentationState.Error : PresentationState.Ready;
@@ -1648,19 +1693,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (failures.Length > 0)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: false)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshFailures(failures, mixedResult: false)));
             }
             else if (partialFailure)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(missingProviders)));
             }
             else if (noDataProviders.Length > 0)
             {
-                notificationService.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
+                notificationService.NotifyRefreshLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(noDataProviders, noDataProvidersWithPreviousAutomaticValue)));
             }
             else
             {
                 notificationService.ReconcileThresholdBanner(snapshots, timeProvider.GetUtcNow(), provider => Settings.ProviderOverrides.GetValueOrDefault(provider, Settings.OverallThreshold), Settings.NotificationsEnabled);
+                notificationService.ClearRefreshIfOwned();
                 notificationService.RestoreThresholdBanner();
             }
             PresentationState = failures.Length > 0 || partialFailure ? PresentationState.Error : Cards.Count > 0 ? PresentationState.Ready : PresentationState.Empty;
@@ -1742,16 +1788,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var first = matches[0];
             var windows = QuotaWindowOrdering.OrderRows(matches
                 .SelectMany(item => item.card.Windows)
-                .Where(existing => existing.WindowName != row.WindowName || existing.Metric != row.Metric)
+                .Where(existing => existing.CopilotNoDataPeriod is null && (existing.WindowName != row.WindowName || existing.Metric != row.Metric))
                 .Append(row)
                 .GroupBy(existing => (existing.WindowName, existing.Metric))
                 .Select(group => group.Last()))
                 .ToList();
-            Cards[first.index] = first.card with { Windows = windows };
+            Cards[first.index] = first.card with { StateText = Language == UiLanguage.Japanese ? "接続済み" : "Connected", Windows = windows, CopilotNoDataPeriod = null };
             foreach (var duplicate in matches.Skip(1).OrderByDescending(item => item.index)) Cards.RemoveAt(duplicate.index);
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
     }
+    private static bool HasValidatedCopilotNoData(QuotaRefreshResult result)
+    {
+        if (!result.NoDataProviders.Contains(ProviderKind.Copilot) || result.Failures.Any(failure => failure.Provider == ProviderKind.Copilot)) return false;
+        if (result.RequestedPeriod is not { } period || period.Year is < 1 or > 9999 || period.Month is < 1 or > 12 ||
+            string.IsNullOrWhiteSpace(period.Organization) || string.IsNullOrWhiteSpace(period.User)) return false;
+        var account = $"{period.Organization}/{period.User}";
+        return result.ActiveAccounts.TryGetValue(ProviderKind.Copilot, out var activeAccount) &&
+            string.Equals(activeAccount, account, StringComparison.Ordinal);
+    }
+
     private static bool IsReplacedIdentity((ProviderKind Provider, string Account, string Metric, QuotaWindowKind Kind) identity, IReadOnlyList<QuotaSnapshot> snapshots, IReadOnlyDictionary<ProviderKind, string> activeAccounts)
     {
         if (!activeAccounts.TryGetValue(identity.Provider, out var activeAccount) || string.IsNullOrWhiteSpace(activeAccount) || string.Equals(identity.Account, activeAccount, StringComparison.Ordinal)) return false;
@@ -1768,7 +1824,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var replacedAccounts = lastKnownSnapshots
             .Where(snapshot => snapshot.Provider == ProviderKind.Copilot && snapshot.Source != QuotaSource.Manual)
             .Where(snapshot => !observedAccounts.Contains(snapshot.Account))
-            .Select(snapshot => snapshot.Account).ToHashSet(StringComparer.Ordinal);
+            .Select(snapshot => snapshot.Account)
+            .Concat(Cards
+                .Where(card => card.Provider == ProviderKind.Copilot && card.CopilotNoDataPeriod is not null)
+                .Where(card => !observedAccounts.Contains(card.Account))
+                .Select(card => card.Account))
+            .ToHashSet(StringComparer.Ordinal);
         if (replacedAccounts.Count == 0) return;
         lastKnownSnapshots.RemoveAll(snapshot => snapshot.Provider == ProviderKind.Copilot && snapshot.Source != QuotaSource.Manual && replacedAccounts.Contains(snapshot.Account));
         for (var index = Cards.Count - 1; index >= 0; index--)
@@ -1777,7 +1838,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (card.Provider != ProviderKind.Copilot || !replacedAccounts.Contains(card.Account)) continue;
             var retainedWindows = card.Windows.Where(window => window.Snapshot is { Source: QuotaSource.Manual }).ToArray();
             if (retainedWindows.Length == 0) Cards.RemoveAt(index);
-            else Cards[index] = card with { Windows = retainedWindows };
+            else Cards[index] = card with
+            {
+                Windows = retainedWindows,
+                CopilotNoDataPeriod = null,
+                StateText = Language == UiLanguage.Japanese ? "手動" : "Manual"
+            };
         }
         OnPropertyChanged(nameof(HasCards));
         OnPropertyChanged(nameof(HasEmptyState));
@@ -1836,6 +1902,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(EmptyStateText));
     }
     private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { if (IsDisposed) return; var replacement = cards.ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
+    private void ProjectCopilotNoData(CopilotRequestedPeriod period)
+    {
+        var account = $"{period.Organization}/{period.User}";
+        var copy = new UiCopy(Language);
+        var windowName = copy.CopilotMonthPeriod(period.Year, period.Month);
+        var status = copy.CopilotNoDataDetails;
+        var row = new QuotaRowViewModel(windowName, string.Empty, 0, string.Empty, status, string.Empty, string.Empty, string.Empty, false, status) { WindowKind = QuotaWindowKind.Monthly, CopilotNoDataPeriod = period };
+        var card = Cards.FirstOrDefault(item => item.Provider == ProviderKind.Copilot && item.Account == account);
+        if (card is null) card = new(ProviderKind.Copilot, copy.ProviderName(ProviderKind.Copilot), account, "#78A9FF", copy.CopilotNoUsageState, false, []);
+        var windows = card.Windows.Where(item => item.Snapshot is { Source: QuotaSource.Manual }).Append(row).ToArray();
+        var updated = card with { StateText = copy.CopilotNoUsageState, Windows = windows, CopilotNoDataPeriod = period, CurrentLanguage = Language };
+        var index = Cards.IndexOf(card);
+        if (index < 0) Cards.Add(updated); else Cards[index] = updated;
+        OnPropertyChanged(nameof(HasCards));
+    }
+
     private void ReevaluateCards(DateTimeOffset now)
     {
         // Cards.CollectionChanged is not covered by the OnPropertyChanged guard; in-flight
@@ -1869,8 +1951,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         for (var i = 0; i < Cards.Count; i++)
         {
             var card = Cards[i];
-            var state = Language == UiLanguage.Japanese ? card.StateText switch { "Healthy" => "正常", "Needs attention" => "注意", "Over limit" => "超過", "Connected" => "接続済み", "Manual" => "手動", _ => card.StateText } : card.StateText switch { "正常" => "Healthy", "注意" => "Needs attention", "超過" => "Over limit", "接続済み" => "Connected", "手動" => "Manual", _ => card.StateText };
-            Cards[i] = card with { Account = Language == UiLanguage.Japanese ? card.Account switch { "Personal account" => "個人アカウント", "Workspace · demo" => "ワークスペース · デモ", _ => card.Account } : card.Account switch { "個人アカウント" => "Personal account", "ワークスペース · デモ" => "Workspace · demo", _ => card.Account }, StateText = state, Windows = card.Windows.Select(row => QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList() };
+            var state = card.CopilotNoDataPeriod is not null ? (Language == UiLanguage.Japanese ? "明細なし" : "No usage details") : Language == UiLanguage.Japanese ? card.StateText switch { "Healthy" => "正常", "Needs attention" => "注意", "Over limit" => "超過", "Connected" => "接続済み", "Manual" => "手動", _ => card.StateText } : card.StateText switch { "正常" => "Healthy", "注意" => "Needs attention", "超過" => "Over limit", "接続済み" => "Connected", "手動" => "Manual", _ => card.StateText };
+            var windows = card.Windows.Select(row => row.CopilotNoDataPeriod is { } period ? row with { StatusText = new UiCopy(Language).CopilotNoDataDetails, ProgressLabel = new UiCopy(Language).CopilotNoDataDetails, WindowName = new UiCopy(Language).CopilotMonthPeriod(period.Year, period.Month) } : QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList();
+            Cards[i] = card with { Account = Language == UiLanguage.Japanese ? card.Account switch { "Personal account" => "個人アカウント", "Workspace · demo" => "ワークスペース · デモ", _ => card.Account } : card.Account switch { "個人アカウント" => "Personal account", "ワークスペース · デモ" => "Workspace · demo", _ => card.Account }, StateText = state, Windows = windows, CurrentLanguage = Language };
         }
         OnPropertyChanged(nameof(Cards));
     }

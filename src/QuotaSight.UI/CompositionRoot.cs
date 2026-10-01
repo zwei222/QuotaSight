@@ -13,7 +13,7 @@ public static class OfficialUsageUrls
     public const string Copilot = "https://github.com/settings/copilot";
 }
 
-public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore credentials, Func<string> organization, GitHubUserTokenSession? tokenSession = null) : IActiveAccountQuotaAdapter
+public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore credentials, Func<string> organization, GitHubUserTokenSession? tokenSession = null, TimeProvider? timeProvider = null) : IActiveAccountQuotaAdapter
 {
     public ProviderKind Provider => ProviderKind.Copilot;
 
@@ -65,8 +65,8 @@ public sealed class DynamicCopilotAdapter(HttpClient client, ICredentialStore cr
             if (string.IsNullOrWhiteSpace(login)) return new(new(FetchStatus.Unsupported, Error: "GitHub user response did not include a login."));
 
             var activeAccount = $"{configuredOrganization}/{login}";
-            var billing = await new CopilotBillingUsageAdapter(client, credentials, configuredOrganization, login).FetchWithTokenAsync(account, token, cancellationToken);
-            return new(billing, activeAccount);
+            var billing = await new CopilotBillingUsageAdapter(client, credentials, configuredOrganization, login, timeProvider).FetchWithAccountAndTokenAsync(account, token, cancellationToken);
+            return new(billing.Result, activeAccount, billing.RequestedPeriod);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

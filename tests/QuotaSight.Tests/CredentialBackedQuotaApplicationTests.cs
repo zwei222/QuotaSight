@@ -264,6 +264,35 @@ public sealed class CredentialBackedQuotaApplicationTests
         Assert.Equal("org-b/user-b", Assert.Single(result.Snapshots).Account);
     }
 
+    [Fact]
+    public async Task Refresh_propagates_copilot_requested_period_without_creating_a_snapshot()
+    {
+        var period = new CopilotRequestedPeriod(2026, 10, "org-b", "user-b");
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.NoData), "org-b/user-b", period));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Empty(result.Snapshots);
+        Assert.Contains(ProviderKind.Copilot, result.NoDataProviders);
+        Assert.Equal(period, result.RequestedPeriod);
+    }
+
+    [Fact]
+    public async Task Refresh_drops_copilot_requested_period_on_failure()
+    {
+        var application = new CredentialBackedQuotaApplication(
+            _ => new FixedAdapter(),
+            new InMemoryCredentialStore(),
+            copilotAdapter: new ActiveAccountAdapter(new(FetchStatus.Forbidden), "org-b/user-b", new(2026, 10, "org-b", "user-b")));
+
+        var result = await application.RefreshAsync(default);
+
+        Assert.Null(result.RequestedPeriod);
+    }
+
     private static CodexSessionManager CreateCodex(InMemoryCredentialStore credentials, HttpStatusCode status = HttpStatusCode.OK, Action? onRequest = null)
     {
         var responseFactory = status == HttpStatusCode.OK
@@ -311,10 +340,10 @@ public sealed class CredentialBackedQuotaApplicationTests
         public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(result);
     }
 
-    private sealed class ActiveAccountAdapter(FetchResult<IReadOnlyList<QuotaSnapshot>> result, string activeAccount) : IActiveAccountQuotaAdapter
+    private sealed class ActiveAccountAdapter(FetchResult<IReadOnlyList<QuotaSnapshot>> result, string activeAccount, CopilotRequestedPeriod? requestedPeriod = null) : IActiveAccountQuotaAdapter
     {
         public ProviderKind Provider => ProviderKind.Copilot;
-        public ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(new ActiveAccountFetchResult(result, activeAccount));
+        public ValueTask<ActiveAccountFetchResult> FetchWithAccountAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(new ActiveAccountFetchResult(result, activeAccount, requestedPeriod));
         public ValueTask<FetchResult<IReadOnlyList<QuotaSnapshot>>> FetchAsync(string account, CancellationToken cancellationToken) => ValueTask.FromResult(result);
     }
 

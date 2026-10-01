@@ -41,7 +41,7 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
         var failures = results.SelectMany(result => result.Failures).ToArray();
         var noDataProviders = results.SelectMany(result => result.NoDataProviders).ToHashSet();
         var activeAccounts = results.SelectMany(result => result.ActiveAccounts).ToDictionary(pair => pair.Key, pair => pair.Value);
-        return new(snapshots, failures, noDataProviders, activeAccounts);
+        return new(snapshots, failures, noDataProviders, activeAccounts, copilot.RequestedPeriod);
     }
 
     private async ValueTask<QuotaRefreshResult> FetchCopilotAsync(CancellationToken cancellationToken)
@@ -54,7 +54,7 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
             if (copilotAdapter is IActiveAccountQuotaAdapter activeAccountAdapter)
             {
                 var result = await activeAccountAdapter.FetchWithAccountAsync("GitHub Copilot", providerCancellation.Token);
-                return ToRefreshResult(ProviderKind.Copilot, result.Result, result.ActiveAccount);
+                return ToRefreshResult(ProviderKind.Copilot, result.Result, result.ActiveAccount, result.RequestedPeriod);
             }
 
             var fallbackResult = await copilotAdapter.FetchAsync("GitHub Copilot", providerCancellation.Token);
@@ -121,11 +121,11 @@ public sealed class CredentialBackedQuotaApplication : IQuotaApplication
     private static QuotaRefreshResult Failure(ProviderKind provider, FetchStatus status, TimeSpan? retryAfter = null) =>
         new([], [new(provider, status, retryAfter)]);
 
-    private static QuotaRefreshResult ToRefreshResult(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result, string? activeAccount = null) =>
+    private static QuotaRefreshResult ToRefreshResult(ProviderKind provider, FetchResult<IReadOnlyList<QuotaSnapshot>> result, string? activeAccount = null, CopilotRequestedPeriod? requestedPeriod = null) =>
         result.IsSuccess
-            ? new(result.Value ?? [], [], activeAccounts: ActiveAccounts(provider, activeAccount ?? result.Value?.FirstOrDefault()?.Account))
+            ? new(result.Value ?? [], [], activeAccounts: ActiveAccounts(provider, activeAccount ?? result.Value?.FirstOrDefault()?.Account), requestedPeriod: requestedPeriod)
             : result.Status == FetchStatus.NoData
-                ? new([], [], new HashSet<ProviderKind> { provider }, ActiveAccounts(provider, activeAccount))
+                ? new([], [], new HashSet<ProviderKind> { provider }, ActiveAccounts(provider, activeAccount), requestedPeriod)
                 : new([], [new(provider, result.Status, result.RetryAfter)], activeAccounts: ActiveAccounts(provider, activeAccount));
 
     private static IReadOnlyDictionary<ProviderKind, string> ActiveAccounts(ProviderKind provider, string? activeAccount) =>
