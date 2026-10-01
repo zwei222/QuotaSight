@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Layout;
+using System.Globalization;
 using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
@@ -151,6 +152,8 @@ public partial class MainWindow : Window
             this.FindControl<CheckBox>("ResidentModeBox")!.IsChecked = persistedResidentMode;
             this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
             this.FindControl<TextBox>("GithubOrganizationBox")!.Text = ViewModel.Settings.GithubOrganization;
+            if (isInitializing)
+                this.FindControl<TextBox>("CopilotReferenceCreditsBox")!.Text = ViewModel.Settings.CopilotReferenceCredits?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
             accountFilter.SelectedIndex = 0;
             windowFilter.SelectedIndex = 0;
         }
@@ -276,6 +279,7 @@ public partial class MainWindow : Window
                     try
                     {
                         await ViewModel.SetLanguageAsync(language == "日本語" ? UiLanguage.Japanese : UiLanguage.English, token);
+                        this.FindControl<TextBlock>("CopilotReferenceValidationText")!.Text = string.Empty;
                         ConfigureLists();
                         this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == manualProvider);
                         this.FindControl<ComboBox>("ManualWindowBox")!.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == manualWindow);
@@ -359,6 +363,21 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) { }
     }
+    private async void CopilotReferenceSaveClick(object? sender, RoutedEventArgs e)
+    {
+        var box = this.FindControl<TextBox>("CopilotReferenceCreditsBox")!;
+        var validation = this.FindControl<TextBlock>("CopilotReferenceValidationText")!;
+        try
+        {
+            var saved = false;
+            await RunTrackedAsync(async token => saved = await ViewModel.SetCopilotReferenceAsync(box.Text, token));
+            validation.Text = saved ? string.Empty : ViewModel.CopyText.CopilotReferenceInvalid;
+            if (saved) box.Text = ViewModel.Settings.CopilotReferenceCredits?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { validation.Text = ViewModel.CopyText.CopilotReferenceSaveFailed; }
+    }
+
     private async void GithubOrganizationChanged(object? sender, TextChangedEventArgs e)
     {
         if (isInitializing || sender is not TextBox box) return;

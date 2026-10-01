@@ -72,6 +72,10 @@ public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, s
     public UiLanguage CurrentLanguage { get; init; }
     public CopilotRequestedPeriod? CopilotNoDataPeriod { get; init; }
     public bool IsCopilotNoData => CopilotNoDataPeriod is not null;
+    public decimal? ManualReferenceCredits { get; init; }
+    public decimal? CopilotGrossUsed { get; init; }
+    public bool IsCopilotReferenceVisible => ManualReferenceCredits is > 0;
+    public string CopilotReferenceText => ManualReferenceCredits is not > 0 ? string.Empty : $"{new UiCopy(CurrentLanguage).CopilotManualReference(CopilotGrossUsed, ManualReferenceCredits.Value)}. {new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer}";
 }
 
 public static class QuotaPresentationFormatter
@@ -210,16 +214,16 @@ public static class QuotaWindowOrdering
 
     public static IEnumerable<QuotaSnapshot> OrderSnapshots(IEnumerable<QuotaSnapshot> snapshots) => snapshots
         .OrderBy(snapshot => IsValid(snapshot.Window) ? 0 : 1)
-        .ThenBy(snapshot => IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
         .ThenBy(snapshot => FallbackRank(snapshot.Window.Kind))
+        .ThenBy(snapshot => IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
         .ThenBy(snapshot => snapshot.Window.Start)
         .ThenBy(snapshot => snapshot.Window.End)
         .ThenBy(snapshot => snapshot.Metric, StringComparer.Ordinal);
 
     public static IEnumerable<QuotaRowViewModel> OrderRows(IEnumerable<QuotaRowViewModel> rows) => rows
         .OrderBy(row => row.Snapshot is { } snapshot && IsValid(snapshot.Window) ? 0 : 1)
-        .ThenBy(row => row.Snapshot is { } snapshot && IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
         .ThenBy(row => FallbackRank(row.WindowKind))
+        .ThenBy(row => row.Snapshot is { } snapshot && IsValid(snapshot.Window) ? snapshot.Window.End - snapshot.Window.Start : TimeSpan.MaxValue)
         .ThenBy(row => row.Snapshot?.Window.Start ?? DateTimeOffset.MaxValue)
         .ThenBy(row => row.Snapshot?.Window.End ?? DateTimeOffset.MaxValue)
         .ThenBy(row => row.Metric, StringComparer.Ordinal);
@@ -278,6 +282,13 @@ public sealed class SettingsState
     public Dictionary<ProviderKind, decimal> ProviderOverrides { get; } = [];
     public string GithubOAuthClientId { get; set; } = string.Empty;
     public string GithubOrganization { get; set; } = string.Empty;
+    public decimal? CopilotReferenceCredits { get; set; }
+    public bool TrySetCopilotReference(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) { CopilotReferenceCredits = null; return true; }
+        if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0) return false;
+        CopilotReferenceCredits = parsed; return true;
+    }
     public bool ReduceMotionSupported => true;
     public bool HighContrastSupported => true;
     public bool TrySetRefreshMinutes(int value) => UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(value)) && (RefreshMinutes = value) > 0;
@@ -1521,6 +1532,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly NotificationDeduplicator notificationDeduplicator;
     private readonly List<QuotaSnapshot> lastKnownSnapshots = [];
     private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private readonly SemaphoreSlim settingsTransactionGate = new(1, 1);
+    internal Func<AppSettingsDto, CancellationToken, ValueTask>? SettingsSaveAsyncForTests { get; set; }
+    private ValueTask SaveSettingsAsync(AppSettingsDto settings, CancellationToken cancellationToken) =>
+        SettingsSaveAsyncForTests?.Invoke(settings, cancellationToken) ?? settingsStore!.SaveAsync(settings, cancellationToken);
     private bool quotaDataBusy;
     private readonly IUiDispatcher uiDispatcher;
     private readonly IQuotaWorkScheduler workScheduler;
@@ -1576,17 +1591,111 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
     public void Notify(string title, string reason) => notificationService.Notify(title, reason);
     public void NotifyLocalized(Func<UiCopy, (string Title, string Reason)> copy) => notificationService.NotifyLocalized(copy);
-    public void SetSettings(AppSettingsDto dto, bool persist = true) { Settings.TrySetRefreshMinutes(dto.RefreshMinutes); Settings.TrySetThreshold(dto.OverallThreshold, out _); Settings.NotificationsEnabled = dto.NotificationsEnabled; if (!Settings.NotificationsEnabled) notificationService.ClearThresholdBanner(); Settings.ResidentMode = dto.ResidentMode; Settings.ProviderOverrides.Clear(); if (dto.ProviderThresholds is not null) foreach (var pair in dto.ProviderThresholds) if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value; Settings.GithubOAuthClientId = dto.GithubOAuthClientId; Settings.GithubOrganization = dto.GithubOrganization.Trim(); Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English; Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System; UiSettings.ApplyTheme(Settings.Theme); githubFactory?.Create(dto.GithubOAuthClientId); if (persist) settingsStore?.Save(CurrentSettings()); }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization);
-    public async Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) { Settings.Theme = value; UiSettings.ApplyTheme(value); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
-    public async Task SetLanguageAsync(UiLanguage value, CancellationToken cancellationToken = default) { Language = value; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
-    public async Task<bool> SetRefreshMinutesAsync(int value, CancellationToken cancellationToken = default) { if (!Settings.TrySetRefreshMinutes(value)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
-    public async Task SetNotificationsAsync(bool value, CancellationToken cancellationToken = default) { Settings.NotificationsEnabled = value; if (!value) notificationService.ClearThresholdBanner(); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
-    public async Task SetResidentModeAsync(bool value, CancellationToken cancellationToken = default) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public void SetSettings(AppSettingsDto dto, bool persist = true)
+    {
+        // SetSettings is synchronous for startup and existing callers. Fail fast rather than
+        // blocking a UI thread whose async transaction may need that context to finish.
+        if (!settingsTransactionGate.Wait(0))
+            throw new InvalidOperationException("Settings cannot be loaded synchronously while a settings transaction is active.");
+        try
+        {
+            Settings.TrySetRefreshMinutes(dto.RefreshMinutes);
+            Settings.TrySetThreshold(dto.OverallThreshold, out _);
+            Settings.NotificationsEnabled = dto.NotificationsEnabled;
+            if (!Settings.NotificationsEnabled) notificationService.ClearThresholdBanner();
+            Settings.ResidentMode = dto.ResidentMode;
+            Settings.ProviderOverrides.Clear();
+            if (dto.ProviderThresholds is not null)
+                foreach (var pair in dto.ProviderThresholds)
+                    if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value;
+            Settings.GithubOAuthClientId = dto.GithubOAuthClientId;
+            Settings.GithubOrganization = dto.GithubOrganization.Trim();
+            Settings.CopilotReferenceCredits = dto.CopilotReferenceCredits is > 0 ? dto.CopilotReferenceCredits : null;
+            Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English;
+            Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System;
+            UiSettings.ApplyTheme(Settings.Theme);
+            githubFactory?.Create(dto.GithubOAuthClientId);
+            if (persist) settingsStore?.Save(CurrentSettings());
+            RefreshCopilotReferences();
+        }
+        finally { settingsTransactionGate.Release(); }
+    }
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits);
+    public async Task<bool> SetCopilotReferenceAsync(string? value, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var candidate = new SettingsState();
+        if (!candidate.TrySetCopilotReference(value)) return false;
+        if (IsDisposed) return false;
+
+        await settingsTransactionGate.WaitAsync(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsDisposed) return false;
+
+            var settings = CurrentSettings() with { CopilotReferenceCredits = candidate.CopilotReferenceCredits };
+            if (settingsStore is not null)
+                await SaveSettingsAsync(settings, cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsDisposed) return false;
+
+            Settings.CopilotReferenceCredits = candidate.CopilotReferenceCredits;
+            RefreshCopilotReferences();
+            return true;
+        }
+        finally { settingsTransactionGate.Release(); }
+    }
+    private async Task<T> UpdateSettingsAsync<T>(Func<AppSettingsDto, (AppSettingsDto Candidate, T Result, bool Persist)> buildCandidate, Action publish, CancellationToken cancellationToken)
+    {
+        await settingsTransactionGate.WaitAsync(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsDisposed) return default!;
+
+            var (candidate, result, persist) = buildCandidate(CurrentSettings());
+            if (persist && settingsStore is not null)
+                await SaveSettingsAsync(candidate, cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsDisposed) return result;
+
+            if (persist) publish();
+            return result;
+        }
+        finally { settingsTransactionGate.Release(); }
+    }
+    public Task SetThemeAsync(ThemeMode value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { Theme = value.ToString() }, true, true), () => { Settings.Theme = value; UiSettings.ApplyTheme(value); }, cancellationToken);
+    public Task SetLanguageAsync(UiLanguage value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { Language = value == UiLanguage.Japanese ? "Japanese" : "English" }, true, true), () => Language = value, cancellationToken);
+    public Task<bool> SetRefreshMinutesAsync(int value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings =>
+    {
+        var valid = UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(value));
+        return (valid ? settings with { RefreshMinutes = value } : settings, valid, valid);
+    }, () => Settings.TrySetRefreshMinutes(value), cancellationToken);
+    public Task SetNotificationsAsync(bool value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { NotificationsEnabled = value }, true, true), () =>
+    {
+        Settings.NotificationsEnabled = value;
+        if (!value) notificationService.ClearThresholdBanner();
+    }, cancellationToken);
+    public Task SetResidentModeAsync(bool value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { ResidentMode = value }, true, true), () =>
+    {
+        Settings.ResidentMode = value;
+        OnPropertyChanged(nameof(Settings));
+    }, cancellationToken);
     public void RestoreResidentMode(bool value) { Settings.ResidentMode = value; OnPropertyChanged(nameof(Settings)); }
-    public async Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) { if (!Settings.TrySetThreshold(value, out _)) return false; if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); return true; }
-    public async Task SetGithubClientIdAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOAuthClientId = value.Trim(); githubFactory?.Create(Settings.GithubOAuthClientId); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
-    public async Task SetGithubOrganizationAsync(string value, CancellationToken cancellationToken = default) { Settings.GithubOrganization = value.Trim(); if (settingsStore is not null) await settingsStore.SaveAsync(CurrentSettings(), cancellationToken); }
+    public Task<bool> SetThresholdAsync(decimal value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings =>
+    {
+        var valid = value is >= 0 and <= 100;
+        return (valid ? settings with { OverallThreshold = value } : settings, valid, valid);
+    }, () => Settings.TrySetThreshold(value, out _), cancellationToken);
+    public Task SetGithubClientIdAsync(string value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { GithubOAuthClientId = value.Trim() }, true, true), () =>
+    {
+        Settings.GithubOAuthClientId = value.Trim();
+        githubFactory?.Create(Settings.GithubOAuthClientId);
+    }, cancellationToken);
+    public Task SetGithubOrganizationAsync(string value, CancellationToken cancellationToken = default) => UpdateSettingsAsync(settings => (settings with { GithubOrganization = value.Trim() }, true, true), () => Settings.GithubOrganization = value.Trim(), cancellationToken);
     public void Navigate(AppPage page) => CurrentPage = page;
     public void Refresh() => _ = RefreshAsync(RefreshOrigin.Manual);
     public Task RefreshAsync(CancellationToken cancellationToken = default) => RefreshAsync(RefreshOrigin.Manual, cancellationToken);
@@ -1760,6 +1869,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Cards.Add(new ProviderCardViewModel(snapshot.Provider, snapshot.DisplayName.Length == 0 ? snapshot.Provider.ToString() : snapshot.DisplayName, snapshot.Account, "#405DE6", Language == UiLanguage.Japanese ? "手動" : "Manual", false, [row]));
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
+        RefreshCopilotReferences();
     }
     private void MergeLastKnownSnapshots(IEnumerable<QuotaSnapshot> snapshots)
     {
@@ -1797,6 +1907,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             foreach (var duplicate in matches.Skip(1).OrderByDescending(item => item.index)) Cards.RemoveAt(duplicate.index);
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty));
+        RefreshCopilotReferences();
     }
     private static bool HasValidatedCopilotNoData(QuotaRefreshResult result)
     {
@@ -1891,17 +2002,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         IsCopilotFlowActive = active;
         foreach (var name in new[] { nameof(IsCopilotFlowActive), nameof(CanStartCopilot), nameof(CanPollCopilot) }) OnPropertyChanged(name);
     }
+    private ProviderCardViewModel WithCopilotReference(ProviderCardViewModel card) => card with
+    {
+        ManualReferenceCredits = card.Provider == ProviderKind.Copilot ? Settings.CopilotReferenceCredits : null,
+        CopilotGrossUsed = card.Provider == ProviderKind.Copilot ? card.Windows.Select(row => row.Snapshot?.CopilotUsage?.GrossQuantity).FirstOrDefault(value => value is not null) : null,
+        CurrentLanguage = Language
+    };
+    private void RefreshCopilotReferences()
+    {
+        for (var i = 0; i < Cards.Count; i++) Cards[i] = WithCopilotReference(Cards[i]);
+        OnPropertyChanged(nameof(Cards));
+    }
     private void LoadCards()
     {
         Cards.Clear();
-        foreach (var card in source.Load()) Cards.Add(card);
+        foreach (var card in source.Load()) Cards.Add(WithCopilotReference(card));
         if (Cards.Count == 0 && quotaHistory is not null)
         {
             // Persistent sources are loaded by InitializeAsync without blocking the UI thread.
         }
         OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(EmptyStateText));
     }
-    private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { if (IsDisposed) return; var replacement = cards.ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
+    private void ReplaceCards(IEnumerable<ProviderCardViewModel> cards) { if (IsDisposed) return; var replacement = cards.Select(WithCopilotReference).ToList(); Cards.Clear(); foreach (var card in replacement) Cards.Add(card); OnPropertyChanged(nameof(HasCards)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsEmpty)); }
     private void ProjectCopilotNoData(CopilotRequestedPeriod period)
     {
         var account = $"{period.Organization}/{period.User}";
@@ -1912,7 +2034,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var card = Cards.FirstOrDefault(item => item.Provider == ProviderKind.Copilot && item.Account == account);
         if (card is null) card = new(ProviderKind.Copilot, copy.ProviderName(ProviderKind.Copilot), account, "#78A9FF", copy.CopilotNoUsageState, false, []);
         var windows = card.Windows.Where(item => item.Snapshot is { Source: QuotaSource.Manual }).Append(row).ToArray();
-        var updated = card with { StateText = copy.CopilotNoUsageState, Windows = windows, CopilotNoDataPeriod = period, CurrentLanguage = Language };
+        var updated = WithCopilotReference(card with { StateText = copy.CopilotNoUsageState, Windows = windows, CopilotNoDataPeriod = period, CurrentLanguage = Language });
         var index = Cards.IndexOf(card);
         if (index < 0) Cards.Add(updated); else Cards[index] = updated;
         OnPropertyChanged(nameof(HasCards));
@@ -1938,7 +2060,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 var hasFreshRow = windows.Any(row => row.Snapshot is { Source: not QuotaSource.Manual } && !row.IsStale);
                 state = hasFreshRow ? (Language == UiLanguage.Japanese ? "接続済み" : "Connected") : (Language == UiLanguage.Japanese ? "更新できませんでした" : "Stale · refresh failed");
             }
-            Cards[cardIndex] = card with { StateText = state, Windows = windows };
+            Cards[cardIndex] = WithCopilotReference(card with { StateText = state, Windows = windows });
         }
     }
     private static string FormatAge(DateTimeOffset fetched, DateTimeOffset now)

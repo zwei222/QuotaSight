@@ -45,6 +45,16 @@ public sealed class UiCopy
     public string CopilotNoDataAutomation(string period) => $"{period} · {CopilotNoDataDetails}";
     public string CopilotMonthPeriod(int year, int month) => IsJapanese ? $"{year}年{month}月 · UTC" : $"{new DateTime(year, month, 1).ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)} · UTC";
 
+    public string CopilotManualReference(decimal? used, decimal reference) => used is { } value
+        ? IsJapanese ? $"使用済み {value:#,0.##} / 手動参考枠 {reference:#,0.##} credits" : $"Used {value:#,0.##} / manual reference {reference:#,0.##} credits"
+        : IsJapanese ? $"使用量不明 / 手動参考枠 {reference:#,0.##} credits" : $"Usage unavailable / manual reference {reference:#,0.##} credits";
+    public string CopilotReferenceDisclaimer => IsJapanese ? "個人の残高・契約上限ではありません。" : "Not a personal balance or plan limit.";
+    public string CopilotReferenceLabel => IsJapanese ? "Copilot手動参考枠（クレジット）" : "Copilot manual reference credits";
+    public string CopilotReferenceHint => IsJapanese ? "比較用の設定値です。個人の残高・契約上限ではありません。空欄で解除できます。" : "A comparison preference only—not a personal balance or plan limit. Leave blank to clear.";
+    public string CopilotReferenceSave => IsJapanese ? "保存" : "Save";
+    public string CopilotReferenceInvalid => IsJapanese ? "正の数値を入力してください。空欄にすると解除されます。" : "Enter a positive number, or leave blank to clear.";
+    public string CopilotReferenceSaveFailed => IsJapanese ? "設定を保存できませんでした。" : "Unable to save this setting.";
+
     public string CopilotReauthenticate => IsJapanese ? "再認証をお試しください" : "Try re-authenticating";
     public string CopilotSessionOnlyStorage => IsJapanese ? "認証情報はこのセッション中のみ保持されます。アプリを再起動すると、再認証が必要です。" : "Your sign-in is kept for this session only. You’ll need to authenticate again after restarting the app.";
     public string CopilotFlowWaiting => IsJapanese ? "認証中です。ブラウザーでコードを入力してください。" : "Authentication is in progress. Waiting for you to enter the code in your browser.";

@@ -150,7 +150,24 @@ public sealed class RealFeatureTests
 
         var rows = Assert.Single(DashboardAggregation.ToCards(snapshots, now)).Windows;
 
-        Assert.Equal(["Rolling metric", "Custom metric", "Daily metric", "Monthly metric"], rows.Select(row => row.Metric));
+        Assert.Equal(["Daily metric", "Rolling metric", "Monthly metric", "Custom metric"], rows.Select(row => row.Metric));
+    }
+
+    [Fact]
+    public async Task OpenCode_weekly_precedes_monthly_when_valid_durations_differ_and_survives_refresh_and_language_switch()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var monthly = Snapshot(10) with { Provider = ProviderKind.OpenCode, Account = "go", Metric = "usage", Used = 10, Window = new(QuotaWindowKind.Monthly, now.AddDays(-2), now.AddDays(2)), DisplayName = "OpenCode Go" };
+        var weekly = monthly with { Used = 90, Window = new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(6)) };
+
+        var aggregate = Assert.Single(DashboardAggregation.ToCards([monthly, weekly], now));
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], aggregate.Windows.Select(row => row.WindowKind));
+
+        var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedTimeProvider(now));
+        await vm.ApplyProviderSnapshotsAsync([monthly, weekly]);
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
     }
 
     [Fact]
