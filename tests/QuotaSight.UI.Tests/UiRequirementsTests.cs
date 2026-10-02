@@ -717,7 +717,7 @@ public sealed class UiRequirementsTests
                 [UsageBand.OverLimit] = theme == ThemeMode.Light ? Color.Parse("#7A1FA2") : Color.Parse("#E0A0FF")
             };
 
-            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate).ToList();
+            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate && bar.DataContext is QuotaRowViewModel).ToList();
             Assert.Equal(8, bars.Count);
             foreach (var bar in bars)
             {

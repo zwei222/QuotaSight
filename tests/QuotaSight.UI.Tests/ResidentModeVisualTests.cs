@@ -202,7 +202,7 @@ public sealed class ResidentModeVisualTests
                 window.UpdateLayout();
                 var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key?.ToString() == (variant == ThemeVariant.Light ? "Light" : "Dark")).Value!;
                 var expected = new[] { "GaugeNormalBrush", "GaugeAttentionBrush", "GaugeDangerBrush", "GaugeOverBrush" };
-                var gauges = window.FindControl<ItemsControl>("CompactProviderCards")!.GetVisualDescendants().OfType<ProgressBar>().ToArray();
+                var gauges = window.FindControl<ItemsControl>("CompactProviderCards")!.GetVisualDescendants().OfType<ProgressBar>().Where(bar => bar.DataContext is QuotaRowViewModel).ToArray();
 
                 Assert.Equal(4, gauges.Length);
                 for (var index = 0; index < gauges.Length; index++)

@@ -63,6 +63,8 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public CopilotRequestedPeriod? CopilotNoDataPeriod { get; init; }
     public bool IsCopilotNoData => CopilotNoDataPeriod is not null;
     public bool IsNotCopilotNoData => CopilotNoDataPeriod is null;
+    public bool IsStatusVisible => IsNotCopilotNoData && !IsQuantityOnly;
+    public bool IsStatusOrNoDataVisible => IsStatusVisible || IsCopilotNoData;
 }
 public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, string Account, string Accent, string StateText, bool IsDemo, IReadOnlyList<QuotaRowViewModel> Windows)
 {
@@ -75,14 +77,21 @@ public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, s
     public decimal? ManualReferenceCredits { get; init; }
     public decimal? CopilotGrossUsed { get; init; }
     public bool IsCopilotReferenceVisible => ManualReferenceCredits is > 0;
+    public string CopilotReferencePercentText => !IsCopilotReferenceVisible ? string.Empty : new UiCopy(CurrentLanguage).CopilotReferencePercentDisplay(CopilotGrossUsed is >= 0 ? SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits!.Value) : null);
+    public string CopilotReferenceGaugeLabel => !IsCopilotReferenceVisible ? string.Empty : new UiCopy(CurrentLanguage).CopilotUsagePercent(CopilotGrossUsed is >= 0 ? SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits!.Value) : null);
     public string CopilotUsagePercentText => !IsCopilotReferenceVisible ? string.Empty : new UiCopy(CurrentLanguage).CopilotUsagePercent(CopilotGrossUsed is >= 0 ? SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits!.Value) : null) + ". " + new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer;
+    public double CopilotReferenceVisualPercent => CopilotGrossUsed is >= 0 && ManualReferenceCredits is > 0 ? (double)Math.Clamp(SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits.Value) ?? 0m, 0m, 100m) : 0d;
+    public bool IsCopilotReferenceGaugeVisible => IsCopilotReferenceVisible && CopilotGrossUsed is >= 0 && SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits!.Value) is not null;
+    public string CopilotReferenceBadge => new UiCopy(CurrentLanguage).CopilotManualReferenceBadge;
+    public string CopilotReferenceCaption => new UiCopy(CurrentLanguage).CopilotReferenceShortCaption;
     private static decimal? SafeReferencePercent(decimal used, decimal reference)
     {
         if (reference <= 0m || used < 0m) return null;
         try { return checked(used / reference * 100m); }
         catch (OverflowException) { return null; }
     }
-    public string CopilotReferenceText => ManualReferenceCredits is not > 0 ? string.Empty : $"{new UiCopy(CurrentLanguage).CopilotManualReference(CopilotGrossUsed, ManualReferenceCredits.Value)}. {new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer}";
+    public string CopilotReferenceText => ManualReferenceCredits is not > 0 ? string.Empty : new UiCopy(CurrentLanguage).CopilotReferenceDetail(CopilotGrossUsed, ManualReferenceCredits.Value);
+    public string CopilotReferenceDisclaimer => new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer;
 }
 
 public static class QuotaPresentationFormatter

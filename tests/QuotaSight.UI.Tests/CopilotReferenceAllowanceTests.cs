@@ -1,3 +1,4 @@
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.VisualTree;
@@ -23,6 +24,64 @@ public sealed class CopilotReferenceAllowanceTests
         var card = Assert.Single(vm.Cards);
         Assert.Contains($"Usage vs manual reference: {expectedPercent}%", card.CopilotUsagePercentText);
         Assert.Contains("not", card.CopilotUsagePercentText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [AvaloniaFact]
+    public async Task Manual_reference_uses_clamped_gauge_and_one_disclaimer_in_both_cards()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("1900");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(3800m)]);
+        var card = Assert.Single(vm.Cards);
+        Assert.Equal(100, card.CopilotReferenceVisualPercent);
+        Assert.Contains("200%", card.CopilotReferencePercentText);
+        Assert.DoesNotContain("Not a personal balance", card.CopilotReferencePercentText);
+        Assert.DoesNotContain("Not a personal balance", card.CopilotReferenceText);
+        Assert.Contains("Not a personal balance", card.CopilotReferenceDisclaimer);
+        Assert.DoesNotContain(card.Windows.Single().CompositionBarLabel, "Gross composition bar");
+        var main = new MainWindow(vm); var compact = new CompactQuotaWindow(vm);
+        main.Show(); compact.Show();
+        Assert.Contains(main.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CopilotReferenceGauge" && bar.IsVisible && bar.Value == 100 && AutomationProperties.GetName(bar)?.Contains("manual reference", StringComparison.OrdinalIgnoreCase) == true && AutomationProperties.GetName(bar)?.Contains("200%", StringComparison.Ordinal) == true);
+        Assert.Contains(compact.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CompactCopilotReferenceGauge" && bar.IsVisible && bar.Value == 100 && AutomationProperties.GetName(bar)?.Contains("manual reference", StringComparison.OrdinalIgnoreCase) == true && AutomationProperties.GetName(bar)?.Contains("200%", StringComparison.Ordinal) == true);
+        main.Close(); compact.Close();
+    }
+
+    [Fact]
+    public async Task Unknown_usage_has_no_gauge_and_clearing_reference_removes_comparison_while_normal_gauge_is_unchanged()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("1900");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)]);
+        var card = Assert.Single(vm.Cards);
+        Assert.True(card.IsCopilotReferenceVisible);
+        Assert.False(card.IsCopilotReferenceGaugeVisible);
+        Assert.Contains("unavailable", card.CopilotReferencePercentText, StringComparison.OrdinalIgnoreCase);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
+        await vm.SetCopilotReferenceAsync("");
+        card = Assert.Single(vm.Cards);
+        Assert.False(card.IsCopilotReferenceGaugeVisible);
+        Assert.Empty(card.CopilotReferencePercentText);
+        var normal = QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.Claude, "a", "Weekly", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(6)), 42, 100, null, "percent", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, null), DateTimeOffset.UtcNow);
+        Assert.True(normal.IsGaugeVisible);
+        Assert.Equal(42, normal.VisualPercent);
+    }
+
+    [Fact]
+    public async Task Overflowing_reference_percent_hides_gauge_while_measured_zero_remains_visible()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("0.0000000000000000000000000001");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(decimal.MaxValue)]);
+        var overflow = Assert.Single(vm.Cards);
+        Assert.Contains("unavailable", overflow.CopilotReferencePercentText, StringComparison.OrdinalIgnoreCase);
+        Assert.False(overflow.IsCopilotReferenceGaugeVisible);
+        Assert.Equal(0, overflow.CopilotReferenceVisualPercent);
+
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(0m)]);
+        var measuredZero = Assert.Single(vm.Cards);
+        Assert.Contains("0%", measuredZero.CopilotReferencePercentText);
+        Assert.True(measuredZero.IsCopilotReferenceGaugeVisible);
+        Assert.Equal(0, measuredZero.CopilotReferenceVisualPercent);
     }
 
     [Fact]
@@ -52,10 +111,17 @@ public sealed class CopilotReferenceAllowanceTests
         Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
         Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Not a personal balance or plan limit.") == true);
         Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
-        Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Not a personal balance or plan limit.") == true);
+        Assert.Single(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
+        Assert.Single(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
+        var mainDisclaimer = main.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
+        var compactDisclaimer = compact.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
+        Assert.Equal(Avalonia.Media.TextWrapping.Wrap, mainDisclaimer.TextWrapping);
+        Assert.Equal(Avalonia.Media.TextWrapping.Wrap, compactDisclaimer.TextWrapping);
+        Assert.InRange(mainDisclaimer.Bounds.Width, 1, 300);
+        Assert.InRange(compactDisclaimer.Bounds.Width, 1, 390);
         vm.Language = UiLanguage.Japanese;
         Assert.Contains("参考枠に対する使用率", vm.Cards[0].CopilotUsagePercentText);
-        Assert.Contains("個人", vm.Cards[0].CopilotUsagePercentText);
+        Assert.Contains("個人", vm.Cards[0].CopilotReferenceDisclaimer);
         main.Close(); compact.Close();
     }
 
@@ -72,10 +138,12 @@ public sealed class CopilotReferenceAllowanceTests
         Assert.Equal(1900m, card.ManualReferenceCredits);
         Assert.Contains("725", card.CopilotReferenceText);
         Assert.Contains("1,900", card.CopilotReferenceText);
-        Assert.Contains("not", card.CopilotReferenceText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("manual reference", card.CopilotReferenceText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("個人", card.CopilotReferenceText);
+        Assert.Contains("Not a personal balance", card.CopilotReferenceDisclaimer);
         vm.Language = UiLanguage.Japanese;
         Assert.Contains("使用済み", vm.Cards[0].CopilotReferenceText);
-        Assert.Contains("個人", vm.Cards[0].CopilotReferenceText);
+        Assert.Contains("個人", vm.Cards[0].CopilotReferenceDisclaimer);
         vm.Language = UiLanguage.English;
         Assert.True(await vm.SetCopilotReferenceAsync(""));
         Assert.Null(vm.Cards[0].ManualReferenceCredits);

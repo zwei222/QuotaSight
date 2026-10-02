@@ -15,7 +15,7 @@ public sealed class CopilotCompositionVisualTests
     [InlineData(UiLanguage.Japanese, 1950, "総量の内訳を表示しています（使用率ゲージではありません）")]
     [InlineData(UiLanguage.English, 0, "Gross composition only; this is not a percentage gauge")]
     [InlineData(UiLanguage.Japanese, 0, "総量の内訳を表示しています（使用率ゲージではありません）")]
-    public void Main_and_compact_templates_keep_the_quantity_explanation_visible_without_a_gauge(UiLanguage language, decimal gross, string explanation)
+    public void Main_and_compact_templates_hide_obsolete_quantity_status_without_a_gauge(UiLanguage language, decimal gross, string explanation)
     {
         var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
         var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "octocat", "AI credits", new(QuotaWindowKind.Monthly, now.AddDays(-3), now.AddDays(28)), null, null, null, "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.AddDays(28), "GitHub Copilot Business", new(gross, 0, gross));
@@ -43,7 +43,7 @@ public sealed class CopilotCompositionVisualTests
     }
 
     [AvaloniaFact]
-    public void Main_and_compact_templates_expose_the_same_quantity_composition_semantics_without_a_percentage_gauge()
+    public void Main_and_compact_templates_relegate_composition_to_text_without_a_duplicate_gross_bar()
     {
         var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
         var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "octocat", "AI credits", new(QuotaWindowKind.Monthly, now.AddDays(-3), now.AddDays(28)), null, null, null, "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.AddDays(28), "GitHub Copilot Business", new(1950, 1200, 750));
@@ -53,44 +53,28 @@ public sealed class CopilotCompositionVisualTests
         var compact = new CompactQuotaWindow(compactVm);
         try
         {
-            main.Show();
-            compact.Show();
-            AssertBar(main, "CopilotCompositionBar");
-            AssertBar(compact, "CompactCopilotCompositionBar");
-            Assert.Equal(mainVm.Cards.Single().Windows.Single().CompositionBarLabel, compactVm.Cards.Single().Windows.Single().CompositionBarLabel);
-
-            mainVm.Language = UiLanguage.Japanese;
-            compactVm.Language = UiLanguage.Japanese;
-            main.UpdateLayout();
-            compact.UpdateLayout();
-            Assert.Equal("含まれる分", mainVm.Cards.Single().Windows.Single().CompositionIncludedLabel.Split(' ')[0]);
-            Assert.Equal("追加分", compactVm.Cards.Single().Windows.Single().CompositionAdditionalLabel.Split(' ')[0]);
+            main.Show(); compact.Show();
+            Assert.DoesNotContain(main.GetVisualDescendants().OfType<Border>(), border => border.Name == "CopilotCompositionBar");
+            Assert.DoesNotContain(compact.GetVisualDescendants().OfType<Border>(), border => border.Name == "CompactCopilotCompositionBar");
+            Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Included", StringComparison.Ordinal) == true);
+            Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Additional", StringComparison.Ordinal) == true);
+            Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Included", StringComparison.Ordinal) == true);
+            Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Additional", StringComparison.Ordinal) == true);
+            Assert.DoesNotContain(main.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.IsVisible && bar.Value == 100);
+            Assert.DoesNotContain(compact.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.IsVisible && bar.Value == 100);
+            mainVm.Language = UiLanguage.Japanese; compactVm.Language = UiLanguage.Japanese;
+            Assert.Contains("含まれる分", mainVm.Cards.Single().Windows.Single().CompositionIncludedLabel);
+            Assert.Contains("追加分", compactVm.Cards.Single().Windows.Single().CompositionAdditionalLabel);
         }
-        finally
-        {
-            main.Close();
-            compact.Close();
-        }
-    }
-
-    private static void AssertBar(Window window, string name)
-    {
-        var bar = window.GetVisualDescendants().OfType<Border>().Single(border => border.Name == name);
-        Assert.True(bar.IsVisible);
-        Assert.Equal(window.DataContext is MainViewModel vm ? vm.Cards.Single().Windows.Single().CompositionBarLabel : string.Empty, AutomationProperties.GetName(bar));
-        Assert.DoesNotContain(window.GetVisualDescendants().OfType<ProgressBar>(), progress => progress.IsVisible && progress.DataContext is QuotaRowViewModel { IsQuantityOnly: true });
-        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Included", StringComparison.Ordinal) == true);
-        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Additional", StringComparison.Ordinal) == true);
-        var compositionLabel = window.DataContext is MainViewModel viewModel ? viewModel.Cards.Single().Windows.Single().CompositionBarLabel : string.Empty;
-        Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == compositionLabel);
-        Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Total:", StringComparison.Ordinal) == true);
+        finally { main.Close(); compact.Close(); }
     }
 
     private static void AssertQuantityExplanation(Window window, QuotaRowViewModel row, string explanation)
     {
         Assert.True(row.IsQuantityOnly);
         Assert.False(row.IsGaugeVisible);
-        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == explanation);
+        Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == explanation);
+        Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == row.QuantityGrossText);
     }
 
     private sealed class FixedSource(QuotaSnapshot snapshot) : IDashboardSource
