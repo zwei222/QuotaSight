@@ -75,6 +75,13 @@ public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, s
     public decimal? ManualReferenceCredits { get; init; }
     public decimal? CopilotGrossUsed { get; init; }
     public bool IsCopilotReferenceVisible => ManualReferenceCredits is > 0;
+    public string CopilotUsagePercentText => !IsCopilotReferenceVisible ? string.Empty : new UiCopy(CurrentLanguage).CopilotUsagePercent(CopilotGrossUsed is >= 0 ? SafeReferencePercent(CopilotGrossUsed.Value, ManualReferenceCredits!.Value) : null) + ". " + new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer;
+    private static decimal? SafeReferencePercent(decimal used, decimal reference)
+    {
+        if (reference <= 0m || used < 0m) return null;
+        try { return checked(used / reference * 100m); }
+        catch (OverflowException) { return null; }
+    }
     public string CopilotReferenceText => ManualReferenceCredits is not > 0 ? string.Empty : $"{new UiCopy(CurrentLanguage).CopilotManualReference(CopilotGrossUsed, ManualReferenceCredits.Value)}. {new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer}";
 }
 

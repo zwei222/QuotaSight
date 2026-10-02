@@ -9,12 +9,64 @@ namespace QuotaSight.UI.Tests;
 
 public sealed class CopilotReferenceAllowanceTests
 {
+    [Theory]
+    [InlineData(300d)]
+    [InlineData(0d)]
+    [InlineData(1900d)]
+    [InlineData(3800d)]
+    public async Task Gross_usage_percent_is_visible_against_manual_reference(double actual)
+    {
+        var expectedPercent = ((decimal)actual * 100m / 1900m).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("1900");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot((decimal)actual)]);
+        var card = Assert.Single(vm.Cards);
+        Assert.Contains($"Usage vs manual reference: {expectedPercent}%", card.CopilotUsagePercentText);
+        Assert.Contains("not", card.CopilotUsagePercentText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Missing_gross_and_unset_reference_never_invent_a_percent()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)]);
+        var card = Assert.Single(vm.Cards);
+        Assert.DoesNotContain("%", card.CopilotUsagePercentText);
+        await vm.SetCopilotReferenceAsync("1900");
+        Assert.DoesNotContain("%", vm.Cards[0].CopilotUsagePercentText);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
+        Assert.Contains("%", vm.Cards[0].CopilotUsagePercentText);
+        await vm.SetCopilotReferenceAsync("");
+        Assert.DoesNotContain("%", vm.Cards[0].CopilotUsagePercentText);
+    }
+
+    [AvaloniaFact]
+    public async Task Percent_and_disclaimer_render_in_main_and_compact_windows_and_relocalize()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("1900");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(300m)]);
+        var main = new MainWindow(vm);
+        var compact = new CompactQuotaWindow(vm);
+        main.Show(); compact.Show();
+        Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
+        Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Not a personal balance or plan limit.") == true);
+        Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
+        Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Not a personal balance or plan limit.") == true);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("参考枠に対する使用率", vm.Cards[0].CopilotUsagePercentText);
+        Assert.Contains("個人", vm.Cards[0].CopilotUsagePercentText);
+        main.Close(); compact.Close();
+    }
+
+    private static QuotaSnapshot CopilotSnapshot(decimal? gross) => new(ProviderKind.Copilot, "acme/alex", "AI credits", new(QuotaWindowKind.Monthly, DateTimeOffset.UtcNow.AddDays(-4), DateTimeOffset.UtcNow.AddDays(26)), null, null, null, "credits", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Delayed, QuotaConfidence.Reported, null, "GitHub Copilot", new CopilotUsageBreakdown(gross, 500m, 225m));
+
     [AvaloniaFact]
     public async Task Configured_reference_projects_actual_gross_to_main_and_compact_cards()
     {
         var vm = new MainViewModel(new EmptyDashboardSource());
         Assert.True(await vm.SetCopilotReferenceAsync("1900"));
-        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "acme/alex", "AI credits", new(QuotaWindowKind.Monthly, DateTimeOffset.UtcNow.AddDays(-4), DateTimeOffset.UtcNow.AddDays(26)), null, null, null, "credits", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Delayed, QuotaConfidence.Reported, null, "GitHub Copilot", new CopilotUsageBreakdown(725m, 500m, 225m));
+        var snapshot = CopilotSnapshot(725m);
         await vm.ApplyProviderSnapshotsAsync([snapshot]);
         var card = Assert.Single(vm.Cards);
         Assert.Equal(1900m, card.ManualReferenceCredits);
@@ -36,8 +88,7 @@ public sealed class CopilotReferenceAllowanceTests
         var vm = new MainViewModel(new EmptyDashboardSource());
         await vm.SetCopilotReferenceAsync("1900");
         vm.SetSettings(new AppSettingsDto(CopilotReferenceCredits: 1900m), persist: false);
-        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "acme/alex", "AI credits", new(QuotaWindowKind.Monthly, DateTimeOffset.UtcNow.AddDays(-4), DateTimeOffset.UtcNow.AddDays(26)), null, null, null, "credits", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Delayed, QuotaConfidence.Reported, null, "GitHub Copilot", new CopilotUsageBreakdown(725m, 500m, 225m));
-        await vm.ApplyProviderSnapshotsAsync([snapshot]);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
         vm.Navigate(AppPage.Settings);
         var window = new MainWindow(vm);
         window.Show();
@@ -94,12 +145,10 @@ public sealed class CopilotReferenceAllowanceTests
             await store.SaveAsync(new AppSettingsDto(CopilotReferenceCredits: 1900m));
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
             vm.SetSettings(await store.LoadAsync(), persist: false);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot()]);
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
             using var canceled = new CancellationTokenSource();
             canceled.Cancel();
-
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.SetCopilotReferenceAsync("2000", canceled.Token));
-
             Assert.Equal(1900m, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(1900m, Assert.Single(vm.Cards).ManualReferenceCredits);
             Assert.Equal(1900m, (await store.LoadAsync()).CopilotReferenceCredits);
@@ -116,10 +165,8 @@ public sealed class CopilotReferenceAllowanceTests
         {
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(root));
             vm.SetSettings(new AppSettingsDto(CopilotReferenceCredits: 1900m), persist: false);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot()]);
-
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
             await Assert.ThrowsAnyAsync<IOException>(() => vm.SetCopilotReferenceAsync("2000"));
-
             Assert.Equal(1900m, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(1900m, Assert.Single(vm.Cards).ManualReferenceCredits);
             Assert.Equal("not a directory", File.ReadAllText(root));
@@ -135,13 +182,11 @@ public sealed class CopilotReferenceAllowanceTests
         {
             var store = new AppSettingsStore(root);
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot()]);
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
             var first = vm.SetCopilotReferenceAsync("2000");
             var second = vm.SetCopilotReferenceAsync("2100");
-
             Assert.True(await first);
             Assert.True(await second);
-
             var persisted = (await store.LoadAsync()).CopilotReferenceCredits;
             Assert.Equal(persisted, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(persisted, Assert.Single(vm.Cards).ManualReferenceCredits);
@@ -149,6 +194,4 @@ public sealed class CopilotReferenceAllowanceTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
-
-    private static QuotaSnapshot CopilotSnapshot() => new(ProviderKind.Copilot, "acme/alex", "AI credits", new(QuotaWindowKind.Monthly, DateTimeOffset.UtcNow.AddDays(-4), DateTimeOffset.UtcNow.AddDays(26)), null, null, null, "credits", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Delayed, QuotaConfidence.Reported, null, "GitHub Copilot", new CopilotUsageBreakdown(725m, 500m, 225m));
 }
