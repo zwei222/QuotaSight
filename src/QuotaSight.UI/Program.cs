@@ -12,8 +12,54 @@ public static class Program
             Environment.ExitCode = SmokeTest.Run();
             return;
         }
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+
+        if (args.Contains("--notification-probe", StringComparer.Ordinal))
+        {
+#if WINDOWS
+            Microsoft.Windows.AppNotifications.AppNotificationManager? manager = null;
+            Environment.ExitCode = NotificationApiProbe.Run(
+                Microsoft.Windows.AppNotifications.AppNotificationManager.IsSupported,
+                () => manager = Microsoft.Windows.AppNotifications.AppNotificationManager.Default,
+                () => manager!.NotificationInvoked += ProbeNotificationInvoked,
+                () => manager!.Register(),
+                () => manager!.Unregister(),
+                () => manager!.UnregisterAll(),
+                () => manager!.NotificationInvoked -= ProbeNotificationInvoked,
+                Console.Error.WriteLine);
+#else
+            Environment.ExitCode = NotificationApiProbe.Run(
+                () => false,
+                () => throw new PlatformNotSupportedException(),
+                static () => { },
+                static () => { },
+                static () => { },
+                static () => { },
+                static () => { },
+                Console.Error.WriteLine);
+#endif
+            return;
+        }
+
+        try
+        {
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        }
+        finally
+        {
+#if WINDOWS
+            WindowsDesktopNotifications.UnregisterIfRegistered();
+#endif
+        }
     }
+
+#if WINDOWS
+    private static void ProbeNotificationInvoked(
+        Microsoft.Windows.AppNotifications.AppNotificationManager sender,
+        Microsoft.Windows.AppNotifications.AppNotificationActivatedEventArgs args)
+    {
+    }
+#endif
+
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace();
 }
 

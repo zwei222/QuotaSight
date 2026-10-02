@@ -5,6 +5,7 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 using Avalonia.Automation;
 using QuotaSight.Core;
 using QuotaSight.UI;
@@ -19,12 +20,13 @@ public sealed class PresentationTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 5, 12, 0, 0, TimeSpan.FromHours(9));
 
-    [Fact] public void Percent_clamps_visual_value_but_preserves_overage() { var s = DemoData.Create(Now)[2].Windows[0]; Assert.Equal(100d, s.VisualPercent); Assert.Contains("over", s.StatusText, StringComparison.OrdinalIgnoreCase); }
+    [Fact] public void Percent_clamps_visual_value_but_preserves_overage() { var s = DemoData.Create(Now).SelectMany(card => card.Windows).Single(row => row.IsOverLimit); Assert.Equal(100d, s.VisualPercent); Assert.Contains("over", s.StatusText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Remaining_percent_is_explicit() { Assert.Contains("remaining", DemoData.Create(Now)[0].Windows[0].PercentText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Relative_reset_uses_local_wording() { Assert.Contains("in", DemoData.Create(Now)[0].Windows[0].ResetText, StringComparison.OrdinalIgnoreCase); }
     [Fact] public void Manual_snapshot_is_badged_manual() { Assert.Equal("Manual", DemoData.Create(Now)[0].Windows[0].SourceBadge); }
     [Fact] public void Stale_snapshot_is_badged_stale() { Assert.Contains(DemoData.Create(Now), c => c.Windows.Any(w => w.IsStale)); }
     [Fact] public void Four_demo_accounts_are_present() { Assert.Equal(4, DemoData.Create(Now).Count); }
+    [Fact] public void Demo_card_windows_put_the_shortest_actual_period_first_even_when_monthly_is_created_first() { Assert.All(DemoData.Create(Now), card => Assert.Equal(QuotaWindowKind.Daily, card.Windows[0].WindowKind)); }
     [Fact] public void Language_switch_has_two_supported_languages() { Assert.Equal(["English", "日本語"], UiSettings.SupportedLanguages); }
     [Fact] public void Refresh_interval_validation_rejects_short_values() { Assert.False(UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(4))); }
     [Fact] public void Refresh_interval_validation_rejects_long_values() { Assert.False(UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(16))); }
@@ -180,6 +182,94 @@ public sealed class PresentationTests
             Assert.True(
                 ContrastRatio(warningBackground, warningForeground) >= 4.5,
                 $"{themeKey} warning contrast must be at least 4.5:1.");
+        }
+    }
+
+    [AvaloniaFact]
+    public void OpenCode_credential_notice_uses_warning_text_color_on_card_surface_in_both_themes()
+    {
+        var app = Assert.IsType<App>(Avalonia.Application.Current);
+        var previousTheme = UiSettings.AppliedTheme;
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()));
+        try
+        {
+            window.ViewModel.SelectProvider(ProviderConnectionChoice.OpenCode);
+            window.Show();
+            foreach (var variant in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+            {
+                UiSettings.ApplyTheme(variant == ThemeVariant.Light ? ThemeMode.Light : ThemeMode.Dark);
+                window.RequestedThemeVariant = variant;
+                window.UpdateLayout();
+                var notice = window.GetVisualDescendants().OfType<TextBlock>().Single(text => text.Text == window.ViewModel.OpenCodeCredentialNotice);
+                var dictionaryKey = variant == ThemeVariant.Light ? "Light" : "Dark";
+                var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == dictionaryKey).Value!;
+                var foreground = Assert.IsAssignableFrom<ISolidColorBrush>(notice.Foreground).Color;
+                var background = ((ISolidColorBrush)theme["CardBrush"]!).Color;
+                Assert.Equal(((ISolidColorBrush)theme["WarningForegroundBrush"]!).Color, foreground);
+                Assert.True(ContrastRatio(background, foreground) >= 4.5, $"{dictionaryKey} credential notice contrast must be at least 4.5:1.");
+            }
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+            UiSettings.ApplyTheme(previousTheme switch
+            {
+                var theme when theme == ThemeVariant.Light => ThemeMode.Light,
+                var theme when theme == ThemeVariant.Dark => ThemeMode.Dark,
+                _ => ThemeMode.System
+            });
+        }
+    }
+
+    [AvaloniaFact]
+    public void Status_text_uses_real_row_textblocks_in_both_windows_and_theme_switches()
+    {
+        var app = Assert.IsType<App>(Avalonia.Application.Current);
+        var previousTheme = UiSettings.AppliedTheme;
+        MainWindow? main = null;
+        CompactQuotaWindow? compact = null;
+        try
+        {
+            main = new MainWindow(new MainViewModel(new DemoDashboardSource()));
+            compact = new CompactQuotaWindow(new MainViewModel(new DemoDashboardSource()));
+            main.Show();
+            compact.Show();
+
+            foreach (var variant in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+            {
+                UiSettings.ApplyTheme(variant == ThemeVariant.Light ? ThemeMode.Light : ThemeMode.Dark);
+                main.RequestedThemeVariant = variant;
+                compact.RequestedThemeVariant = variant;
+                main.UpdateLayout();
+                compact.UpdateLayout();
+                var key = variant == ThemeVariant.Light ? "Light" : "Dark";
+                var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == key).Value!;
+                var surface = ((ISolidColorBrush)theme["CardBrush"]!).Color;
+                var expected = ((ISolidColorBrush)theme["StatusTextForegroundBrush"]!).Color;
+                var statusTexts = new Window[] { main, compact }.Select(window => window.GetVisualDescendants().OfType<TextBlock>()
+                    .Where(text => text.DataContext is QuotaRowViewModel row && text.Text == row.StatusText).ToList()).ToArray();
+                Assert.All(statusTexts, Assert.NotEmpty);
+                foreach (var status in statusTexts.SelectMany(items => items))
+                {
+                    var actual = Assert.IsAssignableFrom<ISolidColorBrush>(status.Foreground).Color;
+                    Assert.Equal(expected, actual);
+                    Assert.True(ContrastRatio(surface, actual) >= 4.5, $"{key} rendered row status contrast must be at least 4.5:1.");
+                }
+            }
+        }
+        finally
+        {
+            compact?.Close();
+            compact?.ViewModel.Dispose();
+            main?.Close();
+            main?.ViewModel.Dispose();
+            UiSettings.ApplyTheme(previousTheme switch
+            {
+                var theme when theme == ThemeVariant.Light => ThemeMode.Light,
+                var theme when theme == ThemeVariant.Dark => ThemeMode.Dark,
+                _ => ThemeMode.System
+            });
         }
     }
 

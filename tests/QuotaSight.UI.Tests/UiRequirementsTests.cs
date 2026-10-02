@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Automation;
 using Avalonia.Interactivity;
 using Avalonia.Headless.XUnit;
@@ -50,6 +51,55 @@ public sealed class UiRequirementsTests
         var exception = Record.Exception(() => noClipboardWindow.FindControl<Button>("CodexCopyButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
         Assert.Null(exception);
         noClipboardWindow.Close();
+    }
+
+    [AvaloniaFact]
+    public void Application_theme_uses_quiet_mineral_surfaces_and_a_single_green_action_accent()
+    {
+        var window = new MainWindow(new MainViewModel(new DemoDashboardSource()));
+        try
+        {
+            window.Show();
+            UiSettings.ApplyTheme(ThemeMode.Light);
+            window.UpdateLayout();
+            AssertBrushColor(window.Background, "#F4F6F3");
+            AssertBrushColor(window.FindControl<Border>("Sidebar")!.Background, "#EEF1ED");
+            AssertBrushColor(window.FindControl<Border>("LocalFirstCard")!.Background, "#FFFFFF");
+            Assert.Equal(14, window.FindControl<Border>("LocalFirstCard")!.CornerRadius.TopLeft);
+            UiSettings.ApplyTheme(ThemeMode.Dark);
+            window.UpdateLayout();
+            AssertBrushColor(window.Background, "#101715");
+            AssertBrushColor(window.FindControl<Border>("Sidebar")!.Background, "#151D1A");
+        }
+        finally { window.Close(); window.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Page_header_is_single_and_sidebar_note_keeps_intrinsic_layout()
+    {
+        var window = new MainWindow(new MainViewModel(new DemoDashboardSource()));
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var navigation = window.FindControl<DockPanel>("MainNavigation")!;
+            var note = window.FindControl<Border>("LocalFirstCard")!;
+            var sidebar = window.FindControl<Border>("Sidebar")!;
+            Assert.False(navigation.LastChildFill);
+            Assert.True(note.Bounds.Height < sidebar.Bounds.Height / 2);
+
+            window.ViewModel.Navigate(AppPage.Settings);
+            window.UpdateLayout();
+            var headings = window.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsVisible && text.Classes.Contains("title") && text.Text == window.ViewModel.CopyText.Settings).ToList();
+            Assert.Single(headings);
+            var header = window.FindControl<Grid>("DashboardHeader")!;
+            Assert.Equal(window.ViewModel.CopyText.Settings, header.GetVisualDescendants().OfType<TextBlock>().First(text => text.Classes.Contains("title")).Text);
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
     }
 
     [AvaloniaFact]
@@ -104,6 +154,7 @@ public sealed class UiRequirementsTests
     public void Icon_actions_keep_the_path_icon_readable_across_theme_and_interaction_states()
     {
         var window = new MainWindow(new MainViewModel(new EmptyDashboardSource())) { Width = 420 };
+        window.ViewModel.Navigate(AppPage.Settings);
         try
         {
             window.Show();
@@ -116,29 +167,56 @@ public sealed class UiRequirementsTests
                 GetPseudoClasses(refresh).Remove(":pressed");
                 window.UpdateLayout();
                 AssertBrushColor(refresh.Background, "#00FFFFFF");
-                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#17211D" : "#F1F5F2");
 
                 GetPseudoClasses(refresh).Add(":pointerover");
                 window.UpdateLayout();
-                AssertBrushColor(refresh.Background, theme == ThemeMode.Light ? "#E8EEFF" : "#242B48");
-                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+                var presenter = Assert.Single(refresh.GetVisualDescendants().OfType<ContentPresenter>(), part => part.Name == "PART_ContentPresenter");
+                AssertBrushColor(presenter.Background, theme == ThemeMode.Light ? "#E5F1EC" : "#202F29");
+                AssertBrushColor(presenter.BorderBrush, theme == ThemeMode.Light ? "#167C68" : "#73D6B1");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#17211D" : "#F1F5F2");
                 GetPseudoClasses(refresh).Remove(":pointerover");
+
+                var navigation = window.GetVisualDescendants().OfType<Button>().Single(button => AutomationProperties.GetName(button) == "Dashboard");
+                GetPseudoClasses(navigation).Add(":pointerover");
+                window.UpdateLayout();
+                var navPresenter = Assert.Single(navigation.GetVisualDescendants().OfType<ContentPresenter>(), part => part.Name == "PART_ContentPresenter");
+                AssertBrushColor(navPresenter.Background, theme == ThemeMode.Light ? "#E5F1EC" : "#202F29");
+                GetPseudoClasses(navigation).Remove(":pointerover");
+
+                var input = window.FindControl<TextBox>("GithubClientIdBox")!;
+                GetPseudoClasses(input).Add(":pointerover");
+                window.UpdateLayout();
+                var inputBorder = Assert.Single(input.GetVisualDescendants().OfType<Border>(), part => part.Name == "PART_BorderElement");
+                Assert.NotEqual(Color.Parse(theme == ThemeMode.Light ? "#DCE3DE" : "#34443C"), ((ISolidColorBrush)inputBorder.BorderBrush!).Color);
+                GetPseudoClasses(input).Remove(":pointerover");
+
+                var combo = window.FindControl<ComboBox>("ThemeBox")!;
+                GetPseudoClasses(combo).Add(":pointerover");
+                window.UpdateLayout();
+                var comboBorder = Assert.Single(combo.GetVisualDescendants().OfType<Border>(), part => part.Name == "Background");
+                Assert.NotEqual(Color.Parse(theme == ThemeMode.Light ? "#DCE3DE" : "#34443C"), ((ISolidColorBrush)comboBorder.BorderBrush!).Color);
+                GetPseudoClasses(combo).Remove(":pointerover");
+
 
                 GetPseudoClasses(refresh).Add(":focus-visible");
                 window.UpdateLayout();
-                AssertBrushColor(refresh.BorderBrush, theme == ThemeMode.Light ? "#405DE6" : "#AAB8FF");
+                var focusedPresenter = Assert.Single(refresh.GetVisualDescendants().OfType<ContentPresenter>(), part => part.Name == "PART_ContentPresenter");
+                AssertBrushColor(focusedPresenter.BorderBrush, theme == ThemeMode.Light ? "#167C68" : "#73D6B1");
+                Assert.Equal(2, focusedPresenter.BorderThickness.Top);
                 GetPseudoClasses(refresh).Remove(":focus-visible");
 
                 GetPseudoClasses(refresh).Add(":pressed");
                 window.UpdateLayout();
-                AssertBrushColor(refresh.Background, theme == ThemeMode.Light ? "#405DE6" : "#AAB8FF");
-                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#F8FAFC" : "#0F131B");
+                var pressedPresenter = Assert.Single(refresh.GetVisualDescendants().OfType<ContentPresenter>(), part => part.Name == "PART_ContentPresenter");
+                Assert.NotEqual(Color.Parse("#E5F1EC"), ((ISolidColorBrush)pressedPresenter.Background!).Color);
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#F4F6F3" : "#101715");
                 GetPseudoClasses(refresh).Remove(":pressed");
 
                 refresh.IsEnabled = false;
                 window.UpdateLayout();
                 Assert.Equal(0.5, refresh.Opacity);
-                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#172033" : "#F4F7FB");
+                AssertBrushColor(icon.Foreground, theme == ThemeMode.Light ? "#17211D" : "#F1F5F2");
                 refresh.IsEnabled = true;
             }
         }
@@ -412,11 +490,11 @@ public sealed class UiRequirementsTests
 
         var row = QuotaPresentationFormatter.Format(snapshot, now, UiLanguage.Japanese);
 
-        Assert.Equal("使用済み 42%・残り 58%", row.PercentText);
+        Assert.Equal("使用率 42%・残り 58%", row.PercentText);
         Assert.Equal("余裕あり", row.StatusText);
         Assert.Equal("メッセージ", row.Metric);
         Assert.Equal("5分前に更新", row.FreshnessText);
-        Assert.Contains("使用済み", row.ProgressLabel);
+        Assert.Contains("使用率", row.ProgressLabel);
     }
 
     [Fact]
@@ -428,8 +506,8 @@ public sealed class UiRequirementsTests
         Assert.Equal("短時間枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Fast window" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("月次", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "monthly" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal(string.Empty, QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "weekly" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("Codex主要枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex primary" }, now, UiLanguage.Japanese).Metric);
-        Assert.Equal("Codex副枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex secondary" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal("Codexの主要利用枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex primary" }, now, UiLanguage.Japanese).Metric);
+        Assert.Equal("Codexの副利用枠", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Codex secondary" }, now, UiLanguage.Japanese).Metric);
         Assert.Equal("Custom metric", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Metric = "Custom metric" }, now, UiLanguage.Japanese).Metric);
     }
 
@@ -441,6 +519,13 @@ public sealed class UiRequirementsTests
         Assert.Equal("利用枠", copy.Window);
         Assert.Equal("使用率（%）", copy.UsedPercent);
         Assert.Equal("リセット日時（任意）", copy.ResetOptional);
+        Assert.Equal("CSVをエクスポート", copy.ExportCsv);
+        Assert.Equal("JSONをエクスポート", copy.ExportJson);
+        Assert.Contains("テレメトリーは送信しません", copy.NoSecretsLeave);
+        Assert.Contains("連携先への認証", copy.NoSecretsLeave);
+        Assert.Contains("セッション中のみ", copy.OpenCodeStatus(new(true, "ignored")));
+        Assert.Contains("トレイを利用できません", copy.TrayUnavailableTitle);
+        Assert.Contains("現在の期間", copy.RefreshNoData([ProviderKind.ChatGpt], new HashSet<ProviderKind>()));
         Assert.DoesNotContain("device flow", copy.CopilotDescription, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Client Secret", copy.CopilotDescription, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("デバイス認証", copy.CodexDescription);
@@ -570,10 +655,10 @@ public sealed class UiRequirementsTests
         var over = QuotaPresentationFormatter.Format(DemoSnapshot(112), now, UiLanguage.Japanese);
         var unknown = QuotaPresentationFormatter.Format(DemoSnapshot(0) with { Used = null, Limit = null }, now, UiLanguage.Japanese);
 
-        Assert.Equal("使用済み 112%", over.PercentText);
+        Assert.Equal("使用率 112%（残り 0%・上限を12%超過）", over.PercentText);
         Assert.Equal("上限を12%超過", over.StatusText);
-        Assert.Equal("使用量を表示できません", unknown.PercentText);
-        Assert.Equal("未取得", unknown.StatusText);
+        Assert.Equal("使用率を表示できません", unknown.PercentText);
+        Assert.Equal("データなし・値: —", unknown.StatusText);
         Assert.Contains("。", unknown.ProgressLabel);
         Assert.DoesNotContain("取得中", unknown.ProgressLabel);
     }
@@ -704,13 +789,13 @@ public sealed class UiRequirementsTests
             UiSettings.ApplyTheme(theme);
             var expected = new Dictionary<UsageBand, Color>
             {
-                [UsageBand.Normal] = theme == ThemeMode.Light ? Color.Parse("#2457D6") : Color.Parse("#8EA7FF"),
-                [UsageBand.Attention] = theme == ThemeMode.Light ? Color.Parse("#9A5B00") : Color.Parse("#FFD166"),
-                [UsageBand.Danger] = theme == ThemeMode.Light ? Color.Parse("#B3261E") : Color.Parse("#FF8A80"),
-                [UsageBand.OverLimit] = theme == ThemeMode.Light ? Color.Parse("#7A1FA2") : Color.Parse("#E0A0FF")
+                [UsageBand.Normal] = theme == ThemeMode.Light ? Color.Parse("#167C68") : Color.Parse("#73D6B1"),
+                [UsageBand.Attention] = theme == ThemeMode.Light ? Color.Parse("#9A6500") : Color.Parse("#F0C66A"),
+                [UsageBand.Danger] = theme == ThemeMode.Light ? Color.Parse("#B33B36") : Color.Parse("#FF918A"),
+                [UsageBand.OverLimit] = theme == ThemeMode.Light ? Color.Parse("#7952A3") : Color.Parse("#D0A4F2")
             };
 
-            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate).ToList();
+            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate && bar.DataContext is QuotaRowViewModel).ToList();
             Assert.Equal(8, bars.Count);
             foreach (var bar in bars)
             {

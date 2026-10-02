@@ -1,7 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net10.0</TargetFramework>
     <OutputType>Exe</OutputType><PublishAot>true</PublishAot>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsPackageType>None</WindowsPackageType>
+    <ApplicationIcon>Assets/quotasight.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.12" />
@@ -9,6 +17,9 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.12" />
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+  </ItemGroup>
   <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
-  <ItemGroup><AvaloniaResource Include="Assets/quotasight-tray.svg" /><AvaloniaResource Include="Assets/quotasight-tray.png" /></ItemGroup>
+  <ItemGroup><AvaloniaResource Include="Assets/quotasight-icon.svg" /><AvaloniaResource Include="Assets/quotasight-*.png" /><AvaloniaResource Include="Assets/quotasight.ico" /></ItemGroup>
 </Project>
