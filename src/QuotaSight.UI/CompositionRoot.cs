@@ -135,7 +135,7 @@ public static class CompositionRoot
         var codex = new CodexSessionManager(new CodexOAuthClient(client, credentials), client);
         var copilot = new DynamicCopilotAdapter(client, credentials, () => settings.Load().GithubOrganization, tokenSession);
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
-        return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
+        return new MainViewModel(source, new ManualQuotaService(history), history, settingsStore: settings, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend(), usageConnectionPort: new ReconfigurableUsageReadPort(), usageCredentialStore: credentials);
     }
 
     public static (MainViewModel ViewModel, IProviderUiService Provider) CreateMainWindowParts(string? dataDirectory = null, HttpClient? httpClient = null, ICredentialStore? credentialStore = null, IDesktopNotificationBackend? desktopNotificationBackend = null)
@@ -150,7 +150,7 @@ public static class CompositionRoot
         var application = new CredentialBackedQuotaApplication(key => new OpenCodeGoAdapter(client, key), credentials, codex, copilotAdapter: copilot);
         var factory = new GitHubClientFactory(client);
         var github = factory.Create(settings.Load().GithubOAuthClientId);
-        var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend());
+        var viewModel = new MainViewModel(new PersistentDashboardSource(history), new ManualQuotaService(history), history, settingsStore: settings, githubFactory: factory, quotaApplication: application, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend(), usageConnectionPort: new ReconfigurableUsageReadPort(), usageCredentialStore: credentials);
         var provider = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key), github, credentials, githubFactory: factory, codexSessionManager: codex, githubTokenSession: tokenSession);
         return (viewModel, provider);
     }

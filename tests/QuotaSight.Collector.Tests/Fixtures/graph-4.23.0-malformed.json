@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "generatedAt": "2026-11-19T18:49:08.899346783+00:00",
+    "version": "4.23.0",
+    "dateRange": { "start": "", "end": "" }
+  },
+  "summary": {
+    "totalTokens": 0,
+    "totalCost": 0.0,
+    "totalDays": 0,
+    "activeDays": 0,
+    "clients": [],
+    "models": [],
+    "costProvenance": { "kind": "unknown" }
+  },
+  "years": [],
+  "contributions": [],
+  "timeMetrics": { "totalActiveTimeMs": 0, "longestContinuousMs": 0, "maxConcurrentSessions": 0, "sessionCount": 0 }
+}

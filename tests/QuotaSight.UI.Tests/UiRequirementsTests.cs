@@ -274,6 +274,30 @@ public sealed class UiRequirementsTests
     }
 
     [AvaloniaFact]
+    public void Usage_navigation_shows_unconfigured_daily_context_without_touching_quota_dashboard()
+    {
+        var window = new MainWindow(new MainViewModel(new EmptyDashboardSource()));
+        try
+        {
+            window.Show();
+            window.FindControl<Button>("UsageNavButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout();
+            Assert.True(window.FindControl<Grid>("UsagePage")!.IsVisible);
+            Assert.False(window.FindControl<Grid>("DashboardPage")!.IsVisible);
+            Assert.Contains("not configured", window.FindControl<TextBlock>("UsageStatus")!.Text, StringComparison.OrdinalIgnoreCase);
+            var usageRange = window.FindControl<TextBlock>("UsageTimeZone")!;
+            Assert.False(usageRange.IsVisible);
+            Assert.Empty(usageRange.Text ?? "");
+            Assert.False(window.ViewModel.IsDemo);
+            window.ViewModel.Language = UiLanguage.Japanese;
+            Assert.Contains("未設定", window.FindControl<TextBlock>("UsageStatus")!.Text);
+            window.ViewModel.Navigate(AppPage.Dashboard);
+            Assert.True(window.FindControl<Grid>("DashboardPage")!.IsVisible);
+        }
+        finally { window.Close(); window.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
     public async Task Codex_code_copy_uses_injected_clipboard_service()
     {
         var clipboard = new RecordingClipboard();

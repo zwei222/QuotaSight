@@ -4,7 +4,11 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
 using Avalonia.Layout;
+using System.ComponentModel;
 using System.Globalization;
 using QuotaSight.Application;
 using QuotaSight.Core;
@@ -88,7 +92,76 @@ public partial class MainWindow : Window
         SizeChanged += (_, _) => ApplyResponsiveLayout();
         ApplyResponsiveLayout();
         Closing += OnClosing;
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        Closed += (_, _) => ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        // A secret field offers no copy command at all: not through the context menu, not
+        // through Ctrl+C. The character is masked and the value is never re-shown after save.
+        if (this.FindControl<TextBox>("UsageClientSecretBox") is { } secretBox)
+        {
+            secretBox.ContextMenu = new ContextMenu();
+        }
 
+        ApplyUsageConnectionState();
+        ApplyUsageStateVisuals();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is null or nameof(MainViewModel.UsageConnectionState) or nameof(MainViewModel.UsageConnectionStatusText))
+        {
+            ApplyUsageConnectionState();
+        }
+
+        if (e.PropertyName is null or nameof(MainViewModel.UsageFailure) or nameof(MainViewModel.UsageFailureText) or nameof(MainViewModel.IsUsageStale))
+        {
+            ApplyUsageStateVisuals();
+        }
+    }
+
+    private void ApplyUsageConnectionState()
+    {
+        if (this.FindControl<Border>("UsageConnectionStatusPanel") is not { } panel) return;
+        foreach (var name in new[] { "unconfigured", "configured", "session-only", "store-unavailable", "invalid" })
+        {
+            panel.Classes.Remove(name);
+        }
+
+        panel.Classes.Add(ViewModel.UsageConnectionState switch
+        {
+            UsageConnectionState.Configured => "configured",
+            UsageConnectionState.SessionOnly => "session-only",
+            UsageConnectionState.StoreUnavailable => "store-unavailable",
+            UsageConnectionState.Invalid => "invalid",
+            _ => "unconfigured",
+        });
+    }
+
+    // The daily usage card's failure banner is colored by state the same way the settings
+    // card is: one class per visual state, applied here because the fixed sentence is
+    // already bound. Stale (values kept) warns, a first failure with no values reads as an
+    // error. The settings detour appears only for failures a retry cannot fix.
+    private void ApplyUsageStateVisuals()
+    {
+        if (this.FindControl<Border>("UsageFailurePanel") is not { } panel) return;
+        var failure = ViewModel.UsageFailure;
+        panel.IsVisible = failure is not UsageFailureKind.None;
+        foreach (var name in new[] { "stale", "error" })
+        {
+            panel.Classes.Remove(name);
+        }
+
+        if (panel.IsVisible)
+        {
+            panel.Classes.Add(ViewModel.IsUsageStale ? "stale" : "error");
+        }
+
+        if (this.FindControl<Button>("UsageOpenSettingsButton") is { } settings)
+        {
+            // A redirect is reported as "check the endpoint", which is a settings-page
+            // action: the detour is offered for it exactly like a credential problem.
+            settings.IsVisible = failure is UsageFailureKind.Unauthorized or UsageFailureKind.Forbidden
+                or UsageFailureKind.Redirected or UsageFailureKind.CredentialMissing;
+        }
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => initializationTask ??= InitializeCoreAsync(cancellationToken);
@@ -152,6 +225,12 @@ public partial class MainWindow : Window
             this.FindControl<CheckBox>("ResidentModeBox")!.IsChecked = persistedResidentMode;
             this.FindControl<TextBox>("GithubClientIdBox")!.Text = ViewModel.Settings.GithubOAuthClientId;
             this.FindControl<TextBox>("GithubOrganizationBox")!.Text = ViewModel.Settings.GithubOrganization;
+            if (isInitializing)
+            {
+                // The endpoint is an ordinary setting and is safe to show; the credential pair
+                // is never repopulated once it has been saved to the credential store.
+                this.FindControl<TextBox>("UsageEndpointBox")!.Text = ViewModel.UsageApiEndpointText;
+            }
             if (isInitializing)
                 this.FindControl<TextBox>("CopilotReferenceCreditsBox")!.Text = ViewModel.Settings.CopilotReferenceCredits?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
             accountFilter.SelectedIndex = 0;
@@ -247,13 +326,23 @@ public partial class MainWindow : Window
     private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();
 
     private void DashboardClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Dashboard);
+    private void UsageClick(object? sender, RoutedEventArgs e) => ViewModel.NavigateToUsage();
     private void HistoryClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.History);
     private void SettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
+    private void UsageOpenSettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
+    private void UsageRetryClick(object? sender, RoutedEventArgs e) => UsageRefreshClick(sender, e);
+    private async void UsageRefreshClick(object? sender, RoutedEventArgs e)
+    {
+        try { await ViewModel.RefreshUsageAsync(); }
+        catch (OperationCanceledException) { }
+    }
     private async void RefreshClick(object? sender, RoutedEventArgs e)
     {
+        if (ViewModel.IsUsageVisible) { await UsageRefreshClickAsync(); return; }
         try { await RunTrackedAsync(token => ViewModel.RefreshAsync(token)); }
         catch (OperationCanceledException) { }
     }
+    private async Task UsageRefreshClickAsync() { try { await ViewModel.RefreshUsageAsync(); } catch (OperationCanceledException) { } }
     private async void ThemeChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (!isInitializing && sender is ComboBox box && box.SelectedItem is LocalizedChoice<ThemeMode> theme)
@@ -383,6 +472,108 @@ public partial class MainWindow : Window
         if (isInitializing || sender is not TextBox box) return;
         try { await RunTrackedAsync(token => ViewModel.SetGithubOrganizationAsync(box.Text ?? string.Empty, token)); }
         catch (OperationCanceledException) { }
+    }
+
+    // Usage connection section. The endpoint is an ordinary setting and may stay visible;
+    // the client id and the client secret are credentials: once saved they are cleared from
+    // the screen and only their presence ("saved") is shown.
+    private async void UsageConnectionSaveClick(object? sender, RoutedEventArgs e)
+    {
+        var endpointBox = this.FindControl<TextBox>("UsageEndpointBox");
+        var idBox = this.FindControl<TextBox>("UsageClientIdBox");
+        var secretBox = this.FindControl<TextBox>("UsageClientSecretBox");
+        var validation = this.FindControl<TextBlock>("UsageConnectionValidationText");
+        SetUsageConnectionBusy(true, removing: false);
+        try
+        {
+            UsageConnectionSaveResult result = new(false, UsageConnectionError.None, ViewModel.UsageConnectionState);
+            await RunTrackedAsync(async token => result = await ViewModel.SaveUsageConnectionAsync(
+                endpointBox?.Text ?? string.Empty,
+                idBox?.Text ?? string.Empty,
+                secretBox?.Text ?? string.Empty,
+                token));
+            if (validation is not null) validation.Text = result.Succeeded ? string.Empty : ViewModel.UsageConnectionErrorText;
+            if (result.Succeeded)
+            {
+                if (endpointBox is { } endpoint) endpoint.Text = ViewModel.UsageApiEndpointText;
+                if (idBox is { } id) id.Text = string.Empty;
+                if (secretBox is { } secret) secret.Text = string.Empty;
+                HideUsageRemoveConfirmation();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception)
+        {
+            if (validation is not null) validation.Text = ViewModel.CopyText.UsageConnectionSaveFailure;
+        }
+        finally { SetUsageConnectionBusy(false, removing: false); }
+    }
+
+    private void UsageConnectionRemoveClick(object? sender, RoutedEventArgs e) => ShowUsageRemoveConfirmation();
+    private void UsageConnectionCancelRemoveClick(object? sender, RoutedEventArgs e) => HideUsageRemoveConfirmation();
+
+    private async void UsageConnectionConfirmRemoveClick(object? sender, RoutedEventArgs e)
+    {
+        SetUsageConnectionBusy(true, removing: true);
+        try
+        {
+            await RunTrackedAsync(token => ViewModel.ClearUsageConnectionAsync(token));
+            if (this.FindControl<TextBox>("UsageEndpointBox") is { } endpoint) endpoint.Text = string.Empty;
+            if (this.FindControl<TextBox>("UsageClientIdBox") is { } id) id.Text = string.Empty;
+            if (this.FindControl<TextBox>("UsageClientSecretBox") is { } secret) secret.Text = string.Empty;
+            if (this.FindControl<TextBlock>("UsageConnectionValidationText") is { } validation) validation.Text = string.Empty;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception)
+        {
+            if (this.FindControl<TextBlock>("UsageConnectionValidationText") is { } validation) validation.Text = ViewModel.UsageConnectionErrorText;
+        }
+        finally
+        {
+            SetUsageConnectionBusy(false, removing: true);
+            HideUsageRemoveConfirmation();
+        }
+    }
+
+    private void ShowUsageRemoveConfirmation()
+    {
+        if (this.FindControl<StackPanel>("UsageRemoveConfirmPanel") is { } panel) panel.IsVisible = true;
+    }
+
+    private void HideUsageRemoveConfirmation()
+    {
+        if (this.FindControl<StackPanel>("UsageRemoveConfirmPanel") is { } panel) panel.IsVisible = false;
+    }
+
+    private void UsageSecretKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox) return;
+        // Second line of defence only: PasswordChar already makes Avalonia report
+        // CanCopy/CanCut as false (pinned in UsageConnectionSettingsUiTests), so the
+        // commands and their gestures are already inert. This handler stays because its
+        // wiring is the KeyDown attribute in Views/MainWindow.axaml, which a non-visual
+        // change does not edit; dropping it here alone would break XAML loading.
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key is Key.C or Key.X or Key.Insert)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void SetUsageConnectionBusy(bool busy, bool removing)
+    {
+        ViewModel.SetUsageConnectionBusy(busy, removing);
+        if (this.FindControl<TextBox>("UsageEndpointBox") is { } endpoint) endpoint.IsEnabled = !busy;
+        if (this.FindControl<TextBox>("UsageClientIdBox") is { } id) id.IsEnabled = !busy;
+        if (this.FindControl<TextBox>("UsageClientSecretBox") is { } secret) secret.IsEnabled = !busy;
+        if (this.FindControl<Button>("UsageConnectionSaveButton") is { } save) save.IsEnabled = !busy;
+        if (this.FindControl<Button>("UsageConnectionRemoveButton") is { } remove) remove.IsEnabled = !busy;
+        if (this.FindControl<Button>("UsageConnectionConfirmRemoveButton") is { } confirm) confirm.IsEnabled = !busy;
+        if (this.FindControl<Button>("UsageConnectionCancelRemoveButton") is { } cancel) cancel.IsEnabled = !busy;
+        if (this.FindControl<StackPanel>("UsageConnectionBusyPanel") is { } busyPanel) busyPanel.IsVisible = busy;
+        if (this.FindControl<TextBlock>("UsageConnectionBusyText") is { } busyText)
+        {
+            busyText.Text = busy ? (removing ? ViewModel.CopyText.UsageConnectionRemoving : ViewModel.CopyText.UsageConnectionSaving) : string.Empty;
+        }
     }
     private void HistoryAccountFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.AccountFilter = choice.Value; }
     private void HistoryWindowFilterChanged(object? sender, SelectionChangedEventArgs e) { if (sender is ComboBox { SelectedItem: LocalizedChoice<string> choice }) ViewModel.History.WindowFilter = choice.Value; }

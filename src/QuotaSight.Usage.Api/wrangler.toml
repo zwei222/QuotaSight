@@ -1,0 +1,23 @@
+# Local development and local D1 only.
+#
+# There is deliberately no `account_id`, no `route`, no remote binding and no
+# secret here: `wrangler dev` / `wrangler d1 ... --local` run against a local
+# Miniflare instance. The database_id below is a local placeholder and must not
+# be used for a real deployment.
+#
+# Publishing is switched off explicitly: `workers.dev` and preview URLs would
+# expose this Worker on a hostname that is not fronted by Cloudflare Access.
+name = "quotasight-usage-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-30"
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "quotasight-usage-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

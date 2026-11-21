@@ -10,8 +10,118 @@ public sealed class UiCopy
     private readonly UiLanguage language;
     public UiCopy(UiLanguage language) => this.language = language;
     public bool IsJapanese => language == UiLanguage.Japanese;
+    public string UsageState(string state) => (state, IsJapanese) switch
+    {
+        ("Loading", true) => "利用量を読み込み中…",
+        ("Loading", false) => "Loading usage…",
+        ("Empty", true) => "指定期間の利用データはありません。",
+        ("Empty", false) => "No usage data for this period.",
+        ("Ready", true) => "利用データを表示しています。",
+        ("Ready", false) => "Usage data loaded.",
+        // Error is a neutral state sentence: the fix ("retry", "review the credential")
+        // belongs to the failure banner, so the two never contradict each other.
+        ("Error", true) => "利用量を読み込めませんでした。",
+        ("Error", false) => "Could not load usage.",
+        ("Stale", true) => "前回の利用データを表示しています（更新に失敗しました）。",
+        ("Stale", false) => "Showing the last loaded usage data; the refresh failed.",
+        ("Unconfigured", true) => "利用量 API は未設定です。",
+        ("Unconfigured", false) => "Usage API is not configured.",
+        _ => state
+    };
+
+    // Fixed failure sentences. Each one names a class of problem and an action, never a
+    // status code, URL, host, header or identifier, so it is safe on screen. The kind is
+    // decided by the read port from the status alone and never from a response body.
+    public string UsageFailure(UsageFailureKind kind) => (kind, IsJapanese) switch
+    {
+        (UsageFailureKind.None, _) => string.Empty,
+        (UsageFailureKind.Unauthorized, true) => "資格情報を確認してください。",
+        (UsageFailureKind.Unauthorized, false) => "Check the credential.",
+        (UsageFailureKind.Forbidden, true) => "資格情報を確認してください。",
+        (UsageFailureKind.Forbidden, false) => "Check the credential.",
+        (UsageFailureKind.NotFound, true) => "サーバー応答を確認してください。",
+        (UsageFailureKind.NotFound, false) => "Check the server response.",
+        (UsageFailureKind.InvalidResponse, true) => "サーバー応答を確認してください。",
+        (UsageFailureKind.InvalidResponse, false) => "Check the server response.",
+        (UsageFailureKind.Transient, true) => "一時的な失敗です。再試行できます。",
+        (UsageFailureKind.Transient, false) => "Temporary failure. You can retry.",
+        (UsageFailureKind.Redirected, true) => "利用量 API が別の場所へ転送しました。エンドポイントを確認してください。",
+        (UsageFailureKind.Redirected, false) => "The usage API redirected the request. Check the endpoint.",
+        (UsageFailureKind.CredentialMissing, true) => "利用量 API の資格情報がありません。設定画面で接続してください。",
+        (UsageFailureKind.CredentialMissing, false) => "No usage API credential is stored. Connect the API in settings.",
+        _ => string.Empty
+    };
+
+    // Freshness copy. The time is always formatted by the caller in the local time zone,
+    // so this text never claims a zone or a relative age it cannot verify.
+    public string UsageFreshnessLastReceived(DateTimeOffset local) => IsJapanese
+        ? $"最終受信: {local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}"
+        : $"Last received: {local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}";
+    public string UsageFreshnessMissing => IsJapanese ? "未受信の collector あり" : "A collector has not reported yet";
+    public string UsageFreshnessLastReceivedWithMissing(DateTimeOffset local) => IsJapanese
+        ? $"{UsageFreshnessLastReceived(local)}（{UsageFreshnessMissing}）"
+        : $"{UsageFreshnessLastReceived(local)} ({UsageFreshnessMissing})";
+    public string UsageFreshnessNeverReceived => UsageFreshnessMissing;
+
+    // Actions of the usage page's status banners.
+    public string UsageRetry => IsJapanese ? "再試行" : "Retry";
+    public string UsageOpenSettings => IsJapanese ? "設定画面で見直す" : "Review it in settings";
+
+    // Delayed data is still shown, but never as if it were current.
+    public string UsageDelayed => IsJapanese
+        ? "遅延データ: 最終受信から12時間以上経過しています。"
+        : "Delayed data: last received more than 12 hours ago.";
+
+    // Fixed state sentences for the usage API connection. They deliberately name no endpoint,
+    // no host and no identifier, so they are safe on screen and in a screenshot.
+    public string UsageConnectionStatus(UsageConnectionState state) => (state, IsJapanese) switch
+    {
+        (UsageConnectionState.Unconfigured, true) => "利用量 API は未設定です。",
+        (UsageConnectionState.Unconfigured, false) => "Usage API is not configured.",
+        (UsageConnectionState.Configured, true) => "利用量 API に接続する設定が保存されています。",
+        (UsageConnectionState.Configured, false) => "The usage API connection is saved.",
+        (UsageConnectionState.SessionOnly, true) => "認証情報はこのセッション中のみ保持されます。再起動後は設定し直してください。",
+        (UsageConnectionState.SessionOnly, false) => "The credential is kept for this session only; configure it again after restarting.",
+        (UsageConnectionState.StoreUnavailable, true) => "資格情報ストアを利用できないため、接続設定を保存できません。",
+        (UsageConnectionState.StoreUnavailable, false) => "The credential store is unavailable, so this connection cannot be saved.",
+        (UsageConnectionState.Invalid, true) => "保存された利用量 API の設定が正しくありません。設定し直してください。",
+        (UsageConnectionState.Invalid, false) => "The saved usage API setting is not valid. Configure it again.",
+        _ => state.ToString()
+    };
+    // Validation copy is fixed and never echoes the entered text.
+    public string UsageConnectionErrorText(UsageConnectionError error) => (error, IsJapanese) switch
+    {
+        (UsageConnectionError.None, _) => string.Empty,
+        (UsageConnectionError.Missing, true) => "利用量 API のエンドポイントを入力してください。",
+        (UsageConnectionError.Missing, false) => "Enter the usage API endpoint.",
+        (UsageConnectionError.Malformed, true) => "エンドポイントの形式が正しくありません。",
+        (UsageConnectionError.Malformed, false) => "The endpoint is not a valid address.",
+        (UsageConnectionError.NotHttps, true) => "エンドポイントは https で指定してください。",
+        (UsageConnectionError.NotHttps, false) => "The endpoint must use https.",
+        (UsageConnectionError.UserInformation, true) => "エンドポイントにユーザー情報を含めないでください。",
+        (UsageConnectionError.UserInformation, false) => "The endpoint must not contain user information.",
+        (UsageConnectionError.Query, true) => "エンドポイントにクエリを含めないでください。",
+        (UsageConnectionError.Query, false) => "The endpoint must not contain a query.",
+        (UsageConnectionError.Fragment, true) => "エンドポイントにフラグメントを含めないでください。",
+        (UsageConnectionError.Fragment, false) => "The endpoint must not contain a fragment.",
+        (UsageConnectionError.Path, true) => "エンドポイントにパスを含めないでください。",
+        (UsageConnectionError.Path, false) => "The endpoint must not contain a path.",
+        (UsageConnectionError.HostMissing, true) => "エンドポイントのホスト名を指定してください。",
+        (UsageConnectionError.HostMissing, false) => "The endpoint must include a host name.",
+        (UsageConnectionError.TooLong, true) => "エンドポイントが長すぎます（256文字以内）。",
+        (UsageConnectionError.TooLong, false) => "The endpoint is too long (256 characters at most).",
+        (UsageConnectionError.InvalidCharacters, true) => "エンドポイントに空白や制御文字は使えません。",
+        (UsageConnectionError.InvalidCharacters, false) => "The endpoint must not contain spaces or control characters.",
+        (UsageConnectionError.InvalidCredential, true) => "クライアント ID とクライアントシークレットは、空白を含まない印字可能なASCII文字で入力してください。",
+        (UsageConnectionError.InvalidCredential, false) => "Enter a client id and client secret with no spaces.",
+        (UsageConnectionError.CredentialStoreUnavailable, true) => "資格情報ストアを利用できないため、保存していません。",
+        (UsageConnectionError.CredentialStoreUnavailable, false) => "The credential store is unavailable, so nothing was saved.",
+        _ => string.Empty
+    };
     public string Dashboard => IsJapanese ? "ダッシュボード" : "Dashboard";
+    public string NavUsage => IsJapanese ? "利用量" : "Token usage";
     public string UsageOverview => IsJapanese ? "使用量" : "Usage";
+    public string UsageTotalTokens => IsJapanese ? "合計トークン" : "Total tokens";
     public string AddProvider => IsJapanese ? "追加" : "Add provider";
     public string ProviderPicker => IsJapanese ? "プロバイダーを選択" : "Choose a provider";
     public string Close => IsJapanese ? "閉じる" : "Close";
@@ -194,6 +304,28 @@ public sealed class UiCopy
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
     public string GithubOrganization => IsJapanese ? "GitHub Organization slug（組織名のURL用表記・秘密情報ではありません）" : "GitHub organization slug (not a secret)";
     public string GithubOrganizationHint => IsJapanese ? "入力内容は変更時に自動保存されます。保存後はダッシュボードで更新してください。例: acme-engineering" : "Changes are auto-saved. After saving, refresh the dashboard. Example: acme-engineering";
+    // Usage connection section. Credential values are never part of this copy: it is fixed
+    // text that is safe to show, log or screenshot next to masked inputs.
+    public string UsageConnectionTitle => IsJapanese ? "利用量 API 接続" : "Usage API connection";
+    public string UsageConnectionDescription => IsJapanese
+        ? "利用量 API のエンドポイントと Access Client ID、Client Secret を保存します。認証情報は安全な資格情報ストアにのみ保存され、保存後は表示・コピーできません。"
+        : "Saves the usage API endpoint with its Access Client ID and Client Secret. Credentials live only in the secure credential store and cannot be viewed or copied after saving.";
+    public string UsageEndpointLabel => IsJapanese ? "利用量 API エンドポイント" : "Usage API endpoint";
+    public string UsageEndpointHint => IsJapanese ? "https のオリジンを指定します（例: https://usage.example.test）。" : "Enter an https origin (for example, https://usage.example.test).";
+    public string UsageClientIdLabel => IsJapanese ? "Access Client ID" : "Access Client ID";
+    public string UsageClientSecretLabel => IsJapanese ? "Client Secret（保存後に表示・コピーできません）" : "Client secret (cannot be viewed or copied after saving)";
+    public string UsageConnectionSave => IsJapanese ? "接続を保存" : "Save connection";
+    public string UsageConnectionRemove => IsJapanese ? "接続を削除" : "Remove connection";
+    public string UsageConnectionRemoveConfirm => IsJapanese ? "保存した利用量 API の接続設定を削除しますか？この操作は取り消せません。" : "Remove the saved usage API connection? This cannot be undone.";
+    public string UsageConnectionConfirmRemove => IsJapanese ? "削除する" : "Remove";
+    public string UsageConnectionCancelRemove => IsJapanese ? "キャンセル" : "Cancel";
+    public string UsageConnectionSaving => IsJapanese ? "保存中…" : "Saving…";
+    public string UsageConnectionRemoving => IsJapanese ? "削除中…" : "Removing…";
+    public string UsageConnectionSaveFailure => IsJapanese ? "接続設定を保存できませんでした。" : "Unable to save the connection.";
+    public string UsageCredentialSaved => IsJapanese ? "認証情報: 保存済み" : "Credential: saved";
+    public string UsageCredentialNone => IsJapanese ? "認証情報: 未保存" : "Credential: not saved";
+    public string UsageSessionOnlyBadge => IsJapanese ? "このセッション限り" : "This session only";
+    public string UsageStoreUnavailableBadge => IsJapanese ? "資格情報ストア利用不可のため保存できません" : "Cannot save: the credential store is unavailable";
     public string Autostart => IsJapanese ? "自動起動: 現在利用できません（プラットフォーム機能が未導入）" : "Autostart: Unsupported · platform backend not installed";
     public string AccountWatermark => IsJapanese ? "個人" : "Personal";
     public string UsedPercentWatermark => IsJapanese ? "0以上" : "0 or more";
