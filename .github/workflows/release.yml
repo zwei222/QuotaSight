@@ -74,22 +74,78 @@ jobs:
         run: dotnet restore QuotaSight.slnx --runtime ${{ matrix.rid }}
       - name: Test Release
         run: dotnet test QuotaSight.slnx -c Release --no-restore
+      # The Windows build is a GUI subsystem binary (WinExe), so the smoke test must be started
+      # and awaited explicitly; a direct invocation would return immediately without an exit code.
       - name: Publish NativeAOT (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -eu
           dotnet publish src/QuotaSight.UI/QuotaSight.UI.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishAot=true -p:Version=$VERSION --no-restore -o publish
           chmod +x publish/QuotaSight.UI
           publish/QuotaSight.UI --smoke-test
-          zip -r "QuotaSight-$VERSION-${{ matrix.rid }}.zip" publish
+          folder="QuotaSight-$VERSION-${{ matrix.rid }}"
+          # Release ships no debug symbols: the project stops generating them, this removes any
+          # stale copy an incremental publish could still have laid down.
+          find publish -type f \( -name '*.pdb' -o -name '*.dbg' \) -delete
+          rm -rf "$folder"
+          mv publish "$folder"
+          chmod +x "$folder/QuotaSight.UI"
+          test -x "$folder/QuotaSight.UI"
+          zip -r "$folder.zip" "$folder"
       - name: Publish NativeAOT (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           dotnet publish src/QuotaSight.UI/QuotaSight.UI.csproj -c Release -r $env:RID --self-contained true -p:PublishAot=true -p:Version=$env:VERSION --no-restore -o publish
-          & .\publish\QuotaSight.UI.exe --smoke-test
-          Compress-Archive -Path publish\* -DestinationPath "QuotaSight-$env:VERSION-$env:RID.zip"
+          $process = Start-Process -FilePath .\publish\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "smoke test failed with exit code $($process.ExitCode)" }
+          $bytes = [System.IO.File]::ReadAllBytes((Get-Item '.\publish\QuotaSight.UI.exe').FullName)
+          if ([System.BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) { throw "published executable is not an MZ image" }
+          $eLfanew = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          if ([System.BitConverter]::ToUInt32($bytes, $eLfanew) -ne 0x00004550) { throw "PE signature not found at e_lfanew=$eLfanew" }
+          $subsystem = [System.BitConverter]::ToUInt16($bytes, $eLfanew + 0x5C)
+          if ($subsystem -ne 2) { throw "expected subsystem 2 (WINDOWS_GUI) but found $subsystem" }
+          Write-Host "PE subsystem: $subsystem (WINDOWS_GUI)"
+          $folder = "QuotaSight-$env:VERSION-$env:RID"
+          # Release ships no debug symbols: the project stops generating them, this removes any
+          # stale copy an incremental publish could still have laid down.
+          Get-ChildItem -Path publish -Recurse -File -Include '*.pdb','*.dbg' | Remove-Item -Force
+          if (Test-Path $folder) { Remove-Item -Recurse -Force $folder }
+          Move-Item -Path publish -Destination $folder
+          Compress-Archive -Path $folder -DestinationPath "$folder.zip" -Force
         env:
           RID: ${{ matrix.rid }}
+      - name: List archive contents (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          folder="QuotaSight-$VERSION-${{ matrix.rid }}"
+          zip_file="$folder.zip"
+          if unzip -Z1 "$zip_file" | grep -Eq '\.(pdb|dbg)$'; then
+            echo "debug symbols leaked into $zip_file" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$zip_file" | grep -Evq "^$folder/"; then
+            echo "every entry must live under $folder/" >&2
+            exit 1
+          fi
+          unzip -l "$zip_file"
+      - name: List archive contents (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $folder = "QuotaSight-$env:VERSION-$env:RID"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Get-Item "$folder.zip").FullName)
+          try {
+            $entries = $archive.Entries | ForEach-Object { $_.FullName }
+            $symbols = $entries | Where-Object { $_ -match '\.(pdb|dbg)$' }
+            if ($symbols) { throw "debug symbols leaked into $folder.zip: $($symbols -join ', ')" }
+            $outside = $entries | Where-Object { $_ -ne "$folder/" -and $_ -notlike "$folder/*" }
+            if ($outside) { throw "every entry must live under $folder/: $($outside -join ', ')" }
+            if (-not ($entries | Where-Object { $_ -like "$folder/*" })) { throw "archive does not contain $folder/" }
+            foreach ($entry in $archive.Entries) { Write-Host ("{0,12}  {1}" -f $entry.Length, $entry.FullName) }
+          } finally { $archive.Dispose() }
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

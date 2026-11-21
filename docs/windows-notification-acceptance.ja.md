@@ -6,7 +6,7 @@
 
 - 対話ログオン中の実Windows 11 x64デスクトップ環境を使います。
 - サインイン中のユーザーとしてQuotaSightを通常起動します。標準ユーザーで実行するか、管理者権限のあるユーザーを使う場合は昇格せずに実行します。「管理者として実行」は選ばず、プロセスが非昇格であることを確認します。
-- 確認対象と同じコミットから作成した、自己完結型Windows x64 Native AOT ZIPを用意し、空のフォルダーに展開します。framework-dependent buildや別コミットのbuildは使いません。
+- 確認対象と同じコミットから作成した、自己完結型Windows x64 Native AOT ZIPを用意し、空のフォルダーに展開します。ZIPの直下には`QuotaSight-<version>-win-x64/`フォルダーが1つだけあり、実行ファイルとそのアセットはその中にあります。framework-dependent buildや別コミットのbuildは使いません。
 - テスト前にコミットSHAとZIPのSHA-256を記録します。Windows PowerShellでは`Get-FileHash -Algorithm SHA256 <ZIPのパス>`でハッシュを取得できます。
 - Windows通知の許可状態と集中モード（Focus assist / Do not disturb）の状態を確認して記録します。アカウント名、organization名、device名など、個人・組織・機器を識別できる情報は記録しません。
 
@@ -15,11 +15,13 @@
 展開したZIPのフォルダーで、非昇格の端末から実行ファイルを起動します。
 
 ```powershell
-.\QuotaSight.UI.exe --notification-probe
-$LASTEXITCODE
+$probe = Start-Process -FilePath .\QuotaSight.UI.exe -ArgumentList '--notification-probe' -Wait -PassThru
+$probe.ExitCode
 ```
 
-正確なexit codeと、probeが固定の失敗メッセージを出力した場合はその内容を記録します。exit code `0`は、サポート確認、イベント購読、登録、登録解除、全通知登録の解除、およびイベント購読解除がすべて正常に完了したことを示すプログラム上の証拠です。ここでいう`UnregisterAll`は通知登録を解除する処理で、画面上にすでに表示された通知を消す操作ではありません。成功時は通常メッセージを出力しません。成功を示す文字列が出ると期待したり、転記したりしないでください。nonzero exit codeと固定の失敗メッセージ（出力された場合）は、いずれかの処理が失敗したことを示します。このprobeはポップアップ表示の確認ではありません。exit code `0`でもWindows通知が画面に表示されたとは証明できません。
+リリースする`QuotaSight.UI.exe`はWindowsのGUIサブシステム（WinExe）のバイナリなので、自前のコンソールを持たず、ダブルクリックしても端末は開きません。`--smoke-test`と`--notification-probe`のときだけ、起動元のコンソールが存在すればそのコンソールへ出力します。診断メッセージを見るには、エクスプローラーからではなく`cmd.exe`またはPowerShellから起動してください。またGUIサブシステムのプロセスはシェルへ即座に制御を返すため、`.\QuotaSight.UI.exe --notification-probe`を直接呼んでも待機されず、`$LASTEXITCODE`も設定されません。プロセスの終了を待ち、実際のexit codeを取得するには`Start-Process -Wait -PassThru`を使います。
+
+正確なexit codeと、probeが固定の失敗メッセージを出力した場合はその内容を記録します。exit code `0`は、サポート確認、イベント購読、登録、登録解除、全通知登録の解除、およびイベント購読解除がすべて正常に完了したことを示すプログラム上の証拠です。ここでいう`UnregisterAll`は通知登録を解除する処理で、画面上にすでに表示された通知を消す操作ではありません。成功時は通常メッセージを出力しません。成功を示す文字列が出ると期待したり、転記したりしないでください。nonzero exit codeと固定の失敗メッセージ（出力された場合）は、いずれかの処理が失敗したことを示します。このprobeはポップアップ表示の確認ではありません。exit code `0`でもWindows通知が画面に表示されたとは証明できません。GUIサブシステム化そのものの証拠は、CIが公開済みPEヘッダーの`Subsystem == 2`（`WINDOWS_GUI`）を読み取った結果とsmoke testのexit codeだけです。実機デスクトップでexeをダブルクリックして再確認した結果ではありません。
 
 ## しきい値通知の画面表示
 

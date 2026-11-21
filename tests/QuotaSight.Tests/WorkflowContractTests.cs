@@ -7,6 +7,8 @@ public sealed class WorkflowContractTests
     private static readonly string Root = FindRoot();
     private static readonly string Ci = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "ci.yml"));
     private static readonly string Release = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "release.yml"));
+    private static readonly string UiProject = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "QuotaSight.UI.csproj"));
+    private static readonly string UiProgram = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "Program.cs"));
 
     [Fact]
     public void Ci_triggers_push_and_pull_request() =>
@@ -122,6 +124,117 @@ public sealed class WorkflowContractTests
     {
         Assert.DoesNotContain("continue-on-error", Ci + Release);
         Assert.DoesNotContain("eval ", Ci + Release);
+    }
+
+    [Fact]
+    public void Ui_project_is_a_windows_gui_subsystem_app_only_on_windows()
+    {
+        Assert.Contains("<OutputType Condition=\"'$(OS)' == 'Windows_NT'\">WinExe</OutputType>", UiProject);
+        Assert.Contains("<OutputType Condition=\"'$(OS)' != 'Windows_NT'\">Exe</OutputType>", UiProject);
+        Assert.DoesNotContain("<OutputType>Exe</OutputType>", UiProject);
+        Assert.DoesNotContain("<OutputType>WinExe</OutputType>", UiProject);
+    }
+
+    [Fact]
+    public void Ui_project_keeps_native_aot_enabled()
+    {
+        Assert.Contains("<PublishAot>true</PublishAot>", UiProject);
+        Assert.DoesNotContain("PublishAot>false", UiProject + Release);
+    }
+
+    [Fact]
+    public void Console_is_attached_only_for_the_smoke_test_and_notification_probe()
+    {
+        Assert.Contains("if (smokeTest || notificationProbe)", UiProgram);
+        Assert.Contains("[LibraryImport(\"kernel32.dll\"", UiProgram);
+        Assert.Contains("SetLastError = true", UiProgram);
+        Assert.Contains("AttachConsole(AttachParentProcess)", UiProgram);
+        Assert.Contains("#if WINDOWS", UiProgram);
+    }
+
+    [Fact]
+    public void Release_windows_smoke_test_waits_for_the_gui_process_and_checks_the_exit_code()
+    {
+        Assert.Contains(
+            "Start-Process -FilePath .\\publish\\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru",
+            Release);
+        Assert.Contains("$process.ExitCode -ne 0", Release);
+        Assert.DoesNotContain("& .\\publish\\QuotaSight.UI.exe", Release);
+    }
+
+    [Fact]
+    public void Release_verifies_the_published_windows_pe_subsystem_is_gui()
+    {
+        Assert.Contains("[System.BitConverter]::ToInt32($bytes, 0x3C)", Release);
+        Assert.Contains("[System.BitConverter]::ToUInt16($bytes, $eLfanew + 0x5C)", Release);
+        Assert.Contains("$subsystem -ne 2", Release);
+        Assert.Contains("WINDOWS_GUI", Release);
+    }
+
+    [Fact]
+    public void Release_removes_debug_symbols_from_the_release_archives()
+    {
+        Assert.Contains("*.pdb", Release);
+        Assert.Contains("*.dbg", Release);
+        Assert.Contains("find publish -type f \\( -name '*.pdb' -o -name '*.dbg' \\) -delete", Release);
+        Assert.Contains("Get-ChildItem -Path publish -Recurse -File -Include '*.pdb','*.dbg' | Remove-Item -Force", Release);
+        Assert.DoesNotContain("name: symbols-", Release);
+        Assert.DoesNotContain("Upload debug symbols", Release);
+    }
+
+    [Fact]
+    public void Ui_project_stops_generating_debug_symbols_in_release()
+    {
+        Assert.Contains("<DebugType>none</DebugType>", UiProject);
+        Assert.Contains("<DebugSymbols>false</DebugSymbols>", UiProject);
+        Assert.Contains("<StripSymbols>true</StripSymbols>", UiProject);
+        Assert.Contains("<AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>", UiProject);
+        Assert.Contains("Condition=\"'$(Configuration)' == 'Release'\"", UiProject);
+    }
+
+    [Fact]
+    public void Release_fails_when_an_archive_still_contains_debug_symbols()
+    {
+        Assert.Contains(@"grep -Eq '\.(pdb|dbg)$'", Release);
+        Assert.Contains("debug symbols leaked into $zip_file", Release);
+        Assert.Contains("debug symbols leaked into $folder.zip", Release);
+        Assert.Contains("grep -Evq \"^$folder/\"", Release);
+    }
+
+    [Fact]
+    public void Release_archives_one_versioned_runtime_folder_on_both_platforms()
+    {
+        Assert.Contains("folder=\"QuotaSight-$VERSION-${{ matrix.rid }}\"", Release);
+        Assert.Contains("zip -r \"$folder.zip\" \"$folder\"", Release);
+        Assert.Contains("$folder = \"QuotaSight-$env:VERSION-$env:RID\"", Release);
+        Assert.Contains("Compress-Archive -Path $folder -DestinationPath \"$folder.zip\"", Release);
+        Assert.Contains("$_ -ne \"$folder/\" -and $_ -notlike \"$folder/*\"", Release);
+        Assert.Contains("archive does not contain $folder/", Release);
+        Assert.DoesNotContain("Compress-Archive -Path publish\\*", Release);
+        Assert.DoesNotContain("zip -r \"QuotaSight-$VERSION-${{ matrix.rid }}.zip\" publish", Release);
+    }
+
+    [Fact]
+    public void Release_keeps_the_linux_executable_bit_before_zipping()
+    {
+        Assert.Contains("chmod +x publish/QuotaSight.UI", Release);
+        Assert.Contains("chmod +x \"$folder/QuotaSight.UI\"", Release);
+        Assert.Contains("test -x \"$folder/QuotaSight.UI\"", Release);
+        Assert.Contains("mv publish \"$folder\"", Release);
+    }
+
+    [Fact]
+    public void Release_lists_the_archive_contents_in_the_log()
+    {
+        Assert.Contains("unzip -l", Release);
+        Assert.Contains("[System.IO.Compression.ZipFile]::OpenRead", Release);
+    }
+
+    [Fact]
+    public void Ci_windows_smoke_test_waits_for_the_gui_process()
+    {
+        Assert.Contains("Start-Process -FilePath .\\publish\\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru", Ci);
+        Assert.Contains("$process.ExitCode -ne 0", Ci);
     }
 
     private static string FindRoot()
