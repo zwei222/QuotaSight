@@ -1,0 +1,3 @@
+# The Collector and the Worker tests compare against this file byte for byte, so a checkout must
+# not rewrite its line endings (Windows checkouts do so by default).
+src/QuotaSight.Usage.Api/test/fixtures/wire-v2-golden.json text eol=lf

@@ -310,6 +310,18 @@ public sealed class WorkflowContractTests
             "The test projects must not be turned into self-contained Windows App SDK apps.");
     }
 
+    [Fact]
+    public void Byte_exact_wire_fixture_keeps_its_line_endings_on_every_checkout()
+    {
+        // The Collector and the Worker tests compare against this file byte for byte. A Windows
+        // checkout rewrites line endings by default, which turned its trailing "\n" into "\r\n"
+        // and failed the Windows run only.
+        var attributes = File.ReadAllText(Path.Combine(Root, ".gitattributes"));
+        Assert.Contains(
+            "src/QuotaSight.Usage.Api/test/fixtures/wire-v2-golden.json text eol=lf",
+            attributes);
+    }
+
     private static string FindRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
