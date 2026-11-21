@@ -27,11 +27,13 @@ public sealed class UiCopy
     public string PillNormal => IsJapanese ? "通常" : "Normal";
     public string PillAttention => IsJapanese ? "注意" : "Caution";
     public string PillDanger => IsJapanese ? "危険" : "Danger";
-    public string PillExhausted => IsJapanese ? "上限到達" : "Limit reached";
+    // Dashboard pill words stay as short as the compact badges so the widest English pill
+    // still fits (or wraps cleanly) inside a narrow tile; Japanese keeps the same meaning.
+    public string PillExhausted => IsJapanese ? "上限到達" : "Exhausted";
     public string PillStale => IsJapanese ? "古い情報" : "Stale";
     public string PillUnknown => IsJapanese ? "不明" : "Unknown";
     public string PillOver(decimal by) => IsJapanese ? $"{by:0.#}%超過" : $"Over {by:0.#}%";
-    public string PillResetPending => IsJapanese ? "リセット待ち" : "Reset pending";
+    public string PillResetPending => IsJapanese ? "未確認" : "Pending";
     public string ConnectedAccounts => IsJapanese ? "接続済みアカウント" : "Connected accounts";
     public string SummaryAccounts(int count) => IsJapanese ? $"{count}アカウント" : $"{count} accounts";
     public string SummaryReview(int count) => IsJapanese ? $"{count}件 要確認" : $"{count} need review";

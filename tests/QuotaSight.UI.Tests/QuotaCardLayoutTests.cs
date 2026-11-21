@@ -82,6 +82,16 @@ public sealed class QuotaCardLayoutTests
     [AvaloniaFact]
     public void Dashboard_tile_line_fits_worst_case_texts_without_ellipsis()
     {
+        // CI (Ubuntu runners) resolves font metrics that run wider than the local headless
+        // DejaVu Sans (Liberation/Noto fallbacks), so the tile must hold every fact inside
+        // the card under both the default metrics and a genuinely wider family.
+        AssertDashboardTileFactsStayInsideTheCard(null);
+        AssertDashboardTileFactsStayInsideTheCard(new FontFamily("DejaVu Serif"));
+    }
+
+    private static void AssertDashboardTileFactsStayInsideTheCard(FontFamily? forcedFamily)
+    {
+        var family = forcedFamily?.Name ?? "default metrics";
         var monthlyJp = QuotaPresentationFormatter.Format(Snap(ProviderKind.OpenCode, QuotaWindowKind.Monthly, TimeSpan.FromDays(30), Now.AddDays(10), 64), Now, UiLanguage.Japanese);
         var rollingJp = QuotaPresentationFormatter.Format(Snap(ProviderKind.OpenCode, QuotaWindowKind.Rolling, TimeSpan.FromHours(5), Now.AddHours(1).AddMinutes(12), 38), Now, UiLanguage.Japanese);
         var unknownResetEn = QuotaPresentationFormatter.Format(Snap(ProviderKind.Claude, QuotaWindowKind.Monthly, TimeSpan.FromDays(30), null, 64), Now);
@@ -95,6 +105,7 @@ public sealed class QuotaCardLayoutTests
         var twoWindow = new ProviderCardViewModel(ProviderKind.Claude, "Claude Pro", "personal", "#73D6B1", "Connected", false, [twoWindowEn, rollingJp]);
         using var viewModel = new MainViewModel(new FixedCardSource([worstCase, twoWindow]));
         var window = new MainWindow(viewModel) { Width = 1100, Height = 740 };
+        if (forcedFamily is not null) window.FontFamily = forcedFamily;
         try
         {
             window.Show();
@@ -120,8 +131,9 @@ public sealed class QuotaCardLayoutTests
             Assert.DoesNotContain(factBlocks, block => block.TextTrimming != TextTrimming.None);
             foreach (var block in factBlocks)
             {
-                AssertFits(block, "dashboard tile fact");
-                AssertInsideCard(block, "dashboard tile fact");
+                var context = $"dashboard tile fact [{family}]";
+                AssertFits(block, context);
+                AssertInsideCard(block, context);
             }
             var stackedValues = factBlocks.Where(block => block.FontSize >= 16).ToArray();
             var inlineValues = factBlocks.Where(block => block.FontSize == 12 && block.FontWeight == FontWeight.Bold).ToArray();
