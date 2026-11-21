@@ -9,12 +9,22 @@ database. There is no account id, no remote binding and no credential in this
 repository. Authentication is Cloudflare Access service-token JWT verification,
 configured per deployment and fail-closed when that configuration is absent.
 
-**Deployment prerequisite:** a real deployment needs Workers **Paid**. Workers
-Free allows 10 ms of CPU time per request, and D1 query execution and result
-serialization count toward that CPU time, so one maximum-size `PUT` can be
-terminated for exceeding CPU even though every local test passes. The operator
-runbook — ordering, the remote smoke test, the rotation drill and the list of
-behaviour that only a real deployment can settle — is
+**Deployment plans:** a real deployment is budgeted for the Workers Free, D1 Free
+and Zero Trust Free plans; no subscription is required. Workers Free allows 10 ms
+of CPU time per request, and only the Worker's own JavaScript is measured — waiting
+on a D1 query is not. What is measured is the RS256 verification of the Access
+assertion, the `JSON.parse` of a body of up to 32 KiB, the assembly of up to 63
+statements for one `batch()`, and the `JSON.stringify` of the response, so
+Cloudflare's guidance that authentication-handling Workers typically use 10-20 ms
+puts this slice at the same order as the limit. There is no measurement of this
+implementation and the local suite settles correctness rather than CPU, so it is
+**conditionally feasible** on the free plans (unverified). Whether it holds is
+decided by the **CPU measurement gate** in the runbook — zero `Exceeded CPU Time
+Limits` (Error 1102) events over 24 hours and a CPU-time P99 below 8 ms measured on
+the deployed Worker — and by nothing else; do not upgrade the account to answer
+that question. The operator runbook — ordering, the gate, the fallback options
+that are deliberately not applied, the remote smoke test, the rotation drill and
+the list of behaviour that only a real deployment can settle — is
 [docs/deployment.md](../../docs/deployment.md).
 
 ## Endpoints
@@ -340,6 +350,11 @@ same list appears as a checklist in
   offers the settings-page detour for both; a `302` from a `strict`-off
   organization is the case that reads as a redirect instead of as a credential
   problem, which is why the runbook turns the setting on before the smoke test.
+- **Whether the deployment fits in 10 ms of CPU time on the free plans** is not
+  measurable here: the suite proves behaviour, not CPU, and no number in this
+  repository is a measurement of a deployed Worker. The runbook's CPU measurement
+  gate settles it against the real account, and its fallback options are
+  documented as not applied.
 - **`RETURNING` is not described in the D1 documentation.** `changedDays` and
   `ignoredReductions` are read from the rows that `RETURNING` hands back inside
   the write's `batch()`, so a remote database that did not support it would still

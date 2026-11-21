@@ -84,6 +84,25 @@ describe('repository hygiene', () => {
     expect(readme).not.toContain('Real authentication and credential issuance');
   });
 
+  it('does not present Workers Paid as a prerequisite in the package README', async () => {
+    const readme = await readFile(join(packageRoot, 'README.md'), 'utf8');
+    expect(readme).toContain('Workers Free');
+    expect(readme).toContain('CPU measurement gate');
+    expect(readme).not.toMatch(/needs Workers \*\*Paid\*\*/);
+    expect(readme).not.toContain('Deployment prerequisite');
+    expect(readme).not.toContain('count toward that CPU time');
+  });
+
+  it('states the same free-tier premise in the architecture and security documents', async () => {
+    const repoRootPath = resolve(packageRoot, '..', '..');
+    for (const name of ['architecture.md', 'security.md']) {
+      const doc = await readFile(join(repoRootPath, 'docs', name), 'utf8');
+      expect(doc).toContain('Workers Free');
+      expect(doc).toContain('CPU');
+      expect(doc).not.toMatch(/Workers\s+Paid/);
+    }
+  });
+
   it('has no real-looking team domain, hex secret or embedded key', async () => {
     const domain = /[A-Za-z0-9-]+\.cloudflareaccess\.com/g;
     const hex = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,64}(?![0-9A-Fa-f])/g;
@@ -105,9 +124,11 @@ describe('repository hygiene', () => {
 /**
  * The deployment runbook is the one document an operator copies commands out of,
  * so the promises it makes are pinned here rather than left to prose review: the
- * plan prerequisite, the ordering that keeps Access in front of the hostname,
- * the two D1 behaviours that only a remote deployment can prove, and the rule
- * that no real account value may appear in it.
+ * three free plans as the premise, what does and does not consume the free CPU
+ * budget, the measurement gate that decides the deployment, the fallback that is
+ * documented but deliberately not applied, the ordering that keeps Access in
+ * front of the hostname, the two D1 behaviours that only a remote deployment can
+ * prove, and the rule that no real account value may appear in it.
  */
 describe('deployment runbook', () => {
   const repoRoot = resolve(packageRoot, '..', '..');
@@ -117,12 +138,93 @@ describe('deployment runbook', () => {
     return readFile(runbook, 'utf8');
   }
 
-  it('treats Workers Paid as a prerequisite and says why', async () => {
+  it('makes the three free plans the premise and drops the Paid prerequisite', async () => {
     const doc = await readRunbook();
-    expect(doc).toMatch(/Workers\s+\*\*Paid\*\*/);
-    expect(doc).toContain('10 ms');
-    expect(doc).toContain('D1 query execution and result serialization');
-    expect(doc).toContain('not a code defect');
+    expect(doc).toContain('Workers Free, D1 Free and Zero Trust Free');
+    expect(doc).toMatch(/No Workers Paid\s+subscription\s+is\s+required\s+or\s+requested/);
+    expect(doc).not.toMatch(/Workers\s+\*\*Paid\*\*/);
+    expect(doc).not.toContain('plan prerequisite');
+    expect(doc).not.toContain('not a tuning choice');
+    expect(doc).not.toContain('do not deploy this slice to a Free account');
+  });
+
+  it('separates what consumes the Free CPU budget from what does not', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Waiting on a D1 query does not count toward CPU time');
+    expect(doc).toContain(
+      'query execution and result serialization run within the Workers platform CPU and memory limits',
+    );
+    expect(doc).toContain('RS256');
+    expect(doc).toContain('JSON.parse');
+    expect(doc).toContain('JSON.stringify');
+    expect(doc).toContain('10-20 ms');
+    expect(doc).toContain('conditionally feasible');
+    expect(doc).toContain('no measurement of this implementation');
+  });
+
+  it('records the Free limits the deployment has to stay inside', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('100,000 requests per day');
+    expect(doc).toContain('10 ms of CPU time');
+    expect(doc).toContain('50 subrequests');
+    expect(doc).toContain('50 queries per invocation');
+    expect(doc).toContain('counts as one query');
+    expect(doc).toContain('100,000 rows written per day');
+    expect(doc).toContain('5,000,000 rows read per day');
+    expect(doc).toContain('5 GB');
+    expect(doc).toContain('00:00 UTC');
+    expect(doc).toContain('50 service tokens');
+    expect(doc).toContain('does not consume a seat');
+    expect(doc).toContain('200,000 events per day');
+    expect(doc).toContain('Workers Logs keeps 3 days');
+    expect(doc).toContain('Access logs are kept 24 hours');
+  });
+
+  it('refuses every action that would start billing', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Do not upgrade the account to Workers Paid');
+    expect(doc).toContain('payment details');
+    expect(doc).toContain('nothing is charged');
+    expect(doc).toContain('queried past its limit fails and recovers at 00:00 UTC');
+  });
+
+  it('gates the deployment on measured CPU instead of on a plan', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('## 6. CPU measurement gate');
+    expect(doc).toContain('Exceeded CPU Time Limits');
+    expect(doc).toContain('Error 1102');
+    expect(doc).toContain('P99');
+    expect(doc).toContain('8 ms');
+    expect(doc).toContain('rollover');
+    expect(doc).toMatch(/a P99 above 10 ms can be\s+recorded without a single error/);
+    expect(doc).toContain('62 days');
+    expect(doc).toContain('63 statements');
+    expect(doc).toContain('32 KiB');
+    expect(doc).toContain('JWKS cache miss');
+  });
+
+  it('keeps the fallback design documented and explicitly not applied', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('### 6.5 If the gate fails: fallback options (not applied)');
+    expect(doc).toContain('Delegate the signature check to Access');
+    expect(doc).toContain('Move the aggregation into SQL');
+    expect(doc).toContain('Splitting the batch does not reduce CPU');
+    expect(doc).toMatch(/documented and not\s+implemented here/);
+    expect(doc).toContain('the deployment is called off');
+    expect(doc).toContain('does not fit the Free plans');
+  });
+
+  it('turns strict service token authentication on before the smoke test', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Zero Trust → Access controls → Access settings → Manage service tokens');
+    expect(doc).toContain('on (recommended)');
+    expect(doc).toContain('2026-10-05');
+  });
+
+  it('bounds an authentication investigation by the Free log retention', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('### 3.7 Investigating an authentication failure');
+    expect(doc).toContain('only the last 24 hours');
   });
 
   it('creates the Access application before the hostname exists', async () => {
@@ -174,7 +276,9 @@ describe('deployment runbook', () => {
     const doc = await readRunbook();
     expect(doc).toContain('Verify in a real environment');
     const items = doc.match(/^- \[ \] /gm) ?? [];
-    expect(items).toHaveLength(9);
+    expect(items).toHaveLength(11);
+    expect(doc).toContain('cpuTime');
+    expect(doc).toContain('[observability]');
   });
 
   it('has no real host, team domain, hex id or access client id', async () => {
