@@ -203,6 +203,28 @@ describe('deployment runbook', () => {
     expect(doc).toContain('JWKS cache miss');
   });
 
+  it('records a local estimate in §6 without letting it stand in for the gate', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('### Local estimate before the gate');
+    // The shapes the gate measures, with the numbers actually observed.
+    expect(doc).toContain('62 days, 32.7 KiB body, 63 statements');
+    expect(doc).toContain('0.49 ms');
+    expect(doc).toContain('1.65 ms');
+    expect(doc).toContain('3.79 ms');
+    expect(doc).toContain('1.22 ms');
+    expect(doc).toContain('2.79 ms');
+    expect(doc).toContain('5.35 ms');
+    // Where that median goes, so a later edit cannot describe a different cost.
+    expect(doc).toContain('date validation ~28%');
+    expect(doc).toContain('RS256 verification ~23%');
+    // The estimate is a baseline for comparison, never the decision.
+    expect(doc).toContain('not a substitute for the gate');
+    expect(doc).toContain('about 0.5 ms');
+    expect(doc).toContain('2-3x');
+    expect(doc).toContain('above 5 ms');
+    expect(doc).toContain('still unmeasured');
+  });
+
   it('keeps the fallback design documented and explicitly not applied', async () => {
     const doc = await readRunbook();
     expect(doc).toContain('### 6.5 If the gate fails: fallback options (not applied)');

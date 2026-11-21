@@ -447,6 +447,62 @@ and keeps the endpoint unpublished until the measurement passes. Run it
 immediately after step 10 and step 13, and keep the desktop client pointed at
 nothing but the smoke-test collector until it passes.
 
+### Local estimate before the gate
+
+§1's position is unchanged: nothing here is a measurement of the implementation
+in a real environment, so the real deployment is **still unmeasured**. What
+exists is a local estimate of the same shapes, and it is useful only as the
+baseline the gate result is compared against. It is
+**not a substitute for the gate**: the pass/fail decision stays with the two
+readings in §6.1.
+
+Method: the package's real entry point (`src/index.ts`, `default.fetch`) is
+bundled unchanged and executed on Node 22, so `getApp` memoisation, the JWKS
+cache, Hono routing, the middleware and the error handler are all in the path.
+The RS256 key pair, the JWTs and the JWKS document are generated in-process and
+every outbound `fetch` is answered locally or throws, so no request leaves the
+machine. D1 is a stand-in that resolves without waiting: it does the JS-side
+work the Worker pays (SQL string building, argument lists, result mapping) with
+D1's result shape and bind order, but no I/O and no SQL execution.
+`process.cpuUsage()` deltas are sampled per request over thousands of warm
+requests, with the request objects built before each window so that the
+runtime's own request parsing is not charged to the Worker.
+
+| Shape | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: |
+| Largest write: 62 days, 32.7 KiB body, 63 statements | 0.49 ms | 1.65 ms | 3.79 ms |
+| Typical write: 7 days | 0.30 ms | 1.32 ms | 2.34 ms |
+| Largest read: 5000 rows, 64 collectors | 1.22 ms | 2.79 ms | 5.35 ms |
+| Read: 62 rows, 1 collector | 0.19 ms | 1.10 ms | 1.74 ms |
+
+Against the 10 ms budget the heaviest write is about 0.5 ms at the median — a
+factor of about 20 at p50 and about 6 at p95. Where that median goes, from
+isolated step medians: snapshot date validation ~28%, RS256 verification ~23%,
+Hono dispatch and response ~20%, and the D1 glue 0.03 ms (the batch is cheap
+here precisely because the stand-in executes nothing).
+
+Read it with these discounts:
+
+- deployed CPU is shared and slower, so a 2-3x higher per-request cost is
+  plausible; the estimate stays inside 10 ms at 2-3x, which is why it is worth
+  recording at all;
+- Node is not workerd: RSA verification and SHA-256 run on a libuv thread pool
+  here and in-process there, so the split between crypto and JavaScript differs
+  even though both run V8;
+- the D1 stand-in has no serialization across the binding boundary, so the
+  JS-side binding cost is approximated, not measured;
+- the first request on a fresh isolate was not measured in workerd, so cold
+  start is absent from the table;
+- a supplementary run in local workerd (Miniflare with a real SQLite D1) put the
+  largest write at 6.7 ms, but that includes SQLite execution inside the same
+  process, while production D1 runs off-box and is not charged to Worker CPU —
+  it is an upper bound, not a comparable number.
+
+Use it as the comparison baseline: if the P50 measured at the gate is off by an
+order of magnitude — above 5 ms, say — suspect the implementation or the
+measurement before trusting the number. This subsection changes nothing in
+§6.5; those options stay documented and not applied.
+
 ### 6.1 Pass condition
 
 Both of these, read from the account that owns the Worker:
