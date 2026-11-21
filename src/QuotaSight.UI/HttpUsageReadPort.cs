@@ -37,6 +37,13 @@ public enum UsageReadFailure
     NotFound,
 
     /// <summary>
+    /// The service reported that the named collector does not exist (404
+    /// <c>collector_not_found</c>). Distinct from <see cref="NotFound"/>, which on the
+    /// breakdown endpoint means the server does not serve the breakdown at all.
+    /// </summary>
+    CollectorNotFound,
+
+    /// <summary>
     /// The service answered with a redirect, or with a response that belongs to a
     /// different request URI than the one sent. Neither is ever accepted.
     /// </summary>
@@ -213,6 +220,12 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     /// <summary>Maximum daily rows accepted from one response (the API's own read bound).</summary>
     public const int MaxRows = 5_000;
 
+    /// <summary>Maximum breakdown parts accepted from one response (the API's own read bound).</summary>
+    public const int MaxParts = 2_000;
+
+    /// <summary>Maximum coverage rows accepted from one response (the API's own read bound).</summary>
+    public const int MaxCoverageRows = 5_000;
+
     /// <summary>Maximum collector freshness entries accepted from one response (the API's own bound).</summary>
     public const int MaxCollectors = 64;
 
@@ -226,6 +239,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     public const long MaxSafeInteger = 9_007_199_254_740_991L;
 
     private const string DailyPath = "/v1/usage/daily";
+    private const string BreakdownPath = "/v1/usage/breakdown";
     private const string DateFormat = "yyyy-MM-dd";
 
     /// <summary>Exact form of a collector reception time: UTC, milliseconds, `Z`.</summary>
@@ -332,6 +346,94 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                 "The collector filter is not a valid collector id.");
         }
 
+        var requestUri = BuildRequestUri(DailyPath, from, to, collectorId);
+        var (response, bytes) = await ExchangeAsync(requestUri, cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            EnsureStatus(response);
+            EnsureContent(response);
+            if (bytes is null)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.ResponseTooLarge,
+                    "The usage response exceeded the bounded read size.");
+            }
+
+            return Parse(bytes, from, to, collectorId);
+        }
+    }
+
+    /// <summary>
+    /// Reads the attributed usage breakdown for a range over the same origin,
+    /// credential and deadline discipline as the daily read. A 404 is classified by
+    /// reading its bounded JSON body: <c>not_found</c> means the server does not serve
+    /// the breakdown yet, <c>collector_not_found</c> means the named collector is
+    /// unknown. Every other deviation is a typed failure, never a guessed value.
+    /// </summary>
+    public async Task<UsageBreakdown> ReadBreakdownAsync(
+        DateOnly from,
+        DateOnly to,
+        string? collectorId,
+        CancellationToken cancellationToken)
+    {
+        var span = to.DayNumber - from.DayNumber;
+        if (span < 0 || span > MaxQuerySpanDays - 1)
+        {
+            throw new UsageReadException(
+                UsageReadFailure.InvalidRequest,
+                "The requested breakdown range is inverted or longer than the supported window.");
+        }
+
+        if (collectorId is not null && !IsCollectorId(collectorId))
+        {
+            throw new UsageReadException(
+                UsageReadFailure.InvalidRequest,
+                "The collector filter is not a valid collector id.");
+        }
+
+        var requestUri = BuildRequestUri(BreakdownPath, from, to, collectorId);
+        var (response, bytes) = await ExchangeAsync(requestUri, cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw ClassifyNotFound(bytes);
+            }
+
+            // The server refuses an over-bound result instead of truncating it; the
+            // status is the only input, the body is never parsed for this.
+            if ((int)response.StatusCode == 413)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.ResponseTooLarge,
+                    "The breakdown response exceeded the server's own result bound.",
+                    413);
+            }
+
+            EnsureStatus(response);
+            EnsureContent(response);
+            if (bytes is null)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.ResponseTooLarge,
+                    "The usage response exceeded the bounded read size.");
+            }
+
+            return ParseBreakdown(bytes, from, to, collectorId);
+        }
+    }
+
+    /// <summary>
+    /// Sends one credentialed GET and reads its body within the fixed deadline. The
+    /// classification of the answer (status, media type, size, contract) is left to the
+    /// caller, because the breakdown endpoint must read the body of a 404 to tell a
+    /// missing route from a missing collector. A response that names a different request
+    /// URI than the one sent is refused here, before anything is classified or parsed.
+    /// </summary>
+    private async Task<(HttpResponseMessage Response, byte[]? Bytes)> ExchangeAsync(
+        Uri requestUri,
+        CancellationToken cancellationToken)
+    {
         // One request, one credential, no memoisation: a response is never reused
         // for a later call or for a different identity.
         var credential = await _credentials.GetCredentialAsync(cancellationToken).ConfigureAwait(false);
@@ -349,7 +451,6 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                 "The available credential belongs to a different identity than this reader.");
         }
 
-        var requestUri = BuildRequestUri(from, to, collectorId);
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         // Applied to this request only; never as a client default, so a second
         // identity can never inherit the first one's headers. Access is the gate:
@@ -391,46 +492,55 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                 innerException: exception);
         }
 
-        using (response)
+        byte[]? bytes;
+        try
         {
-            // Checked before the status: an answer that came from another location is
+            // Checked before anything else: an answer that came from another location is
             // never classified, parsed or surfaced as this endpoint's data.
             EnsureRequestUri(response, requestUri);
-            EnsureStatus(response);
-            EnsureContent(response);
 
-            byte[]? bytes;
-            try
+            // The status is classified before the body is read, exactly as this port has
+            // always done, with two exceptions: the body of a 404 is read so the breakdown
+            // endpoint can tell a missing route (`not_found`) from a missing collector
+            // (`collector_not_found`), and a 413 is passed through so the breakdown can
+            // name its own result-bound refusal (the daily read keeps classifying it as
+            // an unexpected status). No body that is not this contract's is ever parsed.
+            if (response.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.NotFound or (HttpStatusCode)413))
             {
-                bytes = await ReadBoundedAsync(response.Content, exchangeToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // Cancelling while the body is still arriving is still the caller's act.
-                throw;
-            }
-            catch (OperationCanceledException exception)
-            {
-                throw TimeoutFailure("The usage response body did not arrive in time.", exception);
-            }
-            catch (Exception exception) when (exception is HttpRequestException or IOException)
-            {
-                // A body that dies mid-read is a transport failure, not a malformed
-                // document: nothing is parsed and nothing is guessed from a prefix.
+                EnsureStatus(response);
                 throw new UsageReadException(
-                    UsageReadFailure.TransportFailure,
-                    "The usage response body could not be read.",
-                    innerException: exception);
+                    UsageReadFailure.UnexpectedStatus,
+                    "The usage service answered with an unexpected status.");
             }
 
-            if (bytes is null)
-            {
-                throw new UsageReadException(
-                    UsageReadFailure.ResponseTooLarge,
-                    "The usage response exceeded the bounded read size.");
-            }
-
-            return Parse(bytes, from, to, collectorId);
+            bytes = await ReadBoundedAsync(response.Content, exchangeToken).ConfigureAwait(false);
+            return (response, bytes);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancelling while the body is still arriving is still the caller's act.
+            response.Dispose();
+            throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            response.Dispose();
+            throw TimeoutFailure("The usage response body did not arrive in time.", exception);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            // A body that dies mid-read is a transport failure, not a malformed
+            // document: nothing is parsed and nothing is guessed from a prefix.
+            response.Dispose();
+            throw new UsageReadException(
+                UsageReadFailure.TransportFailure,
+                "The usage response body could not be read.",
+                innerException: exception);
+        }
+        catch (UsageReadException)
+        {
+            response.Dispose();
+            throw;
         }
     }
 
@@ -533,7 +643,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
         return new UriBuilder(origin) { Path = DailyPath }.Uri;
     }
 
-    private Uri BuildRequestUri(DateOnly from, DateOnly to, string? collectorId)
+    private Uri BuildRequestUri(string path, DateOnly from, DateOnly to, string? collectorId)
     {
         var query = "from=" + FormatDate(from) + "&to=" + FormatDate(to);
         if (collectorId is not null)
@@ -543,7 +653,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
             query += "&collector=" + collectorId;
         }
 
-        return new UriBuilder(_endpoint) { Query = query }.Uri;
+        return new UriBuilder(_endpoint) { Path = path, Query = query }.Uri;
     }
 
     private static void EnsureStatus(HttpResponseMessage response)
@@ -797,12 +907,285 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     }
 
     /// <summary>
+    /// Parses a breakdown response with the same strictness as the daily parser: exact
+    /// fields at the root and in every row, non-negative safe integers, echoed range
+    /// verification, a bounded row count, documented ordering of the parts, and a local
+    /// check that the parts sum to the attributed coverage. Nothing is defaulted,
+    /// merged or truncated.
+    /// </summary>
+    private static UsageBreakdown ParseBreakdown(byte[] bytes, DateOnly from, DateOnly to, string? collectorId)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
+        }
+        catch (JsonException exception)
+        {
+            throw new UsageReadException(
+                UsageReadFailure.MalformedResponse,
+                "The usage response was not valid JSON.",
+                innerException: exception);
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            RequireObjectWithExactFields(root, ["from", "to", "parts", "coverage", "collectors"], "breakdown");
+
+            var echoedFrom = ReadStrictDate(root, "from");
+            var echoedTo = ReadStrictDate(root, "to");
+            if (echoedFrom != from || echoedTo != to)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.RangeMismatch,
+                    "The usage response echoed a different range than the one requested.");
+            }
+
+            var collectors = ReadCollectors(root, collectorId, "breakdown");
+            var coveredCollectors = new HashSet<string>(
+                collectors.Select(entry => entry.CollectorId), StringComparer.Ordinal);
+
+            var parts = ReadParts(root);
+            var coverage = ReadCoverage(root, from, to, collectorId, coveredCollectors);
+
+            long attributedTotal;
+            long partsTotal;
+            try
+            {
+                checked
+                {
+                    attributedTotal = 0;
+                    foreach (var row in coverage) attributedTotal += row.AttributedTokens;
+                    partsTotal = 0;
+                    foreach (var part in parts) partsTotal += part.Total;
+                }
+            }
+            catch (OverflowException)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.InconsistentTotal,
+                    "The breakdown totals cannot be aggregated within the safe integer range.");
+            }
+
+            if (partsTotal != attributedTotal)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.InconsistentTotal,
+                    "The breakdown parts do not sum to the attributed coverage.");
+            }
+
+            return new UsageBreakdown(from, to, parts, coverage, collectors);
+        }
+    }
+
+    /// <summary>
+    /// Parses the `parts` list: exact fields, every key a string (empty means unknown),
+    /// non-negative safe integers, `total` equal to the five components, and the
+    /// documented order (total descending, ties ascending by client, provider, model).
+    /// </summary>
+    private static List<UsagePart> ReadParts(JsonElement root)
+    {
+        var entries = ReadRequiredField(root, "parts");
+        if (entries.ValueKind != JsonValueKind.Array)
+        {
+            throw Malformed("The usage response parts field is not an array.");
+        }
+
+        if (entries.GetArrayLength() > MaxParts)
+        {
+            throw new UsageReadException(
+                UsageReadFailure.ResponseTooLarge,
+                "The usage response contained more parts than the breakdown read bound.");
+        }
+
+        var parts = new List<UsagePart>(entries.GetArrayLength());
+        foreach (var entry in entries.EnumerateArray())
+        {
+            RequireObjectWithExactFields(
+                entry,
+                ["client", "provider", "model", "input", "output", "cacheRead", "cacheWrite", "reasoning", "total"],
+                "breakdown");
+
+            var client = ReadKeyString(entry, "client");
+            var provider = ReadKeyString(entry, "provider");
+            var model = ReadKeyString(entry, "model");
+            var input = ReadSafeInteger(entry, "input");
+            var output = ReadSafeInteger(entry, "output");
+            var cacheRead = ReadSafeInteger(entry, "cacheRead");
+            var cacheWrite = ReadSafeInteger(entry, "cacheWrite");
+            var reasoning = ReadSafeInteger(entry, "reasoning");
+            var total = ReadSafeInteger(entry, "total");
+            if (total != input + output + cacheRead + cacheWrite + reasoning)
+            {
+                throw Malformed("A usage part total does not equal its five components.");
+            }
+
+            if (parts.Count > 0)
+            {
+                var last = parts[^1];
+                if (total > last.Total)
+                {
+                    throw Malformed("The usage parts are not in the documented descending order.");
+                }
+
+                if (total == last.Total)
+                {
+                    var ordered = string.CompareOrdinal(client, last.Client);
+                    if (ordered == 0) ordered = string.CompareOrdinal(provider, last.Provider);
+                    if (ordered == 0) ordered = string.CompareOrdinal(model, last.Model);
+                    if (ordered <= 0)
+                    {
+                        throw Malformed("The usage parts are not in the documented key order.");
+                    }
+                }
+            }
+
+            parts.Add(new UsagePart(client, provider, model, input, output, cacheRead, cacheWrite, reasoning, total));
+        }
+
+        return parts;
+    }
+
+    /// <summary>
+    /// Parses the `coverage` list: exact fields, a date inside the requested range, a
+    /// collector id that the freshness list describes (and that matches the filter), and
+    /// no repeated (date, collector) pair. The rows' order is not part of the contract,
+    /// so it is not enforced; their identity is.
+    /// </summary>
+    private static List<UsageCoverage> ReadCoverage(
+        JsonElement root,
+        DateOnly from,
+        DateOnly to,
+        string? collectorFilter,
+        HashSet<string> coveredCollectors)
+    {
+        var entries = ReadRequiredField(root, "coverage");
+        if (entries.ValueKind != JsonValueKind.Array)
+        {
+            throw Malformed("The usage response coverage field is not an array.");
+        }
+
+        if (entries.GetArrayLength() > MaxCoverageRows)
+        {
+            throw new UsageReadException(
+                UsageReadFailure.ResponseTooLarge,
+                "The usage response contained more coverage rows than the breakdown read bound.");
+        }
+
+        var seen = new HashSet<(DateOnly Date, string CollectorId)>();
+        var rows = new List<UsageCoverage>(entries.GetArrayLength());
+        foreach (var entry in entries.EnumerateArray())
+        {
+            RequireObjectWithExactFields(entry, ["date", "collectorId", "totalTokens", "attributedTokens"], "breakdown");
+
+            var date = ReadStrictDate(entry, "date");
+            if (date < from || date > to)
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.RangeMismatch,
+                    "The usage response contained a day outside the requested range.");
+            }
+
+            var collectorValue = ReadRequiredField(entry, "collectorId");
+            if (collectorValue.ValueKind != JsonValueKind.String)
+            {
+                throw Malformed("A usage row has no collector id.");
+            }
+
+            var rowCollectorId = collectorValue.GetString()!;
+            if (!IsCollectorId(rowCollectorId))
+            {
+                throw Malformed("A usage row has an invalid collector id.");
+            }
+
+            if (!coveredCollectors.Contains(rowCollectorId))
+            {
+                // A row for a collector the response does not describe would leave its
+                // freshness unknown, so the answer is refused instead of shown.
+                throw Malformed("A usage row names a collector the response does not describe.");
+            }
+
+            if (collectorFilter is not null && !string.Equals(rowCollectorId, collectorFilter, StringComparison.Ordinal))
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.FilterMismatch,
+                    "The usage response contained a row for a different collector than the one requested.");
+            }
+
+            if (!seen.Add((date, rowCollectorId)))
+            {
+                throw Malformed("The usage response repeats a coverage row.");
+            }
+
+            var totalTokens = ReadSafeInteger(entry, "totalTokens");
+            var attributedTokens = ReadSafeInteger(entry, "attributedTokens");
+            rows.Add(new UsageCoverage(date, rowCollectorId, totalTokens, attributedTokens));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Reads one breakdown key component: a string, possibly empty (unknown). It is
+    /// shown as-is, never merged away or defaulted.
+    /// </summary>
+    private static string ReadKeyString(JsonElement parent, string name)
+    {
+        var value = ReadRequiredField(parent, name);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw Malformed("A usage breakdown key is not a string.");
+        }
+
+        return value.GetString()!;
+    }
+
+    /// <summary>
+    /// Classifies a 404 body. `collector_not_found` is a wrong filter, everything else
+    /// (including an unreadable or non-JSON body) is reported as a missing resource: the
+    /// server that does not serve the breakdown answers the generic code. The body
+    /// itself is never echoed.
+    /// </summary>
+    private static UsageReadException ClassifyNotFound(byte[]? bytes)
+    {
+        if (bytes is not null)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
+                if (document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.Object
+                    && error.TryGetProperty("code", out var code)
+                    && code.ValueKind == JsonValueKind.String
+                    && string.Equals(code.GetString(), "collector_not_found", StringComparison.Ordinal))
+                {
+                    return new UsageReadException(
+                        UsageReadFailure.CollectorNotFound,
+                        "The usage service reported that the named collector does not exist.",
+                        (int)HttpStatusCode.NotFound);
+                }
+            }
+            catch (JsonException)
+            {
+                // Not JSON: fall through to the generic classification.
+            }
+        }
+
+        return new UsageReadException(
+            UsageReadFailure.NotFound,
+            "The usage service reported that the requested resource does not exist.",
+            (int)HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
     /// Parses the `collectors` freshness list: exact fields, ascending unique
     /// collector ids, a positive safe-integer generation, and a strict UTC instant
     /// with milliseconds or `null`. Each collector is one entry and the list is
     /// bounded; nothing is defaulted or merged.
     /// </summary>
-    private static List<UsageCollectorReceipt> ReadCollectors(JsonElement root, string? collectorFilter)
+    private static List<UsageCollectorReceipt> ReadCollectors(JsonElement root, string? collectorFilter, string contractName = "daily")
     {
         var entries = ReadRequiredField(root, "collectors");
         if (entries.ValueKind != JsonValueKind.Array)
@@ -913,7 +1296,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     /// field, a repeated field and a missing field are all the same typed failure:
     /// nothing here is defaulted, merged or overwritten by a later duplicate.
     /// </summary>
-    private static void RequireObjectWithExactFields(JsonElement element, string[] expected)
+    private static void RequireObjectWithExactFields(JsonElement element, string[] expected, string contractName = "daily")
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
@@ -927,12 +1310,12 @@ public sealed class HttpUsageReadPort : IUsageReadPort
             var index = Array.IndexOf(expected, property.Name);
             if (index < 0)
             {
-                throw Malformed("The usage response contains a field that is not part of the daily contract.");
+                throw Malformed("The usage response contains a field that is not part of the " + contractName + " contract.");
             }
 
             if (present[index])
             {
-                throw Malformed("The usage response repeats a field of the daily contract.");
+                throw Malformed("The usage response repeats a field of the " + contractName + " contract.");
             }
 
             present[index] = true;
@@ -941,7 +1324,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
 
         if (seen != expected.Length)
         {
-            throw Malformed("The usage response is missing a field of the daily contract.");
+            throw Malformed("The usage response is missing a field of the " + contractName + " contract.");
         }
     }
 

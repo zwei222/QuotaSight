@@ -624,6 +624,9 @@ public sealed class UsageStatusSurfaceTests
             Calls++;
             return Task.FromResult(outcomes[index]());
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
     }
 
     private sealed class GatedUsageReadPort(Func<DailyUsage> success) : IUsageReadPort
@@ -636,6 +639,9 @@ public sealed class UsageStatusSurfaceTests
             if (Interlocked.Exchange(ref first, false)) return Task.FromResult(success());
             return gate.Task;
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
 
         public void Release(Func<DailyUsage> next) => gate.TrySetResult(next());
     }

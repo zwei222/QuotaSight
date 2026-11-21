@@ -103,6 +103,7 @@ public partial class MainWindow : Window
 
         ApplyUsageConnectionState();
         ApplyUsageStateVisuals();
+        ApplyBreakdownStateVisuals();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -116,6 +117,36 @@ public partial class MainWindow : Window
         {
             ApplyUsageStateVisuals();
         }
+
+        if (e.PropertyName is null or nameof(MainViewModel.BreakdownFailure) or nameof(MainViewModel.BreakdownFailureText) or nameof(MainViewModel.IsBreakdownStale))
+        {
+            ApplyBreakdownStateVisuals();
+        }
+
+        // A language change must also rebuild the dimension switcher's choices: the VM
+        // re-raises BreakdownDimensionChoices with the new display names.
+        if (e.PropertyName is null or nameof(MainViewModel.Language))
+        {
+            ReconfigureBreakdownDimensionBox();
+        }
+    }
+
+    private void ReconfigureBreakdownDimensionBox()
+    {
+        if (this.FindControl<ComboBox>("BreakdownDimensionBox") is not { } dimensionBox) return;
+        var selectedDimension = dimensionBox.SelectedItem switch
+        {
+            LocalizedChoice<UsageBreakdownDimension> current => current.Value,
+            _ => ViewModel.SelectedBreakdownDimension,
+        };
+        var wasConfiguringLists = isConfiguringLists;
+        isConfiguringLists = true;
+        try
+        {
+            dimensionBox.ItemsSource = ViewModel.BreakdownDimensionChoices;
+            dimensionBox.SelectedItem = ViewModel.BreakdownDimensionChoices.Single(item => item.Value == selectedDimension);
+        }
+        finally { isConfiguringLists = wasConfiguringLists; }
     }
 
     private void ApplyUsageConnectionState()
@@ -164,6 +195,31 @@ public partial class MainWindow : Window
         }
     }
 
+    // The breakdown card's failure banner colors by the same state language as the daily
+    // card's, with one difference in the detour: a server without breakdown support has
+    // no settings action, while an unknown collector name is exactly a settings problem.
+    private void ApplyBreakdownStateVisuals()
+    {
+        if (this.FindControl<Border>("UsageBreakdownFailurePanel") is not { } panel) return;
+        var failure = ViewModel.BreakdownFailure;
+        panel.IsVisible = failure is not UsageFailureKind.None;
+        foreach (var name in new[] { "stale", "error" })
+        {
+            panel.Classes.Remove(name);
+        }
+
+        if (panel.IsVisible)
+        {
+            panel.Classes.Add(ViewModel.IsBreakdownStale ? "stale" : "error");
+        }
+
+        if (this.FindControl<Button>("UsageBreakdownOpenSettingsButton") is { } settings)
+        {
+            settings.IsVisible = failure is UsageFailureKind.Unauthorized or UsageFailureKind.Forbidden
+                or UsageFailureKind.Redirected or UsageFailureKind.CredentialMissing or UsageFailureKind.CollectorNotFound;
+        }
+    }
+
     public Task InitializeAsync(CancellationToken cancellationToken = default) => initializationTask ??= InitializeCoreAsync(cancellationToken);
 
     private async Task InitializeSafelyAsync()
@@ -209,6 +265,7 @@ public partial class MainWindow : Window
             language.ItemsSource = UiSettings.SupportedLanguages;
             accountFilter.ItemsSource = UiSettings.HistoryAccountChoices(ViewModel.Language);
             windowFilter.ItemsSource = UiSettings.HistoryWindowChoices(ViewModel.Language);
+            ReconfigureBreakdownDimensionBox();
             provider.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == selectedProvider);
             this.FindControl<ComboBox>("ProviderPicker")!.SelectedItem = ViewModel.ProviderChoices.First(item => item.Choice == ViewModel.SelectedProvider);
             window.SelectedItem = UiSettings.ManualWindowChoices(ViewModel.Language).Single(item => item.Value == selectedWindow);
@@ -331,6 +388,14 @@ public partial class MainWindow : Window
     private void SettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
     private void UsageOpenSettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
     private void UsageRetryClick(object? sender, RoutedEventArgs e) => UsageRefreshClick(sender, e);
+    private void BreakdownDimensionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (isInitializing || isConfiguringLists) return;
+        if (sender is ComboBox { SelectedItem: LocalizedChoice<UsageBreakdownDimension> choice })
+        {
+            ViewModel.SelectedBreakdownDimension = choice.Value;
+        }
+    }
     private async void UsageRefreshClick(object? sender, RoutedEventArgs e)
     {
         try { await ViewModel.RefreshUsageAsync(); }

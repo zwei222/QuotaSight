@@ -361,7 +361,9 @@ public sealed class UsageConnectionSettingsTests
         harness.ViewModel.NavigateToUsage();
         await harness.ViewModel.UsageLoadTask;
 
-        var request = Assert.Single(harness.Handler.Requests);
+        // The usage page now also reads the breakdown over the same connection; the
+        // credential assertions are about the daily request itself.
+        var request = Assert.Single(harness.Handler.Requests, entry => entry.Uri.Contains("/v1/usage/daily?", StringComparison.Ordinal));
         Assert.Equal("GET", request.Method);
         Assert.StartsWith(Endpoint + "/v1/usage/daily?from=", request.Uri, StringComparison.Ordinal);
         Assert.Equal([ClientId], request.AccessClientIds);
@@ -397,8 +399,9 @@ public sealed class UsageConnectionSettingsTests
         await harness.ViewModel.SaveUsageConnectionAsync(OtherEndpoint, ClientId, ClientSecret, CancellationToken.None);
         await harness.ViewModel.UsageLoadTask;
 
-        Assert.Equal(2, harness.Handler.Requests.Count);
-        Assert.StartsWith(OtherEndpoint + "/v1/usage/daily", harness.Handler.Requests[1].Uri, StringComparison.Ordinal);
+        var dailyRequests = harness.Handler.Requests.Where(entry => entry.Uri.Contains("/v1/usage/daily?", StringComparison.Ordinal)).ToList();
+        Assert.Equal(2, dailyRequests.Count);
+        Assert.StartsWith(OtherEndpoint + "/v1/usage/daily", dailyRequests[1].Uri, StringComparison.Ordinal);
     }
 
     [Fact]
