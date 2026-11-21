@@ -406,7 +406,7 @@ describe('deployment runbook', () => {
     expect(doc).toContain('### 8.1 Observed in one real account (2026-11-22)');
     expect(doc).toContain('### 8.2 Still unverified');
     const items = doc.match(/^- \[ \] /gm) ?? [];
-    expect(items).toHaveLength(9);
+    expect(items).toHaveLength(10);
     expect(doc).toContain('cpuTime');
     expect(doc).toContain('[observability]');
     // The two behaviours that moved out of the checklist are still named, as
@@ -416,6 +416,79 @@ describe('deployment runbook', () => {
     expect(observed).toContain('rollback scope');
     expect(observed).toContain('403');
     expect(observed).toContain('401');
+  });
+
+  it('records the first real CPU measurement with its sample sizes and conditions', async () => {
+    const flat = await readRunbookFlat();
+    const start = flat.indexOf('### 6.0 First real measurement (2026-11-22)');
+    expect(start).toBeGreaterThan(-1);
+    const section = flat.slice(start, flat.indexOf('### 6.1 Pass condition'));
+    // Conditions first: one account, the free plans, one region, one day.
+    expect(section).toContain('one account');
+    expect(section).toContain('Workers Free');
+    expect(section).toContain('Tokyo / NRT');
+    expect(section).toContain('2026-11-22');
+    // Every reading keeps the sample size it came from.
+    expect(section).toContain('7 invocations');
+    expect(section).toContain('8.91 ms');
+    expect(section).toContain('22.53 ms');
+    expect(section).toContain('P50 98 ms');
+    expect(section).toContain('40 consecutive invocations');
+    expect(section).toContain('1.87 ms');
+    expect(section).toContain('8 invocations');
+    expect(section).toContain('3.84 ms');
+    expect(section).toContain('53 invocations');
+    expect(section).toContain('4.87 ms');
+    expect(section).toContain('13.53 ms');
+    expect(section).toContain('14.93 ms');
+  });
+
+  it('leaves the CPU gate undecided and claims neither a pass nor a failure', async () => {
+    const flat = await readRunbookFlat();
+    const section = flat.slice(
+      flat.indexOf('### 6.0 First real measurement (2026-11-22)'),
+      flat.indexOf('### 6.1 Pass condition'),
+    );
+    expect(section).toContain('stays undecided');
+    expect(section).toContain('1102');
+    expect(section).toMatch(/Neither a pass\s+nor a failure is recorded here/);
+    // The cold-start explanation is named as a guess, not as an observation.
+    expect(section).toContain('a guess, not a verified cause');
+    // The local estimate was optimistic, and by how much it was.
+    expect(section).toContain('optimistic');
+    expect(section).toContain('about 8x');
+    expect(section).toContain('about 10x');
+    expect(section).toContain('2-3x');
+    // No verdict may appear elsewhere either.
+    expect(flat).not.toContain('the gate passed');
+    expect(flat).not.toContain('passed the gate');
+    expect(flat).not.toContain('the gate failed on');
+  });
+
+  it('separates the measured 62-day PUT from the unmeasured 5000-row read', async () => {
+    const doc = await readRunbook();
+    const unverified = doc.slice(doc.indexOf('### 8.2 Still unverified'));
+    expect(unverified).toContain('5000-row read');
+    // The write half is reported as measured, in §8.1, not as work still owed.
+    expect(unverified).toMatch(/62-day, 32 KiB `PUT` half of this item was measured/);
+    expect(unverified).toContain('the read half was not');
+    // The gate itself is the other open item, with the sample that was too small.
+    expect(unverified).toMatch(/53 invocations/);
+  });
+
+  it('records the CPU readings of that run in §8.1 as observations', async () => {
+    const flat = await readRunbookFlat();
+    const observed = flat.slice(
+      flat.indexOf('### 8.1 Observed in one real account'),
+      flat.indexOf('### 8.2 Still unverified'),
+    );
+    expect(observed).toContain('CPU Time per execution');
+    expect(observed).toContain('1.87 ms');
+    expect(observed).toContain('3.84 ms');
+    expect(observed).toContain('14.93 ms');
+    expect(observed).toContain('not the gate');
+    // The read path at the documented bound was not exercised, and §8.1 says so.
+    expect(observed).toContain('5000-row bound');
   });
 
   it('records the remote migrations without claiming they prove transactionality', async () => {

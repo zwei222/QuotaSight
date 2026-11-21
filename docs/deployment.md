@@ -123,11 +123,14 @@ question is about this Worker's own JavaScript, not about how long D1 takes.
 
 Cloudflare's own profiling guidance says heavier workloads that handle
 authentication typically use 10-20 ms, i.e. the same order as the Free plan's
-10 ms. There is **no measurement of this implementation**: the test suite runs a
-real local D1 and settles correctness, not CPU, and no number in this document is
-a measurement of a deployed Worker. The honest position is therefore that this
-slice is **conditionally feasible** on Workers Free (unverified): it plausibly
-fits, and whether it fits is decided by the gate in §6, not by an assumption here.
+10 ms. There was **no measurement of this implementation** when this runbook was
+written: the test suite runs a real local D1 and settles correctness, not CPU, and
+no number in this document was a measurement of a deployed Worker. §6.0 now
+records a first real measurement, taken in one account on 2026-11-22, and it
+decides nothing: the gate in §6 is still open. The honest position therefore
+remains that this slice is **conditionally feasible** on Workers Free
+(unverified): it plausibly fits, and whether it fits is decided by the gate in
+§6, not by an assumption here.
 
 Two things follow, and both are rules rather than advice:
 
@@ -624,10 +627,10 @@ nothing but the smoke-test collector until it passes.
 
 ### Local estimate before the gate
 
-§1's position is unchanged: nothing here is a measurement of the implementation
-in a real environment, so the real deployment is **still unmeasured**. What
+Nothing here is a measurement of the implementation in a real environment. What
 exists is a local estimate of the same shapes, and it is useful only as the
-baseline the gate result is compared against. It is
+baseline §6.0's first real measurement is compared against; the gate itself —
+24 hours of real traffic — is **still unmeasured**. The estimate is
 **not a substitute for the gate**: the pass/fail decision stays with the two
 readings in §6.1.
 
@@ -660,7 +663,8 @@ Read it with these discounts:
 
 - deployed CPU is shared and slower, so a 2-3x higher per-request cost is
   plausible; the estimate stays inside 10 ms at 2-3x, which is why it is worth
-  recording at all;
+  recording at all — but §6.0 measured about 8x for the largest write and about
+  10x for the read, so that factor understated the gap;
 - Node is not workerd: RSA verification and SHA-256 run on a libuv thread pool
   here and in-process there, so the split between crypto and JavaScript differs
   even though both run V8;
@@ -675,8 +679,51 @@ Read it with these discounts:
 
 Use it as the comparison baseline: if the P50 measured at the gate is off by an
 order of magnitude — above 5 ms, say — suspect the implementation or the
-measurement before trusting the number. This subsection changes nothing in
-§6.5; those options stay documented and not applied.
+measurement before trusting the number. The 2026-11-22 run in §6.0 stayed under
+that line at the median while exceeding the 2-3x factor, so what was wrong there
+was the discount factor, not the number. This subsection changes nothing in §6.5;
+those options stay documented and not applied.
+
+### 6.0 First real measurement (2026-11-22)
+
+This is the first reading of a deployed Worker in this runbook, and it is **not
+the gate**. One operator deployed this slice to one account on Workers Free (with
+D1 Free and Zero Trust Free), in the Tokyo / NRT region, and read
+`CPU Time per execution` in Workers → Metrics. The sample sizes and the conditions
+are part of the record: a different account, region, plan or traffic mix can be
+slower, so nothing here generalises beyond that one account on that one day.
+
+| Observation | Sample | CPU time |
+| --- | --- | --- |
+| Smoke-test requests: small bodies, a few minutes apart, the first version of the Worker | 7 invocations | P50 8.91 ms, P90 and P99 22.53 ms |
+| Warm `GET` on the current version | 40 consecutive invocations | median 1.87 ms |
+| Heaviest write: 62 days, a body of roughly 32 KiB, a new revision on every call | 8 invocations, 1 s and 25 s apart, possibly on the same isolate | median 3.84 ms; all eight answered `200` |
+| Every invocation in a 24-hour window, cold starts included | 53 invocations | P50 4.87 ms, P90 13.53 ms, P99 14.93 ms |
+
+The wall clock of that first group was P50 98 ms, which is latency and not CPU.
+`Exceeded CPU Time Limits` (Error 1102) was 0 over the window, and no error of any
+kind was counted.
+
+- **The gate in §6.1 stays undecided.** 53 invocations, cold starts included, are
+  neither the 24 hours of real traffic §6.1 asks for nor the repeated boundary
+  cases of §6.3. The 1102 count of 0 is only the half that was read, and a sample
+  that small cannot make a 24-hour absence of a rare error meaningful. Neither a
+  pass nor a failure is recorded here.
+- **The P99 above 10 ms with no error is the case §6.2 describes.** The first
+  seven invocations recorded 22.53 ms at P90 and P99 and still finished, which is
+  exactly why the P99 alone cannot decide the gate and the 1102 count is the
+  verdict.
+- **The local estimate was optimistic.** The estimate above gave 0.49 ms at the
+  median for the largest write and 0.19 ms for a 62-row read; the deployed Worker
+  came out at 3.84 ms and 1.87 ms, about 8x and about 10x. Both medians stay
+  inside 10 ms, so the shape did not break the budget, but the 2-3x discount
+  understated the gap instead of bounding it. Do not carry that factor into a new
+  plan; treat 8-10x as the measured ratio for these two shapes.
+- **Why the first invocations are the slowest is unverified.** Module
+  initialisation, an Access JWKS fetch, D1 setup and Access's own latency are all
+  plausible contributors, and this run did not separate them. Treat "cold start
+  explains the 8.91 ms median and the 22.53 ms tail" as a guess, not a verified
+  cause.
 
 ### 6.1 Pass condition
 
@@ -855,6 +902,23 @@ this account and this D1 release. It does not settle them for a different accoun
 a different D1 release or a schema change, which is why §5 still asks a new
 deployment to run the same checks.
 
+**CPU time**, read from `CPU Time per execution` in Workers → Metrics for the same
+account and the same day (§6.0 has the samples and their caveats):
+
+- the first seven smoke-test invocations: P50 8.91 ms, P90 and P99 22.53 ms, wall
+  clock P50 98 ms;
+- 40 consecutive warm `GET`s on the current version: median 1.87 ms;
+- the heaviest write measured — 62 days, a body of roughly 32 KiB, a new revision
+  every time — 8 times: median 3.84 ms, all eight answered `200`;
+- every invocation of a 24-hour window, cold starts included (53 invocations):
+  P50 4.87 ms, P90 13.53 ms, P99 14.93 ms, with `Exceeded CPU Time Limits`
+  (Error 1102) at 0 and no error of any kind.
+
+That is **not the gate**: 53 invocations that include cold starts are neither the
+24 hours of real traffic nor the repeated boundary cases §6.3 asks for, so §6.1
+stays undecided. It is also only one of the two shapes the checklist below names —
+the read path at the 5000-row bound was not measured at all in this run.
+
 **Migrations:** `0001`–`0003` applied remotely without error. The schema then
 held three tables plus `d1_migrations`, two indexes and four triggers. That
 describes this schema; it is not a proof that each migration file runs in one
@@ -866,7 +930,8 @@ existed. That step and the principal swap in §5.3 were added afterwards.
 
 ### 8.2 Still unverified
 
-- [ ] Measure actual CPU time for a 32 KiB, 62-day `PUT` and for a 5000-row read, and confirm both stay inside the gate in §6.1 on the Free plan.
+- [ ] Measure actual CPU time for a 5000-row read and confirm it stays inside the gate in §6.1 on the Free plan. The 62-day, 32 KiB `PUT` half of this item was measured on 2026-11-22 (§8.1); the read half was not.
+- [ ] Decide the gate in §6.1 on 24 hours of real traffic that includes the boundary cases of §6.3, not on the 53 invocations of §8.1.
 - [ ] Confirm whether `wrangler tail` reports `cpuTime` per invocation on the Free plan — §6 depends on one of these two readings being available.
 - [ ] Confirm whether enabling `[observability]` on the Free plan makes CPU time visible at all, and whether Workers Logs then stays inside the 200,000-event daily allowance.
 - [ ] Confirm that Access logs on the Free plan are really kept only 24 hours and that no export exists, i.e. that §3.7's window is the real one.
@@ -879,7 +944,8 @@ existed. That step and the principal swap in §5.3 were added afterwards.
 Two further behaviours were simply not exercised by that run, so they are neither
 confirmed nor refuted: an organization with strict service token authentication
 off (the `302` case in §3.4), and any request that approaches a Free-plan limit —
-so §1's "a limit is an outage, not an invoice" remains an expectation rather than
+the CPU readings in §8.1 stayed inside the limit rather than probing it — so §1's
+"a limit is an outage, not an invoice" remains an expectation rather than
 something that run paid for.
 
 ## 9. Rollback
