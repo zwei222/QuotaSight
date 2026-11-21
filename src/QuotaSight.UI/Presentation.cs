@@ -1650,6 +1650,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly IDashboardSource source;
     private readonly ReconfigurableUsageReadPort usageReadPort;
     private readonly StoreUsageCredentialProvider? usageCredentials;
+    private readonly Func<string, TimeZoneInfo> timeZoneResolver;
     private readonly Func<HttpClient>? usageHttpClientFactory;
     private string usageApiEndpoint = string.Empty;
     private bool hasUsageCredential;
@@ -1699,8 +1700,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public IReadOnlyList<UsageDay> UsageRows => usageRows;
     public string UsageTotalText => usageTotal;
     public bool IsUsageTotalVisible => usageState == "Ready" && usageRows.Count > 0;
-    public string UsageRangeText => usageState == "Unconfigured" ? string.Empty : $"{usageFrom:yyyy-MM-dd} – {usageTo:yyyy-MM-dd} · Asia/Tokyo";
-    public bool IsUsageRangeVisible => usageState != "Unconfigured";
+    public string UsageRangeText => usageState is "Unconfigured" or "Error" ? string.Empty : $"{usageFrom:yyyy-MM-dd} – {usageTo:yyyy-MM-dd} · Asia/Tokyo";
+    public bool IsUsageRangeVisible => usageState is not ("Unconfigured" or "Error");
     public bool IsUsageLoading => usageState == "Loading";
     public bool CanRefreshUsage => !IsUsageLoading;
     public Task UsageLoadTask => usageLoadTask;
@@ -1717,8 +1718,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             usageRows = [];
             usageTotal = string.Empty;
-            var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo")).DateTime);
-            usageFrom = today.AddDays(-29); usageTo = today;
+            try
+            {
+                var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), timeZoneResolver("Asia/Tokyo")).DateTime);
+                usageFrom = today.AddDays(-29); usageTo = today;
+            }
+            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                // No usable zone database (tzdata/ICU missing): stop in a fixed state. Neither
+                // the zone id nor the exception message may reach the UI.
+                usageState = "Error";
+            }
             OnPropertyChanged(nameof(UsageRangeText));
             OnPropertyChanged(nameof(UsageRows));
             OnPropertyChanged(nameof(UsageTotalText));
@@ -1727,7 +1737,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsUsageRangeVisible));
         OnPropertyChanged(nameof(IsUsageTotalVisible));
         OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading));
-        if (usageState == "Unconfigured") return;
+        if (usageState is "Unconfigured" or "Error") return;
         try
         {
             var result = await usageReadPort.ReadDailyAsync(usageFrom, usageTo, null, token);
@@ -2147,7 +2157,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);

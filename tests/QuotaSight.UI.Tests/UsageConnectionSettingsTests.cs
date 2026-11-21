@@ -479,6 +479,44 @@ public sealed class UsageConnectionSettingsTests
             port.ReadDailyAsync(new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task FirstSaveSucceedsAgainstASecretToolLikeStoreWithNoStoredItem()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "quotasight-usage-secret-tool-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var store = new LinuxSecretToolCredentialStore(new SecretToolLikeRunner());
+        var viewModel = new MainViewModel(
+            new EmptyDashboardSource(),
+            timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)),
+            settingsStore: new AppSettingsStore(Path.Combine(root, "config")),
+            usageCredentialStore: store,
+            usageHttpClientFactory: () => new TrackedClient(new RecordingHandler()));
+        try
+        {
+            Assert.Equal(CredentialStoreAvailability.SecureStore, store.Availability);
+
+            var result = await viewModel.SaveUsageConnectionAsync(Endpoint, ClientId, ClientSecret, CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(UsageConnectionState.Configured, viewModel.UsageConnectionState);
+            Assert.Equal(UsageConnectionError.None, viewModel.UsageConnectionError);
+            Assert.True(viewModel.HasUsageCredential);
+            Assert.Equal(CredentialStoreAvailability.SecureStore, store.Availability);
+
+            // A second save reads the stored pair first; an unregistered account must not turn
+            // that read into a store failure either.
+            var second = await viewModel.SaveUsageConnectionAsync(OtherEndpoint, "synthetic-id-two", "synthetic-secret-two", CancellationToken.None);
+            Assert.True(second.Succeeded);
+            Assert.Equal(OtherEndpoint, viewModel.UsageApiEndpointText);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            try { Directory.Delete(root, true); }
+            catch (IOException) { }
+        }
+    }
+
     private sealed class Harness : IDisposable
     {
         private Harness(string root, FakeCredentialStore store, RecordingHandler handler, AppSettingsStore settings, MainViewModel viewModel)
@@ -554,6 +592,43 @@ public sealed class UsageConnectionSettingsTests
         public void Seed(string account, string secret) => values[account] = secret;
 
         public string? Peek(string account) => values.GetValueOrDefault(account);
+    }
+
+    /// <summary>
+    /// Mirrors the observable `secret-tool` behaviour closely enough for the settings flow:
+    /// an unregistered lookup exits 1 with empty stderr, a stored item is returned by a
+    /// later lookup, and a missing executable is a start failure.
+    /// </summary>
+    private sealed class SecretToolLikeRunner : ISecretToolProcessRunner
+    {
+        private readonly Dictionary<string, string> items = new(StringComparer.Ordinal);
+
+        public ValueTask<SecretToolResult> RunAsync(IReadOnlyList<string> arguments, string? stdin, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var account = arguments[^1];
+            return arguments[0] switch
+            {
+                "lookup" => items.TryGetValue(account, out var value)
+                    ? ValueTask.FromResult(new SecretToolResult(0, value + "\n", string.Empty))
+                    : ValueTask.FromResult(new SecretToolResult(1, string.Empty, string.Empty)),
+                "store" => Store(account, stdin),
+                "clear" => Clear(account),
+                _ => ValueTask.FromResult(new SecretToolResult(2, string.Empty, "unknown subcommand")),
+            };
+        }
+
+        private ValueTask<SecretToolResult> Store(string account, string? secret)
+        {
+            items[account] = secret ?? string.Empty;
+            return ValueTask.FromResult(new SecretToolResult(0, string.Empty, string.Empty));
+        }
+
+        private ValueTask<SecretToolResult> Clear(string account)
+        {
+            items.Remove(account);
+            return ValueTask.FromResult(new SecretToolResult(0, string.Empty, string.Empty));
+        }
     }
 
     private sealed class StaticCredentials(string clientId, string clientSecret) : IUsageCredentialProvider

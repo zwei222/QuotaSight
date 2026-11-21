@@ -520,9 +520,32 @@ public sealed class CollectorSendTests
         Assert.Contains("LoadCredential=access-client-secret:/etc/example/", readme, StringComparison.Ordinal);
         Assert.Contains("Before sending real data", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("--revision <", readme, StringComparison.Ordinal);
-        Assert.Contains("--revision` no longer exists", readme, StringComparison.Ordinal);
+        Assert.Contains("`--revision` no longer exists", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("/home/", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("cloudflareaccess.com", readme, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadmeScheduledUnitSuppliesStdinAndStatesItsBounds()
+    {
+        var readme = File.ReadAllText(Path.Combine(RepoRoot(), "src", "QuotaSight.Collector", "README.md"));
+
+        // A complete unit: systemd cannot pipe, so ExecStart runs a wrapper placeholder.
+        Assert.Contains("Type=oneshot", readme, StringComparison.Ordinal);
+        Assert.Contains("User=example-user", readme, StringComparison.Ordinal);
+        Assert.Contains("ExecStart=/usr/local/bin/example-collector-run", readme, StringComparison.Ordinal);
+        Assert.Contains("| /usr/local/bin/QuotaSight.Collector --send", readme, StringComparison.Ordinal);
+        Assert.Contains("OnUnitActiveSec=3h", readme, StringComparison.Ordinal);
+        Assert.Contains("--days 30", readme, StringComparison.Ordinal);
+        // The upstream window is bounded, and an over-long window is refused, not trimmed.
+        Assert.Contains("7 days or more and 62 days or less", readme, StringComparison.Ordinal);
+        Assert.Contains("exits `4`", readme, StringComparison.Ordinal);
+        // The bucket zone is the upstream day boundary, not something inferred here.
+        Assert.Contains("`--bucket-time-zone` must be the zone", readme, StringComparison.Ordinal);
+        // A scheduled send can never be marked partial.
+        Assert.Contains("cannot detect upstream partiality", readme, StringComparison.Ordinal);
+        Assert.Contains("cannot be combined with", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("/home/", readme, StringComparison.Ordinal);
     }
 
     private static void AssertSameWire(SendHarness harness)

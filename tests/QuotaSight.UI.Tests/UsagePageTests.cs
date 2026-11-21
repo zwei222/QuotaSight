@@ -132,6 +132,35 @@ public sealed class UsagePageTests
         finally { window.Close(); }
     }
 
+    [AvaloniaTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MissingTimeZoneDatabaseStopsInAFixedErrorState(bool missingZone)
+    {
+        var port = new FakeUsageReadPort();
+        using var viewModel = new MainViewModel(
+            new EmptyDashboardSource(),
+            usageReadPort: port,
+            timeZoneResolver: _ => missingZone ? throw new TimeZoneNotFoundException() : throw new InvalidTimeZoneException());
+        var window = new MainWindow(viewModel);
+        try
+        {
+            window.Show();
+            viewModel.NavigateToUsage();
+            await viewModel.UsageLoadTask;
+            window.UpdateLayout();
+
+            Assert.Equal(new UiCopy(UiLanguage.English).UsageState("Error"), viewModel.UsageStateText);
+            Assert.Equal(new UiCopy(UiLanguage.English).UsageState("Error"), window.FindControl<TextBlock>("UsageStatus")!.Text);
+            Assert.Equal(string.Empty, viewModel.UsageRangeText);
+            Assert.False(viewModel.IsUsageRangeVisible);
+            Assert.False(viewModel.IsUsageLoading);
+            Assert.Equal(0, port.Calls);
+            Assert.DoesNotContain("Asia/Tokyo", viewModel.UsageStateText, StringComparison.Ordinal);
+        }
+        finally { window.Close(); }
+    }
+
     private sealed class EmptyUsageReadPort : IUsageReadPort
     {
         public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>

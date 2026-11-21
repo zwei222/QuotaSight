@@ -11,6 +11,35 @@ env:
   DOTNET_NOLOGO: true
 
 jobs:
+  usage-api:
+    name: Usage API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/QuotaSight.Usage.Api/package-lock.json
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      # The wire test runs the real collector preview binary over the synthetic fixture.
+      - name: Build Collector for the wire fixture
+        run: dotnet build src/QuotaSight.Collector/QuotaSight.Collector.csproj --configuration Release
+      - name: Install
+        run: npm ci
+        working-directory: src/QuotaSight.Usage.Api
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: src/QuotaSight.Usage.Api
+      - name: Test
+        run: npm test
+        working-directory: src/QuotaSight.Usage.Api
+
   verify:
     name: Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

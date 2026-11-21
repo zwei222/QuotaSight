@@ -39,13 +39,27 @@ public sealed class LinuxSecretToolCredentialStore(ISecretToolProcessRunner runn
     {
         var result = await runner.RunAsync(["lookup", "service", "quotasight", "account", account], null, cancellationToken);
         if (result.ExitCode == -1) { Availability = CredentialStoreAvailability.Unavailable; return null; }
+        // `secret-tool lookup` reports "no matching item" as exit 1 with nothing on stderr
+        // (libsecret's own contract); every real diagnostic prints to stderr first. A missing
+        // value is therefore not a broken store, and the first save on a fresh install must
+        // not be refused because of it.
+        if (result.ExitCode == 1 && string.IsNullOrWhiteSpace(result.Stderr))
+        {
+            Availability = CredentialStoreAvailability.SecureStore;
+            return null;
+        }
         if (result.ExitCode != 0) { Availability = result.Stderr.Contains("locked", StringComparison.OrdinalIgnoreCase) ? CredentialStoreAvailability.Locked : CredentialStoreAvailability.Unavailable; return null; }
+        // A successful lookup proves the store is usable again, even after an earlier failure.
+        Availability = CredentialStoreAvailability.SecureStore;
         return result.Stdout.TrimEnd('\r', '\n');
     }
     public async ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken)
     {
         var result = await runner.RunAsync(["store", "--label", "QuotaSight", "service", "quotasight", "account", account], secret, cancellationToken);
-        if (result.ExitCode != 0) Availability = result.Stderr.Contains("locked", StringComparison.OrdinalIgnoreCase) ? CredentialStoreAvailability.Locked : CredentialStoreAvailability.Unavailable;
+        // A successful write proves the store is usable again, even after an earlier failure.
+        Availability = result.ExitCode == 0
+            ? CredentialStoreAvailability.SecureStore
+            : result.Stderr.Contains("locked", StringComparison.OrdinalIgnoreCase) ? CredentialStoreAvailability.Locked : CredentialStoreAvailability.Unavailable;
     }
     public async ValueTask RemoveAsync(string account, CancellationToken cancellationToken)
     {

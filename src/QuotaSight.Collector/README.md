@@ -138,17 +138,57 @@ exercised against glibc 2.33 and newer.
 
 ```ini
 # placeholders only — replace the ids, paths and user with the operator's own
+[Unit]
+Description=QuotaSight collector run (example)
+After=network-online.target
+Wants=network-online.target
+
 [Service]
+Type=oneshot
 User=example-user
 StateDirectory=example-collector
 StateDirectoryMode=0700
-ExecStart=/usr/local/bin/QuotaSight.Collector --send \
-  --endpoint https://example.invalid \
-  --collector-id collector-id \
-  --generation 1 \
-  --bucket-time-zone Asia/Tokyo
+# The wrapper below runs the upstream scan and pipes it into the collector.
+# systemd has no shell, so the pipe cannot live in ExecStart itself.
+ExecStart=/usr/local/bin/example-collector-run
 LoadCredential=access-client-id:/etc/example/access-client-id
 LoadCredential=access-client-secret:/etc/example/access-client-secret
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The wrapper named by `ExecStart=` supplies stdin. Its path, the upstream command
+and every path in it are placeholders:
+
+```sh
+#!/bin/sh
+# placeholders only — replace the upstream command, its period option and the paths
+set -eu
+/usr/local/bin/tokscale graph --json --days 30 \
+  | /usr/local/bin/QuotaSight.Collector --send \
+      --endpoint https://example.invalid \
+      --collector-id collector-id \
+      --generation 1 \
+      --bucket-time-zone Asia/Tokyo
+```
+
+The pipeline's exit status is the collector's, so a refused input fails the unit.
+`systemd` sets `CREDENTIALS_DIRECTORY` for the `LoadCredential=` files; the
+collector reads the credentials from there and nowhere else. This example is a
+single `oneshot` run; a matching timer runs it on the interval described below:
+
+```ini
+# placeholders only — example-collector.timer
+[Unit]
+Description=Run the QuotaSight collector every three hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=3h
+
+[Install]
+WantedBy=timers.target
 ```
 
 `StateDirectory=example-collector` becomes `STATE_DIRECTORY=/var/lib/example-collector`
@@ -158,7 +198,21 @@ LoadCredential=access-client-secret:/etc/example/access-client-secret
 
 Aim for one run every 1-6 hours. The upstream report window must stay well
 longer than the interval, and inside the API's 62-day snapshot bound: keep it
-at 7 days or more and 62 days or less.
+at 7 days or more and 62 days or less. A window longer than 62 days is not
+trimmed: the whole document is rejected and the run exits `4`, sending nothing.
+
+`--bucket-time-zone` must be the zone the operator verified that the upstream
+scan bucketed its dates in; the collector never infers it from the dates. The
+upstream dates are calendar days in that zone, so the upstream tool's own day
+boundary (not the host's) decides which day a use belongs to, and API v1 only
+accepts `Asia/Tokyo` today.
+
+A scheduled run cannot detect upstream partiality. The partial signal is the
+upstream tool's own stderr, and `--upstream-partial` cannot be combined with
+`--send`, so a timer-driven send is never marked partial. Treat a scheduled
+snapshot as complete only when the operator has separately confirmed that the
+upstream scan ran clean; inspect the upstream stderr or run the preview first
+when that cannot be assumed.
 
 ### State commands
 
