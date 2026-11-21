@@ -225,6 +225,18 @@ public sealed class WorkflowContractTests
     }
 
     [Fact]
+    public void Release_windows_steps_that_read_the_runtime_identifier_declare_it()
+    {
+        // An environment variable set on one step is not visible to the next. The archive check
+        // once read $env:RID without declaring it and looked for "QuotaSight-<version>-.zip".
+        var steps = Release.Split("      - name: ").Skip(1);
+        foreach (var step in steps.Where(x => x.Contains("$env:RID", StringComparison.Ordinal)))
+        {
+            Assert.Contains("RID: ${{ matrix.rid }}", step);
+        }
+    }
+
+    [Fact]
     public void Release_lists_the_archive_contents_in_the_log()
     {
         Assert.Contains("unzip -l", Release);

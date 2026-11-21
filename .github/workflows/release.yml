@@ -146,6 +146,8 @@ jobs:
             if (-not ($entries | Where-Object { $_ -like "$folder/*" })) { throw "archive does not contain $folder/" }
             foreach ($entry in $archive.Entries) { Write-Host ("{0,12}  {1}" -f $entry.Length, $entry.FullName) }
           } finally { $archive.Dispose() }
+        env:
+          RID: ${{ matrix.rid }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
