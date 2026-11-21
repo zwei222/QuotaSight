@@ -817,6 +817,54 @@ kind was counted.
   explains the 8.91 ms median and the 22.53 ms tail" as a guess, not a verified
   cause.
 
+### 6.0.1 Second measurement (2026-11-22, the v2 shapes)
+
+A second run on the same day, in the same one account on Workers Free and in the
+Tokyo / NRT region, measured the v2 shapes with `wrangler tail --format json` and
+read `cpuTime` per invocation. The samples and the conditions are part of the
+record, as in §6.0: another account, region or traffic mix can be slower, and
+nothing here generalises beyond that one account on that one day.
+
+| Observation | Sample | `cpuTime` |
+| --- | --- | --- |
+| Heaviest v2 `PUT`: about 31.9 KiB of body, 1024 rows over 32 days, the days replaced on every call | 8 invocations | 11, 16, 11, 6, 4, 9, 6, 5 ms: median 7.5 ms, maximum 16 ms, three of the eight above 10 ms; all eight answered `200`, and no 1102 |
+| Typical v2 `PUT`: 30 days x 8 keys, about 5 KiB | 6 invocations | 5, 2, 3, 1, 4, 3 ms: median 3 ms, maximum 5 ms |
+| v2 `PUT` at a 16 KiB budget: 512 rows over 16 days, the days replaced on every call | 8 invocations | 3, 7, 5, 3, 3, 5, 4, 3 ms: median 3.5 ms, maximum 7 ms |
+| `GET /v1/usage/breakdown`: 32 days, about 8 KiB of response | 6 invocations | 2, 2, 3, 2, 2, 1 ms: median 2 ms |
+| `GET /v1/usage/daily` | 6 invocations | 1, 3, 1, 3, 1, 1 ms: median 1 ms |
+| Every invocation of that Worker version in a 24-hour window, read in Workers → Metrics | one version, 24 hours | median 4.21 ms; P50 4.71 ms, P90 13.83 ms, P99 17.62 ms; `Exceeded CPU Time Limits` (Error 1102) count 0 |
+
+Read it with these limits:
+
+- `wrangler tail` reports `cpuTime` as an integer number of milliseconds, so a
+  reading of 3 ms means "roughly 2 to 4" and the small values carry less
+  information than their digits suggest; the tail reads one invocation at a time,
+  the metrics row above is an average over a version and a window;
+- the 24-hour row covers one version among others in the same account, so its
+  tail mixes shapes;
+- D1 `rows_read` and `rows_written` were not read in this run, so the D1 side of
+  §6.7 is still unread.
+
+- **The gate in §6.1 stays undecided.** Repeated boundary shapes are not the 24
+  hours of real traffic §6.1 asks for, and the only window that was read is the
+  metrics row above. It is one account on one day, so neither a pass nor a
+  failure is recorded here either.
+- **Why the default budget moved to 16 KiB.** At about 31.9 KiB and 1024 rows the
+  heaviest shape measured 7.5 ms at the median and 16 ms at the maximum, with
+  three of eight runs above 10 ms; at 16 KiB and 512 rows the same replacement
+  pattern measured 3.5 ms at the median and 7 ms at the maximum. The former 30 KiB
+  default bought breakdown coverage the typical shape above does not use, at a cost
+  the 8 ms P99 line in §6.1 cannot absorb when the rows are dense, so
+  `--parts-budget-bytes` now defaults to `16384` (16 KiB). The accepted range is
+  unchanged: `4096` to `32768`.
+- **What that trades away.** Less breakdown per send. The oldest day's breakdown
+  is dropped first and a day total never is (§6.7), so the cost is coverage of
+  older days, not correctness. A real 4.23 document covering 17 days is about
+  34 KiB with at most ten keys per day, so a day carries a handful of keys and 30
+  days of v2 body are expected to stay near the 5 KiB typical shape above. That
+  last sentence is an estimate from the document's shape, not a measured 30-day
+  body.
+
 ### 6.1 Pass condition
 
 Both of these, read from the account that owns the Worker:
@@ -863,7 +911,7 @@ of these repeatedly and watch the counter:
 | Case | Shape | Why it is the worst case |
 | --- | --- | --- |
 | Largest write | 32 KiB body, `coveredRange` of 62 days, 62 day rows → 63 statements in one `batch()` | Maximum `JSON.parse`, maximum statement assembly, maximum `batch()` |
-| Largest v2 write | A 30 KiB breakdown budget over 62 days, 1024 part rows, four statements in one `batch()` | Maximum `json_each` decomposition and maximum per-row trigger work; the statement count is fixed, so the rows are the cost |
+| Largest v2 write | The collector's default 16 KiB breakdown budget (`16384` bytes) over 62 days, four statements in one `batch()` | Maximum `json_each` decomposition and maximum per-row trigger work; the statement count is fixed, so the rows are the cost |
 | JWKS cache miss | A `PUT` on a fresh isolate or after the Access keys rotate | Adds a key-set fetch and the parsing of the key set to an otherwise warm request |
 | Largest read | 366-day window, 5000 rows, 64 collectors | Maximum `JSON.stringify` and aggregation |
 | Cold start | First request after the Worker has been idle | Module initialisation is on the same invocation |
@@ -929,17 +977,19 @@ The gate in §6.1 is read on whatever shapes the deployment actually serves. A
 deployment that turns on the breakdown serves a third shape — one v2 `PUT` — and
 its cost is not the same as either v1 shape: the statement count is fixed at
 four (day upsert, `DELETE` of the replaced days, one `INSERT … SELECT` over
-`json_each`, receipt), but the rows and the per-row work are not. **Nothing here
-has been measured in a real account.**
+`json_each`, receipt), but the rows and the per-row work are not.
 
-- **Shape to send:** one v2 `PUT` with 62 days and 1024 breakdown rows, built to
-  sit at the collector's default 30 KiB breakdown budget
-  (`--parts-budget-bytes`, default `30720`), each day's rows adding up to its
-  total. That is the largest body the collector emits by default.
+- **Shapes to send:** both of these. The largest the API accepts — 1024
+  breakdown rows, a body of up to 32 KiB — and the shape a default deployment
+  emits, the collector's 16 KiB breakdown budget (`--parts-budget-bytes`, default
+  `16384`), each day's rows adding up to its total. The CPU half of both was
+  measured on 2026-11-22 in one account (§6.0.1: median 7.5 ms at about 31.9 KiB,
+  median 3.5 ms at 16 KiB); the D1 counters were not.
 - **Read:** `CPU Time per execution` (P50 and P99) and the
   `Exceeded CPU Time Limits` counter over 24 hours, exactly as §6.1, **plus** D1
   `rows_read` and `rows_written` for the same window (Database → Metrics). The
-  v1 numbers in §6.0/§8.1 say nothing about this shape.
+  v1 numbers in §6.0/§8.1 say nothing about this shape, and the tail readings in
+  §6.0.1 are not the 24-hour window either.
 - **Criteria:** the same gate — zero Error 1102 over 24 hours and a CPU-time P99
   below 8 ms — applied to the v2 shape. A deployment whose v1 shape passes and
   whose v2 shape is not measured has not met §6.1 for a v2 collector.
@@ -986,8 +1036,8 @@ immediately, and every client must be updated in the same window.
 ## 8. Verify in a real environment
 
 Nothing below is settled by the official documentation or by this repository's
-local test suite. §8.1 records what one run against one real account observed on
-2026-11-22; §8.2 is what that run did not settle. Check each item of §8.2 in the
+local test suite. §8.1 records what two runs against one real account observed on
+2026-11-22; §8.2 is what those runs did not settle. Check each item of §8.2 in the
 operator's own account before relying on this slice in production.
 
 ### 8.1 Observed in one real account (2026-11-22)
@@ -1046,13 +1096,57 @@ That is **not the gate**: 53 invocations that include cold starts are neither th
 stays undecided. It is also only one of the two shapes the checklist below names —
 the read path at the 5000-row bound was not measured at all in this run.
 
+**The v2 path, a second run (2026-11-22).** On the same day and in the same
+account, `0004` was applied first and the Worker second, and the v2 path was
+exercised through the same Access front door:
+
+- before applying `0004`, a D1 Time Travel bookmark was read with
+  `wrangler d1 time-travel info`; after applying it the schema held five tables
+  including `d1_migrations`, two indexes and seven triggers;
+- an unchanged total with a different key set changed nothing;
+- a smaller total was ignored at both levels: `ignoredReductions: 1` and
+  `ignoredPartReductions: 1`;
+- a larger total replaced that day's breakdown as a whole (150 → 400, and the
+  breakdown 400 as well, so no double counting);
+- a resend of the same revision answered `replayed` with `changedParts: 0`;
+- an older revision carrying a new day answered `409`, and no row was stored for
+  that day;
+- a schema 1 response carried no v2 field;
+- a read token answered `200` on the breakdown route and `403 forbidden_scope` on
+  a write;
+- a range longer than 92 days answered `400 range_too_long`;
+- a day sent alone under schema 1 shows `attributedTokens: 0` in `coverage`;
+- a body over 32 KiB answered `413 payload_too_large`.
+
+**CPU time of the v2 shapes**, read as `cpuTime` per invocation with
+`wrangler tail --format json`, with the samples §6.0.1 records:
+
+- the heaviest v2 `PUT` — about 31.9 KiB, 1024 rows, 32 days replaced on every
+  call — 8 invocations: median 7.5 ms, maximum 16 ms, three of the eight above
+  10 ms, all eight `200`;
+- the typical v2 `PUT` — 30 days x 8 keys, about 5 KiB — 6 invocations: median
+  3 ms, maximum 5 ms;
+- a 16 KiB v2 `PUT` — 512 rows over 16 days, replaced every call — 8 invocations:
+  median 3.5 ms, maximum 7 ms;
+- `GET /v1/usage/breakdown` — 32 days, about 8 KiB of response — 6 invocations:
+  median 2 ms; `GET /v1/usage/daily`, 6 invocations: median 1 ms;
+- Workers → Metrics for that version over 24 hours: median 4.21 ms, P50 4.71 ms,
+  P90 13.83 ms, P99 17.62 ms, `Exceeded CPU Time Limits` 0.
+
+`wrangler tail` reports `cpuTime` as an integer number of milliseconds, so these
+small values are coarse, and D1 `rows_read`/`rows_written` were not read. The gate
+in §6.1 is still undecided after this run: repeated shapes are not the 24 hours of
+real traffic it asks for.
+
 **Migrations:** `0001`–`0003` applied remotely without error. The schema then
 held three tables plus `d1_migrations`, two indexes and four triggers. That
 describes this schema; it is not a proof that each migration file runs in one
 transaction, and it says nothing about a migration that fails halfway. `0004` —
-the breakdown table, its three triggers and the receipt column — was **not** part
-of that run, so the fourth table, the seven-trigger state of step 8 and every v2
-write are unobserved in a real account (§8.2).
+the breakdown table, its three triggers and the receipt column — was applied in
+the second run, against a database that held no rows: the schema then held five
+tables including `d1_migrations`, two indexes and seven triggers. Whether it
+applies to a database that already holds `usage_day` rows is therefore still
+unobserved (§8.2).
 
 **What that run found missing in the runbook:** the collector row. Nothing creates
 a collector, so a correctly deployed API accepted nothing until the row in §5.2
@@ -1062,14 +1156,13 @@ existed. That step and the principal swap in §5.3 were added afterwards.
 
 - [ ] Measure actual CPU time for a 5000-row read and confirm it stays inside the gate in §6.1 on the Free plan. The 62-day, 32 KiB `PUT` half of this item was measured on 2026-11-22 (§8.1); the read half was not.
 - [ ] Decide the gate in §6.1 on 24 hours of real traffic that includes the boundary cases of §6.3, not on the 53 invocations of §8.1.
-- [ ] Confirm whether `wrangler tail` reports `cpuTime` per invocation on the Free plan — §6 depends on one of these two readings being available.
 - [ ] Confirm whether enabling `[observability]` on the Free plan makes CPU time visible at all, and whether Workers Logs then stays inside the 200,000-event daily allowance.
 - [ ] Confirm that Access logs on the Free plan are really kept only 24 hours and that no export exists, i.e. that §3.7's window is the real one.
 - [ ] Record the service token duration the dashboard offers by default: that dialog was observed to offer up to `10 years`, but the default itself is still unconfirmed, and the API example uses `8760h`.
 - [ ] Confirm whether `wrangler d1 migrations apply` runs each migration file in one transaction, by observing a deliberately failing statement inside a copy of a migration file.
-- [ ] Confirm that `0004` applies to a database that already holds `usage_day` rows without failing, and that its triggers judge only new rows: the `CHECK`s are evaluated per inserted row, and `usage_part_exceeds_day_total` must not refuse the write path's own re-insert after a day's rows are deleted. This is the one migration whose failure mode is "an existing row stops being writable".
-- [ ] Measure the v2 write shape in §6.7 — 62 days, 1024 breakdown rows, the collector's 30 KiB budget — for CPU and for D1 `rows_read`/`rows_written`, and decide the §6.1 gate on that shape as well as on v1. Nothing about the v2 write has been measured in a real account.
-- [ ] Confirm the `GET /v1/usage/breakdown` bounds on remote D1: a 92-day window answers, a longer one is `400 invalid_query`, and 2000 parts / 5000 coverage rows are either served or refused with `413 result_too_large` — never truncated. Record its `rows_read` with the other D1 metrics.
+- [ ] Confirm that `0004` applies to a database that already holds `usage_day` rows without failing, and that its triggers judge only new rows: the `CHECK`s are evaluated per inserted row, and `usage_part_exceeds_day_total` must not refuse the write path's own re-insert after a day's rows are deleted. This is the one migration whose failure mode is "an existing row stops being writable". The apply on 2026-11-22 was made against a database with no rows, so only the new-row half is settled.
+- [ ] Measure the v2 write shape in §6.7 for D1 `rows_read` and `rows_written`: 62 days and 1024 breakdown rows, and the collector's default 16 KiB shape. The CPU half was measured on 2026-11-22 (~31.9 KiB: median 7.5 ms, maximum 16 ms; 16 KiB: median 3.5 ms, maximum 7 ms), but no D1 counter and no 24-hour v2 window was read.
+- [ ] Confirm the `GET /v1/usage/breakdown` bounds on remote D1 that were not probed: 2000 parts and 5000 coverage rows are either served or refused with `413 result_too_large`, never truncated, and record its `rows_read` with the other D1 metrics. A 92-day window answered and a longer one was `400 range_too_long` on 2026-11-22; the row caps were not reached.
 - [ ] Confirm whether Access forwards the `CF-Access-Client-Id` and `CF-Access-Client-Secret` request headers to the Worker, to judge whether they can appear in origin-side logs.
 - [ ] Confirm that remote D1's SQLite version applies the existing-row check to `ALTER TABLE ... ADD COLUMN ... CHECK`, which `migrations/0003_receipt_ignored_reductions.sql` relies on.
 - [ ] Confirm the operational effect of the AUD changing: after deleting and recreating the application, requests fail until `ACCESS_AUD` is re-put, and succeed immediately afterwards.

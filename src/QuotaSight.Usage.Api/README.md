@@ -196,6 +196,11 @@ Enforced strictly (unknown keys are rejected, never ignored):
   never a repaired guess.
 - **Bounds:** body ≤ 32 KiB, `days` ≤ 62 (ascending, unique, inside
   `coveredRange`), `keys` ≤ 128, `parts` ≤ 32 per day and ≤ 1024 per snapshot.
+- **The collector keeps itself below this ceiling.** Its default
+  `--parts-budget-bytes` is `16384` (16 KiB), down from 30 KiB after the
+  2026-11-22 measurement in the deployment runbook, so a default v2 send arrives
+  with headroom under the 32 KiB body bound. To stay inside it the collector
+  drops the oldest day's breakdown first, and it never drops a day total.
 
 ## Write semantics
 
