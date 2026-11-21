@@ -24,6 +24,52 @@ public sealed class UiCopy
         ("Unconfigured", false) => "Usage API is not configured.",
         _ => state
     };
+    // Fixed state sentences for the usage API connection. They deliberately name no endpoint,
+    // no host and no identifier, so they are safe on screen and in a screenshot.
+    public string UsageConnectionStatus(UsageConnectionState state) => (state, IsJapanese) switch
+    {
+        (UsageConnectionState.Unconfigured, true) => "利用量 API は未設定です。",
+        (UsageConnectionState.Unconfigured, false) => "Usage API is not configured.",
+        (UsageConnectionState.Configured, true) => "利用量 API に接続する設定が保存されています。",
+        (UsageConnectionState.Configured, false) => "The usage API connection is saved.",
+        (UsageConnectionState.SessionOnly, true) => "認証情報はこのセッション中のみ保持されます。再起動後は設定し直してください。",
+        (UsageConnectionState.SessionOnly, false) => "The credential is kept for this session only; configure it again after restarting.",
+        (UsageConnectionState.StoreUnavailable, true) => "資格情報ストアを利用できないため、接続設定を保存できません。",
+        (UsageConnectionState.StoreUnavailable, false) => "The credential store is unavailable, so this connection cannot be saved.",
+        (UsageConnectionState.Invalid, true) => "保存された利用量 API の設定が正しくありません。設定し直してください。",
+        (UsageConnectionState.Invalid, false) => "The saved usage API setting is not valid. Configure it again.",
+        _ => state.ToString()
+    };
+    // Validation copy is fixed and never echoes the entered text.
+    public string UsageConnectionErrorText(UsageConnectionError error) => (error, IsJapanese) switch
+    {
+        (UsageConnectionError.None, _) => string.Empty,
+        (UsageConnectionError.Missing, true) => "利用量 API のエンドポイントを入力してください。",
+        (UsageConnectionError.Missing, false) => "Enter the usage API endpoint.",
+        (UsageConnectionError.Malformed, true) => "エンドポイントの形式が正しくありません。",
+        (UsageConnectionError.Malformed, false) => "The endpoint is not a valid address.",
+        (UsageConnectionError.NotHttps, true) => "エンドポイントは https で指定してください。",
+        (UsageConnectionError.NotHttps, false) => "The endpoint must use https.",
+        (UsageConnectionError.UserInformation, true) => "エンドポイントにユーザー情報を含めないでください。",
+        (UsageConnectionError.UserInformation, false) => "The endpoint must not contain user information.",
+        (UsageConnectionError.Query, true) => "エンドポイントにクエリを含めないでください。",
+        (UsageConnectionError.Query, false) => "The endpoint must not contain a query.",
+        (UsageConnectionError.Fragment, true) => "エンドポイントにフラグメントを含めないでください。",
+        (UsageConnectionError.Fragment, false) => "The endpoint must not contain a fragment.",
+        (UsageConnectionError.Path, true) => "エンドポイントにパスを含めないでください。",
+        (UsageConnectionError.Path, false) => "The endpoint must not contain a path.",
+        (UsageConnectionError.HostMissing, true) => "エンドポイントのホスト名を指定してください。",
+        (UsageConnectionError.HostMissing, false) => "The endpoint must include a host name.",
+        (UsageConnectionError.TooLong, true) => "エンドポイントが長すぎます（256文字以内）。",
+        (UsageConnectionError.TooLong, false) => "The endpoint is too long (256 characters at most).",
+        (UsageConnectionError.InvalidCharacters, true) => "エンドポイントに空白や制御文字は使えません。",
+        (UsageConnectionError.InvalidCharacters, false) => "The endpoint must not contain spaces or control characters.",
+        (UsageConnectionError.InvalidCredential, true) => "クライアント ID とクライアントシークレットは空白を含まない半角英数字で入力してください。",
+        (UsageConnectionError.InvalidCredential, false) => "Enter a client id and client secret with no spaces.",
+        (UsageConnectionError.CredentialStoreUnavailable, true) => "資格情報ストアを利用できないため、保存していません。",
+        (UsageConnectionError.CredentialStoreUnavailable, false) => "The credential store is unavailable, so nothing was saved.",
+        _ => string.Empty
+    };
     public string Dashboard => IsJapanese ? "ダッシュボード" : "Dashboard";
     public string UsageOverview => IsJapanese ? "使用量" : "Usage";
     public string UsageTotalTokens => IsJapanese ? "合計トークン" : "Total tokens";

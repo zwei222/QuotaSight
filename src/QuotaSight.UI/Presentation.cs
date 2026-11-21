@@ -519,6 +519,7 @@ public sealed class SettingsState
     public Dictionary<ProviderKind, decimal> ProviderOverrides { get; } = [];
     public string GithubOAuthClientId { get; set; } = string.Empty;
     public string GithubOrganization { get; set; } = string.Empty;
+    public string UsageApiEndpoint { get; set; } = string.Empty;
     public decimal? CopilotReferenceCredits { get; set; }
     public bool TrySetCopilotReference(string? value)
     {
@@ -1647,7 +1648,13 @@ public sealed class UiProviderFacade : IProviderUiService
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly IDashboardSource source;
-    private readonly IUsageReadPort usageReadPort;
+    private readonly ReconfigurableUsageReadPort usageReadPort;
+    private readonly StoreUsageCredentialProvider? usageCredentials;
+    private readonly Func<HttpClient>? usageHttpClientFactory;
+    private string usageApiEndpoint = string.Empty;
+    private bool hasUsageCredential;
+    private UsageConnectionState usageConnectionState = UsageConnectionState.Unconfigured;
+    private UsageConnectionError usageConnectionError = UsageConnectionError.None;
     private CancellationTokenSource? usageRequest;
     private long usageRequestId;
     private string usageState = "Unconfigured";
@@ -1703,7 +1710,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var id = Interlocked.Increment(ref usageRequestId);
         usageRequest?.Cancel(); usageRequest?.Dispose();
         usageRequest = new CancellationTokenSource(); var token = usageRequest.Token;
-        usageState = usageReadPort is UnconfiguredUsageReadPort ? "Unconfigured" : "Loading";
+        usageState = usageReadPort.IsConfigured ? "Loading" : "Unconfigured";
         if (usageState != "Unconfigured")
         {
             usageRows = [];
@@ -1730,6 +1737,238 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch { if (id == Volatile.Read(ref usageRequestId) && CurrentPage == AppPage.Usage) { usageState = "Error"; OnPropertyChanged(nameof(IsUsageTotalVisible)); OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading)); } }
     }
     public string SubtitleText => CopyText.Subtitle;
+    /// <summary>Stored usage API endpoint as an origin, or an empty string. Never a credential.</summary>
+    public string UsageApiEndpointText => usageApiEndpoint;
+
+    /// <summary>True when a complete, valid credential pair is stored. The values are never exposed.</summary>
+    public bool HasUsageCredential => hasUsageCredential;
+
+    /// <summary>True when reads would actually go to a configured usage API.</summary>
+    public bool IsUsageConfigured => usageReadPort.IsConfigured;
+
+    /// <summary>Connection state derived from the stored endpoint and the credential store.</summary>
+    public UsageConnectionState UsageConnectionState => usageConnectionState;
+
+    /// <summary>Classified reason the last connection change was refused.</summary>
+    public UsageConnectionError UsageConnectionError => usageConnectionError;
+
+    /// <summary>Fixed, localized sentence for <see cref="UsageConnectionState"/>; it names no endpoint or identity.</summary>
+    public string UsageConnectionStatusText => CopyText.UsageConnectionStatus(usageConnectionState);
+
+    /// <summary>Fixed, localized sentence for <see cref="UsageConnectionError"/>; it echoes no input.</summary>
+    public string UsageConnectionErrorText => CopyText.UsageConnectionErrorText(usageConnectionError);
+
+    /// <summary>
+    /// Validates the endpoint, stores the client id and the client secret in the credential
+    /// store, persists the endpoint as an ordinary setting, and then points the usage read
+    /// port at the new origin. The two secret arguments are used only for the store write and
+    /// are never kept in a field, a property, a log message or a ToString.
+    ///
+    /// Nothing is left half-saved: a store refusal changes nothing, and a settings write
+    /// failure restores the credential pair that was stored before the call.
+    /// </summary>
+    /// <exception cref="IOException">The settings file could not be written; the credential store was rolled back.</exception>
+    public async Task<UsageConnectionSaveResult> SaveUsageConnectionAsync(string endpoint, string clientId, string clientSecret, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(clientId);
+        ArgumentNullException.ThrowIfNull(clientSecret);
+        if (!UsageEndpoint.TryNormalize(endpoint, out var normalized, out var validationError))
+        {
+            return PublishUsageConnectionFailure(validationError, usageConnectionState);
+        }
+
+        if (usageCredentials is null)
+        {
+            return PublishUsageConnectionFailure(UsageConnectionError.CredentialStoreUnavailable, UsageConnectionState.StoreUnavailable);
+        }
+
+        await settingsTransactionGate.WaitAsync(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var previous = await usageCredentials.ReadStoredPairForRollbackAsync(cancellationToken);
+            var outcome = await usageCredentials.SaveAsync(clientId, clientSecret, cancellationToken);
+            if (outcome is UsageCredentialSaveOutcome.Invalid)
+            {
+                return PublishUsageConnectionFailure(UsageConnectionError.InvalidCredential, usageConnectionState);
+            }
+
+            if (outcome is UsageCredentialSaveOutcome.StoreUnavailable or UsageCredentialSaveOutcome.WriteFailed)
+            {
+                await RestoreUsageCredentialPairAsync(previous, CancellationToken.None);
+                return PublishUsageConnectionFailure(UsageConnectionError.CredentialStoreUnavailable, UsageConnectionState.StoreUnavailable);
+            }
+
+            try
+            {
+                if (settingsStore is not null)
+                {
+                    await SaveSettingsAsync(CurrentSettings() with { UsageApiEndpoint = normalized }, cancellationToken);
+                }
+            }
+            catch
+            {
+                // The endpoint did not become a setting, so the pair must not stay behind either.
+                await RestoreUsageCredentialPairAsync(previous, CancellationToken.None);
+                throw;
+            }
+
+            Settings.UsageApiEndpoint = normalized;
+            usageApiEndpoint = normalized;
+            hasUsageCredential = true;
+            usageConnectionError = UsageConnectionError.None;
+            usageConnectionState = outcome is UsageCredentialSaveOutcome.SessionOnly
+                ? UsageConnectionState.SessionOnly
+                : UsageConnectionState.Configured;
+            ConfigureUsageReadPort(normalized);
+            PublishUsageConnectionChanged();
+            // The page already on screen is refreshed through the existing read path; no new
+            // transport or reload route is introduced.
+            if (CurrentPage == AppPage.Usage) usageLoadTask = LoadUsageAsync();
+            return UsageConnectionSaveResult.Saved(usageConnectionState);
+        }
+        finally { settingsTransactionGate.Release(); }
+    }
+
+    /// <summary>
+    /// Removes both credential-store accounts, clears the stored endpoint, and returns the
+    /// read port to the unconfigured state. A store that cannot remove is reported through
+    /// <see cref="UsageConnectionError"/> instead of leaving the UI claiming success.
+    /// </summary>
+    public async Task ClearUsageConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        await settingsTransactionGate.WaitAsync(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var removalFailed = false;
+            if (usageCredentials is not null)
+            {
+                try
+                {
+                    await usageCredentials.RemoveAsync(cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    removalFailed = true;
+                }
+            }
+
+            if (settingsStore is not null)
+            {
+                await SaveSettingsAsync(CurrentSettings() with { UsageApiEndpoint = string.Empty }, cancellationToken);
+            }
+
+            Settings.UsageApiEndpoint = string.Empty;
+            usageApiEndpoint = string.Empty;
+            hasUsageCredential = false;
+            usageReadPort.Reset();
+            usageConnectionState = removalFailed ? UsageConnectionState.StoreUnavailable : UsageConnectionState.Unconfigured;
+            usageConnectionError = removalFailed ? UsageConnectionError.CredentialStoreUnavailable : UsageConnectionError.None;
+            PublishUsageConnectionChanged();
+        }
+        finally { settingsTransactionGate.Release(); }
+    }
+
+    private async Task RefreshUsageConnectionAsync(CancellationToken cancellationToken)
+    {
+        usageApiEndpoint = Settings.UsageApiEndpoint ?? string.Empty;
+        var hasEndpoint = !string.IsNullOrWhiteSpace(usageApiEndpoint);
+        var valid = UsageEndpoint.TryNormalize(usageApiEndpoint, out var normalized, out var validationError);
+        usageConnectionError = valid || !hasEndpoint ? UsageConnectionError.None : validationError;
+
+        if (usageCredentials is null)
+        {
+            // No credential store was wired: reads can only be configured explicitly.
+            hasUsageCredential = false;
+            usageConnectionState = hasEndpoint && !valid ? UsageConnectionState.Invalid : UsageConnectionState.Unconfigured;
+            PublishUsageConnectionChanged();
+            return;
+        }
+
+        hasUsageCredential = await usageCredentials.HasCredentialAsync(cancellationToken);
+        var availability = usageCredentials.Availability;
+        if (!valid)
+        {
+            usageConnectionState = hasEndpoint ? UsageConnectionState.Invalid : UsageConnectionState.Unconfigured;
+            usageReadPort.Reset();
+        }
+        else if (!hasUsageCredential)
+        {
+            usageConnectionState = availability is CredentialStoreAvailability.Unavailable or CredentialStoreAvailability.Locked
+                ? UsageConnectionState.StoreUnavailable
+                : UsageConnectionState.Unconfigured;
+            usageReadPort.Reset();
+        }
+        else
+        {
+            usageConnectionState = availability is CredentialStoreAvailability.SecureStore
+                ? UsageConnectionState.Configured
+                : UsageConnectionState.SessionOnly;
+            ConfigureUsageReadPort(normalized);
+        }
+
+        PublishUsageConnectionChanged();
+    }
+
+    private void ConfigureUsageReadPort(string endpoint)
+    {
+        if (usageCredentials is null) return;
+        var origin = new Uri(endpoint, UriKind.Absolute);
+        var client = usageHttpClientFactory?.Invoke()
+            ?? UsageReadTransport.CreateClient(HttpUsageReadPort.DefaultRequestDeadline + TimeSpan.FromSeconds(15));
+        try
+        {
+            usageReadPort.Configure(new HttpUsageReadPort(client, origin, StoreUsageCredentialProvider.IdentityId, usageCredentials), client);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    private async Task RestoreUsageCredentialPairAsync((string? ClientId, string? ClientSecret) previous, CancellationToken cancellationToken)
+    {
+        if (usageCredentials is null) return;
+        if (previous.ClientId is { Length: > 0 } clientId && previous.ClientSecret is { Length: > 0 } clientSecret)
+        {
+            await usageCredentials.SaveAsync(clientId, clientSecret, cancellationToken);
+            return;
+        }
+
+        try
+        {
+            await usageCredentials.RemoveAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            // Best effort: the caller is already reporting the failed save.
+        }
+    }
+
+    private UsageConnectionSaveResult PublishUsageConnectionFailure(UsageConnectionError error, UsageConnectionState state)
+    {
+        usageConnectionError = error;
+        usageConnectionState = state;
+        PublishUsageConnectionChanged();
+        return UsageConnectionSaveResult.Failed(error, state);
+    }
+
+    private void PublishUsageConnectionChanged()
+    {
+        OnPropertyChanged(nameof(UsageApiEndpointText));
+        OnPropertyChanged(nameof(HasUsageCredential));
+        OnPropertyChanged(nameof(IsUsageConfigured));
+        OnPropertyChanged(nameof(UsageConnectionState));
+        OnPropertyChanged(nameof(UsageConnectionError));
+        OnPropertyChanged(nameof(UsageConnectionStatusText));
+        OnPropertyChanged(nameof(UsageConnectionErrorText));
+    }
     public string EmptyStateText => CopyText.EmptyTitle;
     public string EmptyStateDescription => CopyText.EmptyDescription;
     public string HistoryDeleteText => CopyText.Delete;
@@ -1850,17 +2089,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (Interlocked.Exchange(ref disposedState, 1) != 0) return;
         usageRequest?.Cancel(); usageRequest?.Dispose(); usageRequest = null;
+        usageReadPort.Dispose();
         // RefreshAsync may still be waiting on or holding the gate; leave it undisposed to avoid a race.
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null) { this.source = source; this.usageReadPort = usageReadPort ?? new UnconfiguredUsageReadPort(); this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
         try
         {
             if (settingsStore is not null) SetSettings(await workScheduler.RunAsync(() => settingsStore.LoadAsync(cancellationToken).AsTask()), persist: false);
+            await RefreshUsageConnectionAsync(cancellationToken);
             if (quotaHistory is null) return;
 
             // Prune, the 30-day read, and card aggregation are storage/CPU work: run them on a
@@ -1914,6 +2155,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value;
             Settings.GithubOAuthClientId = dto.GithubOAuthClientId;
             Settings.GithubOrganization = dto.GithubOrganization.Trim();
+            Settings.UsageApiEndpoint = (dto.UsageApiEndpoint ?? string.Empty).Trim();
             Settings.CopilotReferenceCredits = dto.CopilotReferenceCredits is > 0 ? dto.CopilotReferenceCredits : null;
             Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English;
             Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System;
@@ -1924,7 +2166,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally { settingsTransactionGate.Release(); }
     }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits);
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint);
     public async Task<bool> SetCopilotReferenceAsync(string? value, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -2399,7 +2641,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)
