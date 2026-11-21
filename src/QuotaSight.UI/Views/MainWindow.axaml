@@ -101,19 +101,24 @@
               <TextBlock Text="{Binding CopyText.UsageConnectionTitle}" FontSize="18" FontWeight="SemiBold"/>
               <TextBlock Text="{Binding CopyText.UsageConnectionDescription}" Classes="muted" TextWrapping="Wrap"/>
               <Border x:Name="UsageConnectionStatusPanel" Classes="usage-status">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                  <PathIcon x:Name="UsageStatusConfiguredIcon" Width="16" Height="16" Data="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z" IsVisible="{Binding IsUsageConnectionConfigured}" VerticalAlignment="Center"/>
-                  <PathIcon x:Name="UsageStatusSessionIcon" Width="16" Height="16" Data="M13 14H11V9H13M13 18H11V16H13M23 21L12 2L1 21H23M13 16H11V14H13V16Z" IsVisible="{Binding IsUsageConnectionSessionOnly}" VerticalAlignment="Center"/>
-                  <PathIcon x:Name="UsageStatusStoreIcon" Width="16" Height="16" Data="M13 14H11V9H13M13 18H11V16H13M23 21L12 2L1 21H23M13 16H11V14H13V16Z" IsVisible="{Binding IsUsageConnectionStoreUnavailable}" VerticalAlignment="Center"/>
-                  <PathIcon x:Name="UsageStatusInvalidIcon" Width="16" Height="16" Data="M13,14H11V9H13M13,18H11V16H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" IsVisible="{Binding IsUsageConnectionInvalid}" VerticalAlignment="Center"/>
-                  <TextBlock x:Name="UsageConnectionStatusText" Text="{Binding UsageConnectionStatusText}" TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.Name="{Binding UsageConnectionStatusText}"/>
-                </StackPanel>
+                <!-- A horizontal StackPanel hands its children unbounded width, which lets the
+                     status sentence run past the panel edge instead of wrapping. Fixed icon
+                     column plus a star text column keeps the wrap constrained to the card. -->
+                <Grid x:Name="UsageStatusBannerGrid" ColumnDefinitions="Auto,*">
+                  <PathIcon x:Name="UsageStatusConfiguredIcon" Grid.Column="0" Width="16" Height="16" Margin="0,0,8,0" Data="M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z" IsVisible="{Binding IsUsageConnectionConfigured}" VerticalAlignment="Center"/>
+                  <PathIcon x:Name="UsageStatusSessionIcon" Grid.Column="0" Width="16" Height="16" Margin="0,0,8,0" Data="M13 14H11V9H13M13 18H11V16H13M23 21L12 2L1 21H23M13 16H11V14H13V16Z" IsVisible="{Binding IsUsageConnectionSessionOnly}" VerticalAlignment="Center"/>
+                  <PathIcon x:Name="UsageStatusStoreIcon" Grid.Column="0" Width="16" Height="16" Margin="0,0,8,0" Data="M13 14H11V9H13M13 18H11V16H13M23 21L12 2L1 21H23M13 16H11V14H13V16Z" IsVisible="{Binding IsUsageConnectionStoreUnavailable}" VerticalAlignment="Center"/>
+                  <PathIcon x:Name="UsageStatusInvalidIcon" Grid.Column="0" Width="16" Height="16" Margin="0,0,8,0" Data="M13,14H11V9H13M13,18H11V16H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" IsVisible="{Binding IsUsageConnectionInvalid}" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="UsageConnectionStatusText" Grid.Column="1" Text="{Binding UsageConnectionStatusText}" TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.Name="{Binding UsageConnectionStatusText}"/>
+                </Grid>
               </Border>
-              <StackPanel Orientation="Horizontal" Spacing="8">
-                <Border Classes="pill"><TextBlock Text="{Binding UsageCredentialStatusText}"/></Border>
-                <Border Classes="pill warn" IsVisible="{Binding IsUsageConnectionSessionOnly}"><TextBlock Text="{Binding CopyText.UsageSessionOnlyBadge}"/></Border>
-                <Border Classes="pill warn" IsVisible="{Binding IsUsageConnectionStoreUnavailable}"><TextBlock Text="{Binding CopyText.UsageStoreUnavailableBadge}"/></Border>
-              </StackPanel>
+              <!-- Pills wrap onto further rows instead of spilling past the card border; each
+                     pill's own text wraps too, so a single long pill can never overflow. -->
+              <WrapPanel x:Name="UsageCredentialPills" ItemSpacing="8" LineSpacing="8">
+                <Border Classes="pill"><TextBlock Text="{Binding UsageCredentialStatusText}" TextWrapping="Wrap"/></Border>
+                <Border Classes="pill warn" IsVisible="{Binding IsUsageConnectionSessionOnly}"><TextBlock Text="{Binding CopyText.UsageSessionOnlyBadge}" TextWrapping="Wrap"/></Border>
+                <Border Classes="pill warn" IsVisible="{Binding IsUsageConnectionStoreUnavailable}"><TextBlock Text="{Binding CopyText.UsageStoreUnavailableBadge}" TextWrapping="Wrap"/></Border>
+              </WrapPanel>
               <StackPanel Spacing="5">
                 <TextBlock Text="{Binding CopyText.UsageEndpointLabel}"/>
                 <TextBox x:Name="UsageEndpointBox" Watermark="https://usage.example.test" MaxLength="256" AutomationProperties.Name="{Binding CopyText.UsageEndpointLabel}"/>
