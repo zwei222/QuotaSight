@@ -9,6 +9,7 @@ public sealed class WorkflowContractTests
     private static readonly string Ci = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "ci.yml"));
     private static readonly string Release = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "release.yml"));
     private static readonly string UiProject = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "QuotaSight.UI.csproj"));
+    private static readonly string TestsDirectoryPropsPath = Path.Combine(Root, "tests", "Directory.Build.props");
     private static readonly string UiProgram = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "Program.cs"));
 
     [Fact]
@@ -268,6 +269,27 @@ public sealed class WorkflowContractTests
     {
         Assert.Contains("<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>", UiProject);
         Assert.DoesNotContain("WindowsAppSDKSelfContained>false", UiProject);
+    }
+
+    [Fact]
+    public void Test_projects_keep_windows_app_sdk_self_contained()
+    {
+        // The test projects pull in Microsoft.WindowsAppSDK.Base's build assets through their
+        // reference to the UI project. Base defaults a non-library project to self-contained, but
+        // Microsoft.NET.Test.Sdk turns OutputType into Exe only after Base's targets are
+        // evaluated, so that default never applies and Base's "framework package dependent"
+        // check fails the Windows build. State the deployment model the tests need explicitly.
+        Assert.True(File.Exists(TestsDirectoryPropsPath), "tests/Directory.Build.props is missing.");
+
+        var props = File.ReadAllText(TestsDirectoryPropsPath);
+        var selfContained = Assert.Single(
+            XDocument.Parse(props).Descendants("WindowsAppSDKSelfContained"));
+        Assert.Equal("true", selfContained.Value);
+        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)selfContained.Parent?.Attribute("Condition"));
+
+        // Directory.Build.props discovery stops at the nearest file, so the test-only settings
+        // must import the repository-wide defaults explicitly.
+        Assert.Contains("GetPathOfFileAbove('Directory.Build.props'", props);
     }
 
     private static string FindRoot()

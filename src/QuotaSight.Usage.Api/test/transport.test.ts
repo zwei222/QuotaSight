@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { fixtureAuthenticator } from './fixture-auth';
-import { createHarness, json, resetData, scalar, snapshotBody, type Harness } from './harness';
+import { createHarness, json, rejectionOf, resetData, scalar, snapshotBody, type Harness } from './harness';
 
 let h: Harness;
 
@@ -28,6 +28,14 @@ beforeEach(async () => {
 
 const encoder = new TextEncoder();
 
+/**
+ * The Worker still answers an ordinary request, so the connection that ended an oversized upload
+ * was that upload's rejection and not the Worker going down with it.
+ */
+async function expectWorkerStillServing(): Promise<void> {
+  expect((await h.getDaily('?from=2026-11-01&to=2026-11-30')).status).toBe(200);
+}
+
 async function expectNothingStored(): Promise<void> {
   expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(0);
   expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_day')).toBe(0);
@@ -40,10 +48,14 @@ describe('request body byte bound', () => {
   it('rejects a streamed body over the cap that carries no content-length', async () => {
     // A syntactically valid JSON object; only its size is unacceptable.
     const payload = JSON.stringify({ pad: 'a'.repeat(40_000) });
-    const response = await h.putStream({ chunks: [encoder.encode(payload)] });
+    const rejection = await rejectionOf(h.putStream({ chunks: [encoder.encode(payload)] }));
 
-    expect(response.status).toBe(413);
-    expect((await json(response)).error.code).toBe('payload_too_large');
+    if (rejection.kind === 'response') {
+      expect(rejection.response.status).toBe(413);
+      expect((await json(rejection.response)).error.code).toBe('payload_too_large');
+    } else {
+      await expectWorkerStillServing();
+    }
     await expectNothingStored();
   });
 
@@ -53,10 +65,17 @@ describe('request body byte bound', () => {
     for (let offset = 0; offset < payload.byteLength; offset += 1_000) {
       chunks.push(payload.slice(offset, Math.min(offset + 1_000, payload.byteLength)));
     }
-    const response = await h.putStream({ chunks });
 
-    expect(response.status).toBe(413);
-    expect((await json(response)).error.code).toBe('payload_too_large');
+    // Forty-one separate writes are what makes this the test that loses the race in CI: the Worker
+    // stops reading at the cap, so the connection can be closed between two of the writes.
+    const rejection = await rejectionOf(h.putStream({ chunks }));
+
+    if (rejection.kind === 'response') {
+      expect(rejection.response.status).toBe(413);
+      expect((await json(rejection.response)).error.code).toBe('payload_too_large');
+    } else {
+      await expectWorkerStillServing();
+    }
     await expectNothingStored();
   });
 
@@ -64,10 +83,16 @@ describe('request body byte bound', () => {
     // Bytes that are not valid UTF-8 and not JSON either. A decoder-first
     // implementation reports invalid_json; the bound must win first.
     const invalid = new Uint8Array(40_000).fill(0xff);
-    const response = await h.putStream({ chunks: [invalid] });
+    const rejection = await rejectionOf(h.putStream({ chunks: [invalid] }));
 
-    expect(response.status).toBe(413);
-    expect((await json(response)).error.code).toBe('payload_too_large');
+    if (rejection.kind === 'response') {
+      expect(rejection.response.status).toBe(413);
+      expect((await json(rejection.response)).error.code).toBe('payload_too_large');
+    } else {
+      // A decoder-first implementation has to read the whole body before it can answer, so it
+      // cannot drop the connection mid-write; only the early bound can.
+      await expectWorkerStillServing();
+    }
     await expectNothingStored();
   });
 

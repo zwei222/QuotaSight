@@ -116,6 +116,57 @@ export interface PutStreamInput {
   contentType?: string | null;
 }
 
+/**
+ * How a request that the Worker rejects mid-upload ends for the caller.
+ *
+ * A rejection that stops reading the body happens while the caller is still writing it, so the
+ * outcome on the wire is a race between two forms of the same decision:
+ *
+ *  - `response`: the rejection response reaches the caller, or
+ *  - `connection-closed`: the Worker closes the connection mid-upload, so `fetch` never sees a
+ *    response and fails with a transport error (`write EPIPE`, `ECONNRESET`, "other side closed").
+ *
+ * Tests that expect such a rejection accept either shape and pair it with the evidence that
+ * nothing was stored, which is what a request that never reached the handler looks like from the
+ * outside. Any other response, and any transport failure that is not a closed connection, is a
+ * regression.
+ */
+export type UploadRejection =
+  | { readonly kind: 'response'; readonly response: Response }
+  | { readonly kind: 'connection-closed'; readonly detail: string };
+
+const CONNECTION_CLOSED_CODES = new Set(['EPIPE', 'ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED']);
+
+/** Describes a closed-connection failure anywhere in the `cause` chain, or `null` if it is not one. */
+function describeClosedConnection(error: unknown): string | null {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const { code, message } = current as { code?: unknown; message?: unknown };
+    if (typeof code === 'string' && CONNECTION_CLOSED_CODES.has(code)) {
+      return typeof message === 'string' ? `${code}: ${message}` : code;
+    }
+    if (typeof message === 'string' && /other side closed|socket hang up|write EPIPE/i.test(message)) {
+      return message;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** Resolves an upload to the response it received or to the closed connection that ended it. */
+export async function rejectionOf(upload: Promise<Response>): Promise<UploadRejection> {
+  try {
+    return { kind: 'response', response: await upload };
+  } catch (error) {
+    const detail = describeClosedConnection(error);
+    // A 500, a timeout or a DNS failure is not a rejection; surface it as the failure it is.
+    if (detail === null) throw error;
+    return { kind: 'connection-closed', detail };
+  }
+}
+
 export interface Harness {
   readonly mf: Miniflare;
   readonly db: D1Database;
