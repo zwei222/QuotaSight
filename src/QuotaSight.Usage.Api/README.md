@@ -19,7 +19,42 @@ GET /v1/usage/daily?from=YYYY-MM-DD&to=YYYY-MM-DD[&collector=collectorId]
 `PUT` returns
 `{ status, collectorId, generation, revision, receivedAt, changedDays, ignoredReductions }`
 where `status` is `applied` or `replayed`. `GET` returns
-`{ from, to, days: [{ date, collectorId, totalTokens }], totalTokens }`.
+`{ from, to, days: [{ date, collectorId, totalTokens }], totalTokens, collectors }`.
+
+### Read freshness (`collectors`)
+
+```json
+{
+  "from": "2026-11-01",
+  "to": "2026-11-30",
+  "days": [{ "date": "2026-11-18", "collectorId": "collector-a", "totalTokens": 100 }],
+  "totalTokens": 100,
+  "collectors": [
+    { "collectorId": "collector-a", "generation": 1, "lastReceivedAt": "2026-11-20T03:04:05.006Z" },
+    { "collectorId": "collector-b", "generation": 2, "lastReceivedAt": null }
+  ]
+}
+```
+
+A daily total says nothing about its own age, so every read also reports, per
+collector it covers:
+
+- one entry per collector of the owner, sorted by `collectorId` ascending;
+- `generation` is the collector's **active** generation at read time;
+- `lastReceivedAt` is the reception time of the newest accepted receipt of that
+  active generation, as an ISO-8601 UTC instant with milliseconds (`null` when
+  that generation has no receipt yet). Receipts of a superseded generation are
+  never reported; a collector re-provisioned to a new generation therefore reads
+  as `null` until it reports again.
+- A collector that has never reported is **included** with `lastReceivedAt:
+  null` rather than omitted, so "configured but not yet reporting" stays
+  distinguishable from "no such collector". An omission would make the two look
+  identical to a client that only sees the list.
+- The list is bounded (`collectors` ≤ 64 per read). A longer list is refused with
+  `413 result_too_large` instead of being truncated.
+- `collector` filtering narrows both `days` and `collectors`; another owner's
+  collectors never appear, exactly like the day rows.
+
 
 ## Snapshot contract (schema v1, narrow)
 
@@ -46,7 +81,8 @@ Enforced strictly (unknown keys are rejected, never ignored):
 - Dates are strict `YYYY-MM-DD` calendar dates; `days` is ascending, unique, and
   contained in `coveredRange`.
 - Bounds: body ≤ 32 KiB, `days` ≤ 62, covered range ≤ 62 days, query range ≤ 366
-  days, at most 5000 rows per read (a larger result is refused, never truncated).
+  days, at most 5000 rows and 64 collectors per read (a larger result is refused,
+  never truncated).
 
 ## Write semantics
 
@@ -264,6 +300,12 @@ So the read is now owner-driven, without a measured latency regression.
 `usage_day_by_bucket_date` is kept: nothing measured argues for removing it, and
 both indexes are asserted in `test/access.test.ts`, which also asserts that the
 plan for the production SQL does not scan `usage_day`.
+
+The freshness statement uses the same index from the other direction:
+`SEARCH c USING INDEX collectors_by_owner (owner_id=?)` for the collector list,
+and a correlated `SEARCH r USING PRIMARY KEY (collector_id=? AND generation=?)`
+on `snapshot_receipts` for the newest receipt of the active generation. Both are
+asserted in `test/freshness.test.ts` (no ledger scan, no extra sort).
 
 ### Migrations
 

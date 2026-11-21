@@ -108,7 +108,7 @@ UIコピーは簡潔で自然な表現にし、プロバイダー対応範囲や
 
 履歴はschema versionとevent IDを持つUTC日別JSONLで、30日間保持します。writerは1つに制限し、切り詰められた末尾行だけを回復対象とし、それ以前の破損行は報告してください。期限切れファイルと境界日の期限切れentryをpruneします。settingsとhistoryは実行ファイルの隣ではなく、OSのユーザー別データディレクトリに保存してください。
 
-settingsにはtheme、language、refresh interval、notification preference、threshold、GitHub OAuth Client ID、GitHub Organization slugを保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。
+settingsにはtheme、language、refresh interval、notification preference、threshold、GitHub OAuth Client ID、GitHub Organization slug、Usage APIのエンドポイント（オリジンのみで秘密ではない）を保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。
 
 ## Gitと配布
 

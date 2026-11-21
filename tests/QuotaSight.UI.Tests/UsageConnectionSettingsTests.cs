@@ -679,7 +679,7 @@ public sealed class UsageConnectionSettingsTests
                 if (parts[0] == "to") to = parts[1];
             }
 
-            return "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[],\"totalTokens\":0}";
+            return "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[],\"totalTokens\":0,\"collectors\":[]}";
         }
 
         private static IReadOnlyList<string> HeaderValues(HttpRequestMessage request, string name) =>
@@ -697,7 +697,7 @@ public sealed class UsageConnectionSettingsTests
     private sealed class GatedHandler : HttpMessageHandler
     {
         private readonly TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private const string Body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0}";
+        private const string Body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,\"collectors\":[]}";
 
         public void Release() => gate.TrySetResult();
 

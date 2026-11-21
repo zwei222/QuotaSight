@@ -1651,6 +1651,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly ReconfigurableUsageReadPort usageReadPort;
     private readonly StoreUsageCredentialProvider? usageCredentials;
     private readonly Func<string, TimeZoneInfo> timeZoneResolver;
+    private readonly TimeZoneInfo localTimeZone;
     private readonly Func<HttpClient>? usageHttpClientFactory;
     private string usageApiEndpoint = string.Empty;
     private bool hasUsageCredential;
@@ -1663,6 +1664,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string usageState = "Unconfigured";
     private string usageTotal = string.Empty;
     private IReadOnlyList<UsageDay> usageRows = [];
+    private IReadOnlyList<UsageCollectorReceipt> usageCollectors = [];
+    private UsageFailureKind usageFailure = UsageFailureKind.None;
+    private bool isUsageStale;
+    private bool hasUsageValues;
     private Task usageLoadTask = Task.CompletedTask;
     private readonly HashSet<string> openCodeAccounts = new(StringComparer.Ordinal);
     private AppPage currentPage = AppPage.Dashboard;
@@ -1699,13 +1704,108 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string UsageStatusText => UsageStateText;
     public IReadOnlyList<UsageDay> UsageRows => usageRows;
     public string UsageTotalText => usageTotal;
-    public bool IsUsageTotalVisible => usageState == "Ready" && usageRows.Count > 0;
-    public string UsageRangeText => usageState is "Unconfigured" or "Error" ? string.Empty : $"{usageFrom:yyyy-MM-dd} – {usageTo:yyyy-MM-dd} · Asia/Tokyo";
+    public bool IsUsageTotalVisible => (usageState is "Ready" or "Stale") && usageRows.Count > 0;
+    public string UsageRangeText => usageState is "Unconfigured" or "Error"
+        ? string.Empty
+        : $"{DisplayedRangeFrom:yyyy-MM-dd} – {DisplayedRangeTo:yyyy-MM-dd} · Asia/Tokyo";
     public bool IsUsageRangeVisible => usageState is not ("Unconfigured" or "Error");
     public bool IsUsageLoading => usageState == "Loading";
     public bool CanRefreshUsage => !IsUsageLoading;
+
+    /// <summary>
+    /// How old the data on screen is, in the user's local time zone. It is the oldest
+    /// reception time across the collectors the read covered, never the newest, because
+    /// the daily total is only as fresh as the collector that reported least recently.
+    /// Empty when no successful read has produced collectors to describe.
+    /// </summary>
+    public string UsageFreshnessText
+    {
+        get
+        {
+            if (!hasUsageValues || usageCollectors.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var copy = new UiCopy(Language);
+            var oldest = OldestReceivedAt();
+            if (oldest is not { } receivedAt)
+            {
+                return copy.UsageFreshnessNeverReceived;
+            }
+
+            var local = TimeZoneInfo.ConvertTime(receivedAt, localTimeZone);
+            return usageCollectors.Any(entry => entry.LastReceivedAt is null)
+                ? copy.UsageFreshnessLastReceivedWithMissing(local)
+                : copy.UsageFreshnessLastReceived(local);
+        }
+    }
+
+    /// <summary>True when the freshness line has something to say.</summary>
+    public bool IsUsageFreshnessVisible => UsageFreshnessText.Length > 0;
+
+    /// <summary>
+    /// True when the oldest reception time is older than <see cref="UsageDelayThreshold"/>.
+    /// The data is still shown, but it is never presented as current.
+    /// </summary>
+    public bool IsUsageDelayed
+    {
+        get
+        {
+            if (!hasUsageValues || OldestReceivedAt() is not { } receivedAt)
+            {
+                return false;
+            }
+
+            return timeProvider.GetUtcNow() - receivedAt > UsageDelayThreshold;
+        }
+    }
+
+    /// <summary>Fixed "delayed data" sentence, or empty when the data is not delayed.</summary>
+    public string UsageDelayedText => IsUsageDelayed ? new UiCopy(Language).UsageDelayed : string.Empty;
+
+    /// <summary>Classified reason the last read failed, if it did.</summary>
+    public UsageFailureKind UsageFailure => usageFailure;
+
+    /// <summary>Fixed, localized sentence for <see cref="UsageFailure"/>; it echoes no response detail.</summary>
+    public string UsageFailureText => new UiCopy(Language).UsageFailure(usageFailure);
+
+    /// <summary>
+    /// True when the values on screen come from an earlier successful read and the latest
+    /// refresh failed. The values are kept and shown; they are never silently replaced by
+    /// an error state or by zeros.
+    /// </summary>
+    public bool IsUsageStale => isUsageStale;
+
     public Task UsageLoadTask => usageLoadTask;
+
+    /// <summary>
+    /// Age at which daily data is reported as delayed rather than current. Collectors run
+    /// every one to six hours, so twelve hours is twice the slowest normal interval.
+    /// Named so the threshold is testable instead of being a literal in the getter.
+    /// </summary>
+    public static TimeSpan UsageDelayThreshold => TimeSpan.FromHours(12);
+
     private DateOnly usageFrom, usageTo;
+    private DateOnly usageLoadedFrom, usageLoadedTo;
+
+    /// <summary>Range the retained values belong to, or the range being requested before any value exists.</summary>
+    private DateOnly DisplayedRangeFrom => hasUsageValues ? usageLoadedFrom : usageFrom;
+    private DateOnly DisplayedRangeTo => hasUsageValues ? usageLoadedTo : usageTo;
+
+    private DateTimeOffset? OldestReceivedAt()
+    {
+        DateTimeOffset? oldest = null;
+        foreach (var entry in usageCollectors)
+        {
+            if (entry.LastReceivedAt is { } receivedAt && (oldest is null || receivedAt < oldest))
+            {
+                oldest = receivedAt;
+            }
+        }
+
+        return oldest;
+    }
     public void NavigateToUsage() { CurrentPage = AppPage.Usage; OnPropertyChanged(nameof(NavUsageText)); }
     public Task RefreshUsageAsync() { if (CurrentPage == AppPage.Usage) usageLoadTask = LoadUsageAsync(); return usageLoadTask; }
     private async Task LoadUsageAsync()
@@ -1713,41 +1813,123 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var id = Interlocked.Increment(ref usageRequestId);
         usageRequest?.Cancel(); usageRequest?.Dispose();
         usageRequest = new CancellationTokenSource(); var token = usageRequest.Token;
-        usageState = usageReadPort.IsConfigured ? "Loading" : "Unconfigured";
-        if (usageState != "Unconfigured")
+
+        if (!usageReadPort.IsConfigured)
         {
-            usageRows = [];
-            usageTotal = string.Empty;
-            try
-            {
-                var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), timeZoneResolver("Asia/Tokyo")).DateTime);
-                usageFrom = today.AddDays(-29); usageTo = today;
-            }
-            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
-            {
-                // No usable zone database (tzdata/ICU missing): stop in a fixed state. Neither
-                // the zone id nor the exception message may reach the UI.
-                usageState = "Error";
-            }
-            OnPropertyChanged(nameof(UsageRangeText));
-            OnPropertyChanged(nameof(UsageRows));
-            OnPropertyChanged(nameof(UsageTotalText));
+            // Nothing to read: drop the surface rather than leave values from a
+            // connection that no longer exists.
+            ClearUsageValues();
+            usageState = "Unconfigured";
+            NotifyUsageSurface();
+            return;
         }
-        OnPropertyChanged(nameof(UsageRangeText));
-        OnPropertyChanged(nameof(IsUsageRangeVisible));
-        OnPropertyChanged(nameof(IsUsageTotalVisible));
-        OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading));
-        if (usageState is "Unconfigured" or "Error") return;
+
+        // A load keeps the previous rows, total and freshness on screen. Clearing them
+        // here would make a failed refresh look like a period with no usage, which is a
+        // different and false statement.
+        usageState = "Loading";
+        try
+        {
+            var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), timeZoneResolver("Asia/Tokyo")).DateTime);
+            usageFrom = today.AddDays(-29); usageTo = today;
+        }
+        catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            // No usable zone database (tzdata/ICU missing): stop in a fixed state. Neither
+            // the zone id nor the exception message may reach the UI.
+            ApplyUsageFailure(id, UsageFailureKind.Transient);
+            return;
+        }
+
+        NotifyUsageSurface();
         try
         {
             var result = await usageReadPort.ReadDailyAsync(usageFrom, usageTo, null, token);
             if (token.IsCancellationRequested || id != Volatile.Read(ref usageRequestId) || CurrentPage != AppPage.Usage) return;
-            usageRows = result.Days; usageTotal = $"{result.TotalTokens:N0}"; usageState = result.Days.Count == 0 ? "Empty" : "Ready";
-            OnPropertyChanged(nameof(UsageRows)); OnPropertyChanged(nameof(UsageTotalText)); OnPropertyChanged(nameof(IsUsageTotalVisible)); OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading));
+            usageRows = result.Days;
+            usageTotal = $"{result.TotalTokens:N0}";
+            usageCollectors = result.Collectors;
+            usageLoadedFrom = usageFrom;
+            usageLoadedTo = usageTo;
+            hasUsageValues = true;
+            usageFailure = UsageFailureKind.None;
+            isUsageStale = false;
+            usageState = result.Days.Count == 0 ? "Empty" : "Ready";
+            NotifyUsageSurface();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch { if (id == Volatile.Read(ref usageRequestId) && CurrentPage == AppPage.Usage) { usageState = "Error"; OnPropertyChanged(nameof(IsUsageTotalVisible)); OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading)); } }
+        catch (UsageReadException failure) { ApplyUsageFailure(id, MapUsageFailure(failure.Failure)); }
+        catch { ApplyUsageFailure(id, UsageFailureKind.Transient); }
     }
+
+    /// <summary>
+    /// Records a failed read. With values on screen the previous rows, total and freshness
+    /// stay and the surface is marked stale; without them the surface is the plain error
+    /// state. The kind is always exposed, and it never carries response text.
+    /// </summary>
+    private void ApplyUsageFailure(long id, UsageFailureKind kind)
+    {
+        if (id != Volatile.Read(ref usageRequestId) || CurrentPage != AppPage.Usage) return;
+        usageFailure = kind;
+        if (hasUsageValues)
+        {
+            isUsageStale = true;
+            usageState = "Stale";
+        }
+        else
+        {
+            isUsageStale = false;
+            usageState = "Error";
+        }
+
+        NotifyUsageSurface();
+    }
+
+    private void ClearUsageValues()
+    {
+        usageRows = [];
+        usageTotal = string.Empty;
+        usageCollectors = [];
+        usageFailure = UsageFailureKind.None;
+        isUsageStale = false;
+        hasUsageValues = false;
+    }
+
+    private void NotifyUsageSurface()
+    {
+        OnPropertyChanged(nameof(UsageRangeText));
+        OnPropertyChanged(nameof(IsUsageRangeVisible));
+        OnPropertyChanged(nameof(UsageRows));
+        OnPropertyChanged(nameof(UsageTotalText));
+        OnPropertyChanged(nameof(IsUsageTotalVisible));
+        OnPropertyChanged(nameof(UsageStateText));
+        OnPropertyChanged(nameof(UsageStatusText));
+        OnPropertyChanged(nameof(CanRefreshUsage));
+        OnPropertyChanged(nameof(IsUsageLoading));
+        OnPropertyChanged(nameof(UsageFailure));
+        OnPropertyChanged(nameof(UsageFailureText));
+        OnPropertyChanged(nameof(IsUsageStale));
+        OnPropertyChanged(nameof(UsageFreshnessText));
+        OnPropertyChanged(nameof(IsUsageFreshnessVisible));
+        OnPropertyChanged(nameof(IsUsageDelayed));
+        OnPropertyChanged(nameof(UsageDelayedText));
+    }
+
+    /// <summary>
+    /// Collapses the port's fine-grained failure into the kinds the screen may name. Every
+    /// branch is a fixed classification; no message, status code, URI or identity is read.
+    /// </summary>
+    private static UsageFailureKind MapUsageFailure(UsageReadFailure failure) => failure switch
+    {
+        UsageReadFailure.Unauthorized => UsageFailureKind.Unauthorized,
+        UsageReadFailure.Forbidden => UsageFailureKind.Forbidden,
+        UsageReadFailure.NotFound => UsageFailureKind.NotFound,
+        UsageReadFailure.RedirectRejected => UsageFailureKind.Redirected,
+        UsageReadFailure.CredentialUnavailable or UsageReadFailure.IdentityMismatch => UsageFailureKind.CredentialMissing,
+        UsageReadFailure.TransportFailure or UsageReadFailure.Timeout
+            or UsageReadFailure.AuthUnavailable or UsageReadFailure.Transient => UsageFailureKind.Transient,
+        _ => UsageFailureKind.InvalidResponse,
+    };
     public string SubtitleText => CopyText.Subtitle;
     /// <summary>Stored usage API endpoint as an origin, or an empty string. Never a credential.</summary>
     public string UsageApiEndpointText => usageApiEndpoint;
@@ -2157,7 +2339,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById; this.localTimeZone = localTimeZone ?? TimeZoneInfo.Local; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
@@ -2704,7 +2886,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText), nameof(UsageFailureText), nameof(UsageFreshnessText), nameof(IsUsageFreshnessVisible), nameof(UsageDelayedText), nameof(IsUsageDelayed) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)

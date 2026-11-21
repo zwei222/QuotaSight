@@ -20,10 +20,52 @@ public sealed class UiCopy
         ("Ready", false) => "Usage data loaded.",
         ("Error", true) => "利用データを読み込めませんでした。再試行してください。",
         ("Error", false) => "Could not load usage. Try again.",
+        ("Stale", true) => "前回の利用データを表示しています（更新に失敗しました）。",
+        ("Stale", false) => "Showing the last loaded usage data; the refresh failed.",
         ("Unconfigured", true) => "利用量 API は未設定です。",
         ("Unconfigured", false) => "Usage API is not configured.",
         _ => state
     };
+
+    // Fixed failure sentences. Each one names a class of problem and an action, never a
+    // status code, URL, host, header or identifier, so it is safe on screen. The kind is
+    // decided by the read port from the status alone and never from a response body.
+    public string UsageFailure(UsageFailureKind kind) => (kind, IsJapanese) switch
+    {
+        (UsageFailureKind.None, _) => string.Empty,
+        (UsageFailureKind.Unauthorized, true) => "資格情報を確認してください。",
+        (UsageFailureKind.Unauthorized, false) => "Check the credential.",
+        (UsageFailureKind.Forbidden, true) => "資格情報を確認してください。",
+        (UsageFailureKind.Forbidden, false) => "Check the credential.",
+        (UsageFailureKind.NotFound, true) => "サーバー応答を確認してください。",
+        (UsageFailureKind.NotFound, false) => "Check the server response.",
+        (UsageFailureKind.InvalidResponse, true) => "サーバー応答を確認してください。",
+        (UsageFailureKind.InvalidResponse, false) => "Check the server response.",
+        (UsageFailureKind.Transient, true) => "一時的な失敗です。再試行できます。",
+        (UsageFailureKind.Transient, false) => "Temporary failure. You can retry.",
+        (UsageFailureKind.Redirected, true) => "利用量 API が別の場所へ転送しました。エンドポイントを確認してください。",
+        (UsageFailureKind.Redirected, false) => "The usage API redirected the request. Check the endpoint.",
+        (UsageFailureKind.CredentialMissing, true) => "利用量 API の資格情報がありません。設定画面で接続してください。",
+        (UsageFailureKind.CredentialMissing, false) => "No usage API credential is stored. Connect the API in settings.",
+        _ => string.Empty
+    };
+
+    // Freshness copy. The time is always formatted by the caller in the local time zone,
+    // so this text never claims a zone or a relative age it cannot verify.
+    public string UsageFreshnessLastReceived(DateTimeOffset local) => IsJapanese
+        ? $"最終受信: {local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}"
+        : $"Last received: {local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}";
+    public string UsageFreshnessMissing => IsJapanese ? "未受信の collector あり" : "A collector has not reported yet";
+    public string UsageFreshnessLastReceivedWithMissing(DateTimeOffset local) => IsJapanese
+        ? $"{UsageFreshnessLastReceived(local)}（{UsageFreshnessMissing}）"
+        : $"{UsageFreshnessLastReceived(local)} ({UsageFreshnessMissing})";
+    public string UsageFreshnessNeverReceived => UsageFreshnessMissing;
+
+    // Delayed data is still shown, but never as if it were current.
+    public string UsageDelayed => IsJapanese
+        ? "遅延データ: 最終受信から12時間以上経過しています。"
+        : "Delayed data: last received more than 12 hours ago.";
+
     // Fixed state sentences for the usage API connection. They deliberately name no endpoint,
     // no host and no identifier, so they are safe on screen and in a screenshot.
     public string UsageConnectionStatus(UsageConnectionState state) => (state, IsJapanese) switch

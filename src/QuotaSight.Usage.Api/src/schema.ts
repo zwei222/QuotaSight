@@ -15,6 +15,16 @@ export const MAX_DAYS_PER_SNAPSHOT = 62;
 export const MAX_DAILY_QUERY_SPAN_DAYS = 366;
 export const MAX_DAILY_ROWS = 5_000;
 
+/**
+ * Upper bound on the collector freshness entries of one read response.
+ *
+ * Collectors are provisioned server-side (this slice has no creation route), so
+ * an owner normally has a handful. The bound exists so a response stays finite:
+ * it is checked one row beyond the limit and an over-bound read is an error, not
+ * a silently truncated freshness list.
+ */
+export const MAX_COLLECTORS_PER_READ = 64;
+
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;

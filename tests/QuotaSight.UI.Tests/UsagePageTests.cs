@@ -102,7 +102,7 @@ public sealed class UsagePageTests
     }
 
     [AvaloniaFact]
-    public async Task NewUsagePeriodClearsPreviousValuesUntilRefreshFails()
+    public async Task NewUsagePeriodKeepsThePreviousValuesWhenTheRefreshFails()
     {
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 20, 14, 59, 0, TimeSpan.Zero));
         var port = new PeriodBoundaryUsageReadPort();
@@ -118,16 +118,23 @@ public sealed class UsagePageTests
 
             clock.SetUtcNow(new DateTimeOffset(2026, 11, 20, 15, 0, 0, TimeSpan.Zero));
             var refresh = viewModel.RefreshUsageAsync();
-            Assert.Equal("2026-10-23 – 2026-11-21 · Asia/Tokyo", viewModel.UsageRangeText);
-            Assert.Empty(viewModel.UsageRows);
-            Assert.Empty(viewModel.UsageTotalText);
+            // A new period starts, but the load keeps the rows it already has and keeps
+            // the range that belongs to them: the label never describes other data.
+            Assert.Equal("2026-10-22 – 2026-11-20 · Asia/Tokyo", viewModel.UsageRangeText);
+            Assert.Single(viewModel.UsageRows);
+            Assert.Equal("17", viewModel.UsageTotalText);
             Assert.Contains("Loading", viewModel.UsageStateText);
 
             port.FailSecondRead();
             await refresh;
-            Assert.Empty(viewModel.UsageRows);
-            Assert.Empty(viewModel.UsageTotalText);
-            Assert.Contains("load usage", viewModel.UsageStateText, StringComparison.OrdinalIgnoreCase);
+
+            // The refresh failed: the previous values stay, marked stale and typed.
+            Assert.Single(viewModel.UsageRows);
+            Assert.Equal("17", viewModel.UsageTotalText);
+            Assert.True(viewModel.IsUsageStale);
+            Assert.Equal(UsageFailureKind.Transient, viewModel.UsageFailure);
+            Assert.Contains("last loaded usage", viewModel.UsageStateText, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Temporary failure", viewModel.UsageFailureText, StringComparison.Ordinal);
         }
         finally { window.Close(); }
     }

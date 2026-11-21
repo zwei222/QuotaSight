@@ -23,7 +23,7 @@ import {
   sha256Hex,
   sumTokensSafely,
 } from './schema';
-import { applySnapshot, loadOwnedCollector, readDaily } from './store';
+import { applySnapshot, loadOwnedCollector, readCollectorFreshness, readDaily } from './store';
 
 export interface AppOptions {
   authenticator: Authenticator;
@@ -138,8 +138,13 @@ export function createApp(options: AppOptions) {
 
     const days = await readDaily(c.env.DB, principal.ownerId, query);
     const totalTokens = sumTokensSafely(days.map((day) => day.totalTokens));
+    // Reception time per covered collector. A daily total on its own says
+    // nothing about how old it is, so the caller gets the newest accepted
+    // receipt of each collector's active generation (or `null` when the
+    // collector has not reported in that generation yet).
+    const collectors = await readCollectorFreshness(c.env.DB, principal.ownerId, query);
 
-    return c.json({ from: query.from, to: query.to, days, totalTokens });
+    return c.json({ from: query.from, to: query.to, days, totalTokens, collectors });
   });
 
   app.notFound((c) => c.json({ error: { code: 'not_found', message: 'No such route.' } }, 404));

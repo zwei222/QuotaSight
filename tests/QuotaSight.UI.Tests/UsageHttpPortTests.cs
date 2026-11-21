@@ -465,7 +465,8 @@ public sealed class UsageHttpPortTests
             rows.Append(Row("2026-11-01", "col-a1", 0));
         }
 
-        var body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[" + rows + "],\"totalTokens\":0}";
+        var body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[" + rows
+            + "],\"totalTokens\":0,\"collectors\":[" + Collector("col-a1", 1, "null") + "]}";
         var peer = new FakePeer(_ => Json(body));
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
@@ -582,7 +583,11 @@ public sealed class UsageHttpPortTests
     [InlineData(HttpStatusCode.Unauthorized, UsageReadFailure.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden, UsageReadFailure.Forbidden)]
     [InlineData(HttpStatusCode.NotFound, UsageReadFailure.NotFound)]
-    [InlineData(HttpStatusCode.InternalServerError, UsageReadFailure.UnexpectedStatus)]
+    [InlineData(HttpStatusCode.RequestTimeout, UsageReadFailure.UnexpectedStatus)]
+    [InlineData((HttpStatusCode)413, UsageReadFailure.UnexpectedStatus)]
+    [InlineData(HttpStatusCode.TooManyRequests, UsageReadFailure.Transient)]
+    [InlineData(HttpStatusCode.InternalServerError, UsageReadFailure.Transient)]
+    [InlineData(HttpStatusCode.BadGateway, UsageReadFailure.Transient)]
     public async Task MapsStatusFailuresAndNeverEchoesTheResponseBody(
         HttpStatusCode status,
         UsageReadFailure expected)
@@ -932,6 +937,140 @@ public sealed class UsageHttpPortTests
         Assert.DoesNotContain(secret, rejected.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReadParsesCollectorFreshnessIncludingCollectorsThatNeverReported()
+    {
+        var peer = new FakePeer(_ => Json(BodyWithCollectors(
+            "2026-11-01",
+            "2026-11-02",
+            1600,
+            CollectorList(
+                Collector("col-a1", 3, "\"2026-11-20T03:04:05.006Z\""),
+                Collector("col-a2", 1, "null")),
+            Row("2026-11-01", "col-a1", 400),
+            Row("2026-11-02", "col-a1", 1200))));
+
+        var usage = await Read(peer, new DateOnly(2026, 11, 2));
+
+        Assert.Collection(
+            usage.Collectors,
+            entry =>
+            {
+                Assert.Equal(new UsageCollectorReceipt(
+                    "col-a1",
+                    3,
+                    new DateTimeOffset(2026, 11, 20, 3, 4, 5, 6, TimeSpan.Zero)), entry);
+                Assert.Equal(TimeSpan.Zero, entry.LastReceivedAt!.Value.Offset);
+            },
+            entry => Assert.Equal(new UsageCollectorReceipt("col-a2", 1, null), entry));
+    }
+
+    [Theory]
+    [InlineData("col-b1", "col-a1", "a collector entry is out of order")]
+    [InlineData("col-a1", "col-a1", "a collector entry is repeated")]
+    public async Task RejectsUnsortedOrDuplicatedCollectorFreshness(string first, string second, string because)
+    {
+        var peer = new FakePeer(_ => Json(BodyWithCollectors(
+            "2026-11-01",
+            "2026-11-01",
+            0,
+            CollectorList(
+                Collector(first, 1, "\"2026-11-20T03:04:05.006Z\""),
+                Collector(second, 1, "null")))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+        Assert.True(failure.Message.Length > 0, because);
+    }
+
+    [Theory]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":null,\"extra\":1}")]
+    [InlineData("{\"collectorId\":\"\",\"generation\":1,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col a1\",\"generation\":1,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":0,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":-1,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1.5,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":\"1\",\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":9007199254740992,\"lastReceivedAt\":null}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":\"2026-11-20T03:04:05Z\"}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":\"2026-11-20T03:04:05.006+09:00\"}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":\"2026-11-20\"}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":\"2026-11-20T24:00:00.000Z\"}")]
+    [InlineData("{\"collectorId\":\"col-a1\",\"generation\":1,\"lastReceivedAt\":12345}")]
+    public async Task RejectsCollectorFreshnessEntriesOutsideTheContract(string entry)
+    {
+        var peer = new FakePeer(_ => Json(
+            "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,"
+            + "\"collectors\":[" + entry + "]}"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsMoreCollectorEntriesThanTheDocumentedBound()
+    {
+        var entries = string.Join(",", Enumerable
+            .Range(0, HttpUsageReadPort.MaxCollectors + 1)
+            .Select(index => Collector($"col-{index:d4}", 1, "null")));
+        var peer = new FakePeer(_ => Json(
+            "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,"
+            + "\"collectors\":[" + entries + "]}"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.ResponseTooLarge, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsARowWhoseCollectorIsMissingFromTheFreshnessList()
+    {
+        var peer = new FakePeer(_ => Json(BodyWithCollectors(
+            "2026-11-01",
+            "2026-11-01",
+            400,
+            CollectorList(Collector("col-a1", 1, "null")),
+            Row("2026-11-01", "col-a2", 400))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsAFreshnessEntryForAnotherCollectorWhenCollectorFiltered()
+    {
+        var entries = Collector("col-a1", 1, "null") + "," + Collector("col-a2", 1, "null");
+        var peer = new FakePeer(_ => Json(
+            "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,"
+            + "\"collectors\":[" + entries + "]}"));
+        using var harness = Harness.Create(peer, Credential());
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1),
+            new DateOnly(2026, 11, 1),
+            "col-a1",
+            CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.FilterMismatch, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsADuplicateCollectorsFieldAtTheRoot()
+    {
+        var peer = new FakePeer(_ => Json(
+            "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,"
+            + "\"collectors\":[],\"collectors\":[]}"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
     private static async Task<DailyUsage> Read(FakePeer peer, DateOnly? to = null)
     {
         using var harness = Harness.Create(peer, Credential());
@@ -975,7 +1114,40 @@ public sealed class UsageHttpPortTests
 
     private static string Body(string from, string to, long totalTokens, params string[] rows) =>
         "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[" + string.Join(",", rows)
-        + "],\"totalTokens\":" + totalTokens.ToString(CultureInfo.InvariantCulture) + "}";
+        + "],\"totalTokens\":" + totalTokens.ToString(CultureInfo.InvariantCulture)
+        + ",\"collectors\":[" + CollectorList(rows
+            .Select(RowCollectorId)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .Select(id => Collector(id, 1, "null"))
+            .ToArray()) + "]}";
+
+    /// <summary>Extracts the collector id from a row built by <see cref="Row"/>.</summary>
+    private static string RowCollectorId(string row)
+    {
+        const string Marker = "\"collectorId\":\"";
+        var start = row.IndexOf(Marker, StringComparison.Ordinal) + Marker.Length;
+        var end = row.IndexOf('"', start);
+        return row[start..end];
+    }
+
+    private static string BodyWithCollectors(
+        string from,
+        string to,
+        long totalTokens,
+        string collectorsJson,
+        params string[] rows) =>
+        "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[" + string.Join(",", rows)
+        + "],\"totalTokens\":" + totalTokens.ToString(CultureInfo.InvariantCulture)
+        + ",\"collectors\":[" + collectorsJson + "]}";
+
+    private static string CollectorList(params string[] entries) => string.Join(",", entries);
+
+    /// <summary>One `collectors` entry; the time is passed as raw JSON so `null` is expressible.</summary>
+    private static string Collector(string collectorId, long generation, string lastReceivedAtJson) =>
+        "{\"collectorId\":\"" + collectorId + "\",\"generation\":"
+        + generation.ToString(CultureInfo.InvariantCulture)
+        + ",\"lastReceivedAt\":" + lastReceivedAtJson + "}";
 
     private static string Row(string date, string collectorId, long totalTokens) =>
         "{\"date\":\"" + date + "\",\"collectorId\":\"" + collectorId + "\",\"totalTokens\":"

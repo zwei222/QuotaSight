@@ -69,6 +69,13 @@ public enum UsageReadFailure
     /// rejection, and it is never inferred from the response body.
     /// </summary>
     AuthUnavailable,
+
+    /// <summary>
+    /// A retryable server-side failure that is not an authentication outage:
+    /// HTTP 429 or any 5xx other than 503. Classified from the status alone, never
+    /// from the body.
+    /// </summary>
+    Transient,
 }
 
 /// <summary>
@@ -93,10 +100,10 @@ public sealed class UsageReadException : Exception
     public int? StatusCode { get; }
 
     /// <summary>
-    /// True only for a transient authentication outage. The caller may retry without
-    /// user action. A credential rejection is never retryable.
+    /// True only for a transient outage (authentication or server side). The caller
+    /// may retry without user action. A credential rejection is never retryable.
     /// </summary>
-    public bool IsRetryable => Failure == UsageReadFailure.AuthUnavailable;
+    public bool IsRetryable => Failure is UsageReadFailure.AuthUnavailable or UsageReadFailure.Transient;
 
     /// <summary>
     /// True when the credential was rejected. The caller must not retry until the
@@ -204,6 +211,9 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     /// <summary>Maximum daily rows accepted from one response (the API's own read bound).</summary>
     public const int MaxRows = 5_000;
 
+    /// <summary>Maximum collector freshness entries accepted from one response (the API's own bound).</summary>
+    public const int MaxCollectors = 64;
+
     /// <summary>Maximum query span in days (the API's own query bound).</summary>
     public const int MaxQuerySpanDays = 366;
 
@@ -215,6 +225,9 @@ public sealed class HttpUsageReadPort : IUsageReadPort
 
     private const string DailyPath = "/v1/usage/daily";
     private const string DateFormat = "yyyy-MM-dd";
+
+    /// <summary>Exact form of a collector reception time: UTC, milliseconds, `Z`.</summary>
+    private const string InstantFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
 
     private readonly HttpClient _client;
     private readonly Uri _endpoint;
@@ -560,6 +573,22 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                     UsageReadFailure.AuthUnavailable,
                     "The usage service could not authenticate the request right now.",
                     status);
+            case HttpStatusCode.TooManyRequests:
+                // Rate limiting is a temporary condition, never a credential problem.
+                throw new UsageReadException(
+                    UsageReadFailure.Transient,
+                    "The usage service asked this client to retry later.",
+                    status);
+        }
+
+        if (status is >= 500 and <= 599)
+        {
+            // Any other server-side failure is retryable and is never confused with a
+            // rejected credential. The status is the only input; the body is not read.
+            throw new UsageReadException(
+                UsageReadFailure.Transient,
+                "The usage service failed temporarily.",
+                status);
         }
 
         if (status is >= 300 and <= 399)
@@ -654,7 +683,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
         using (document)
         {
             var root = document.RootElement;
-            RequireObjectWithExactFields(root, ["from", "to", "days", "totalTokens"]);
+            RequireObjectWithExactFields(root, ["from", "to", "days", "totalTokens", "collectors"]);
 
             var echoedFrom = ReadStrictDate(root, "from");
             var echoedTo = ReadStrictDate(root, "to");
@@ -664,6 +693,12 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                     UsageReadFailure.RangeMismatch,
                     "The usage response echoed a different range than the one requested.");
             }
+
+            // Freshness first, so the day rows can be checked against the collectors
+            // the response says it covers.
+            var collectors = ReadCollectors(root, collectorId);
+            var coveredCollectors = new HashSet<string>(
+                collectors.Select(entry => entry.CollectorId), StringComparer.Ordinal);
 
             var rows = ReadRequiredField(root, "days");
             if (rows.ValueKind != JsonValueKind.Array)
@@ -707,6 +742,13 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                     throw Malformed("A usage row has an invalid collector id.");
                 }
 
+                if (!coveredCollectors.Contains(rowCollectorId))
+                {
+                    // A row for a collector the response does not describe would leave
+                    // its freshness unknown, so the answer is refused instead of shown.
+                    throw Malformed("A usage row names a collector the response does not describe.");
+                }
+
                 if (collectorId is not null && !string.Equals(rowCollectorId, collectorId, StringComparison.Ordinal))
                 {
                     throw new UsageReadException(
@@ -748,8 +790,120 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                     "The echoed total does not equal the sum of the returned days.");
             }
 
-            return new DailyUsage(from, to, days, recomputedTotal);
+            return new DailyUsage(from, to, days, recomputedTotal, collectors);
         }
+    }
+
+    /// <summary>
+    /// Parses the `collectors` freshness list: exact fields, ascending unique
+    /// collector ids, a positive safe-integer generation, and a strict UTC instant
+    /// with milliseconds or `null`. Each collector is one entry and the list is
+    /// bounded; nothing is defaulted or merged.
+    /// </summary>
+    private static List<UsageCollectorReceipt> ReadCollectors(JsonElement root, string? collectorFilter)
+    {
+        var entries = ReadRequiredField(root, "collectors");
+        if (entries.ValueKind != JsonValueKind.Array)
+        {
+            throw Malformed("The usage response collectors field is not an array.");
+        }
+
+        if (entries.GetArrayLength() > MaxCollectors)
+        {
+            throw new UsageReadException(
+                UsageReadFailure.ResponseTooLarge,
+                "The usage response described more collectors than the read bound.");
+        }
+
+        var collectors = new List<UsageCollectorReceipt>(entries.GetArrayLength());
+        string? previousCollectorId = null;
+        foreach (var entry in entries.EnumerateArray())
+        {
+            RequireObjectWithExactFields(entry, ["collectorId", "generation", "lastReceivedAt"]);
+
+            var collectorValue = ReadRequiredField(entry, "collectorId");
+            if (collectorValue.ValueKind != JsonValueKind.String)
+            {
+                throw Malformed("A collector entry has no collector id.");
+            }
+
+            var id = collectorValue.GetString()!;
+            if (!IsCollectorId(id))
+            {
+                throw Malformed("A collector entry has an invalid collector id.");
+            }
+
+            if (collectorFilter is not null && !string.Equals(id, collectorFilter, StringComparison.Ordinal))
+            {
+                throw new UsageReadException(
+                    UsageReadFailure.FilterMismatch,
+                    "The usage response described a collector other than the one requested.");
+            }
+
+            if (previousCollectorId is not null)
+            {
+                var ordered = string.CompareOrdinal(id, previousCollectorId);
+                if (ordered < 0)
+                {
+                    throw Malformed("The collector entries are not in the documented ascending order.");
+                }
+
+                if (ordered == 0)
+                {
+                    throw Malformed("The collector entries repeat a collector id.");
+                }
+            }
+
+            previousCollectorId = id;
+
+            var generation = ReadSafeInteger(entry, "generation");
+            if (generation < 1)
+            {
+                throw Malformed("A collector generation is not a positive integer.");
+            }
+
+            collectors.Add(new UsageCollectorReceipt(id, generation, ReadOptionalUtcInstant(entry)));
+        }
+
+        return collectors;
+    }
+
+    /// <summary>
+    /// Reads `lastReceivedAt`: `null`, or a strict `YYYY-MM-DDTHH:MM:SS.mmmZ` UTC
+    /// instant. A local-time or offset form is refused rather than converted,
+    /// because a silently reinterpreted reception time would misstate freshness.
+    /// </summary>
+    private static DateTimeOffset? ReadOptionalUtcInstant(JsonElement parent)
+    {
+        var value = ReadRequiredField(parent, "lastReceivedAt");
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw Malformed("A collector reception time is neither an instant nor null.");
+        }
+
+        var raw = value.GetString();
+        if (raw is null
+            || raw.Length != 24
+            || !DateTimeOffset.TryParseExact(
+                raw,
+                InstantFormat,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed)
+            || !string.Equals(
+                parsed.UtcDateTime.ToString(InstantFormat, CultureInfo.InvariantCulture),
+                raw,
+                StringComparison.Ordinal))
+        {
+            throw Malformed("A collector reception time is not a strict UTC instant with milliseconds.");
+        }
+
+        return parsed;
     }
 
     /// <summary>

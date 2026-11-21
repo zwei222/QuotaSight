@@ -9,7 +9,7 @@
  */
 import { ApiError } from './errors';
 import type { DailyQuery, Snapshot } from './schema';
-import { MAX_DAILY_ROWS } from './schema';
+import { MAX_COLLECTORS_PER_READ, MAX_DAILY_ROWS } from './schema';
 
 export interface CollectorRecord {
   readonly id: string;
@@ -338,5 +338,89 @@ export async function readDaily(
     date: row.bucket_date,
     collectorId: row.collector_id,
     totalTokens: row.total_tokens,
+  }));
+}
+
+export interface CollectorFreshnessRow {
+  readonly collectorId: string;
+  readonly generation: number;
+  /** Reception time of the newest accepted receipt of the active generation, or `null` when none. */
+  readonly lastReceivedAt: string | null;
+}
+
+/**
+ * Freshness statement, shared with the query-plan test so the plan that is
+ * asserted is the plan production runs.
+ *
+ * Bind order: ownerId, [collectorId], limit.
+ *
+ * The outer scan is `collectors`, so `collectors_by_owner` (0002) drives it and
+ * the list is already ordered by id. The correlated subquery walks the
+ * `snapshot_receipts` primary key backwards, so "newest receipt of the active
+ * generation" is one index seek per collector rather than a scan of the ledger.
+ */
+export function collectorFreshnessSql(query: DailyQuery): string {
+  const conditions = ['c.owner_id = ?'];
+  if (query.collectorId !== null) conditions.push('c.id = ?');
+
+  return `
+    SELECT c.id AS collector_id,
+           c.active_generation AS generation,
+           (
+             SELECT r.received_at
+             FROM snapshot_receipts r
+             WHERE r.collector_id = c.id
+               AND r.generation = c.active_generation
+             ORDER BY r.revision DESC
+             LIMIT 1
+           ) AS last_received_at
+    FROM collectors c
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY c.id ASC
+    LIMIT ?
+  `;
+}
+
+export function collectorFreshnessParams(ownerId: string, query: DailyQuery): unknown[] {
+  const values: unknown[] = [ownerId];
+  if (query.collectorId !== null) values.push(query.collectorId);
+  values.push(MAX_COLLECTORS_PER_READ + 1);
+  return values;
+}
+
+/**
+ * Reports, per covered collector, the reception time of its newest accepted
+ * receipt in the active generation.
+ *
+ * A collector with no receipt in its active generation is included with
+ * `lastReceivedAt: null`: "configured but never reported" is a state the caller
+ * has to be able to show, and dropping the entry would make it look exactly
+ * like a collector that does not exist. Receipts of a superseded generation are
+ * never read, because the join pins the active generation.
+ */
+export async function readCollectorFreshness(
+  db: D1Database,
+  ownerId: string,
+  query: DailyQuery,
+): Promise<CollectorFreshnessRow[]> {
+  const result = await db
+    .prepare(collectorFreshnessSql(query))
+    .bind(...collectorFreshnessParams(ownerId, query))
+    .all<{ collector_id: string; generation: number; last_received_at: string | null }>();
+
+  const rows = result.results ?? [];
+  if (rows.length > MAX_COLLECTORS_PER_READ) {
+    throw new ApiError(
+      413,
+      'result_too_large',
+      `A single response may describe at most ${MAX_COLLECTORS_PER_READ} collectors.`,
+      { reason: 'too_many_collectors', limitCollectors: MAX_COLLECTORS_PER_READ },
+    );
+  }
+
+  return rows.map((row) => ({
+    collectorId: row.collector_id,
+    generation: row.generation,
+    lastReceivedAt: row.last_received_at,
   }));
 }
