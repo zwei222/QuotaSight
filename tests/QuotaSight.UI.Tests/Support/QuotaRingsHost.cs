@@ -17,6 +17,10 @@ namespace QuotaSight.UI.Tests.Support;
 /// usage connection. It only ever uses an in-memory credential store, a synthetic credential
 /// pair and a transport that refuses every request, so no real credential store, user setting
 /// or network endpoint is read or written.
+///
+/// The <c>--usage-page</c> switch opens the usage page with a scripted in-memory read port and
+/// a fixed clock, so every freshness, delayed, stale and failure state can be captured with
+/// synthetic daily rows. It never reads a credential, a settings file or a network endpoint.
 /// </summary>
 public static class QuotaRingsHost
 {
@@ -36,6 +40,26 @@ public static class QuotaRingsHost
 
     /// <summary>Argument that selects the connection state shown on the settings page.</summary>
     public const string UsageStateArgument = "--usage-state";
+
+    /// <summary>
+    /// Argument that opens the usage page, loads a synthetic read result and leaves the page in
+    /// the requested state. It is only meaningful on the main window and cannot be combined with
+    /// <c>--settings</c> or <c>--usage-state</c>, which build a different page.
+    /// </summary>
+    public const string UsagePageArgument = "--usage-page";
+
+    /// <summary>Usage-page states the host can build, in the order they are documented.</summary>
+    public static readonly IReadOnlyList<string> UsagePageStates =
+    [
+        "ready", "delayed", "stale", "stale-delayed",
+        "error-unauthorized", "error-transient", "empty", "loading", "unconfigured"
+    ];
+
+    /// <summary>
+    /// Display zone for the usage page's freshness line. It is injected so the rendered text does
+    /// not depend on the machine's zone, and it is only used by <c>--usage-page</c>.
+    /// </summary>
+    private static readonly TimeZoneInfo UsagePageZone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo");
 
     /// <summary>
     /// Argument that scrolls the settings page, once the window has been laid out, so the usage
@@ -75,8 +99,18 @@ public static class QuotaRingsHost
         var settings = args.Contains("--settings", StringComparer.OrdinalIgnoreCase);
         var scrollUsage = args.Contains(ScrollUsageArgument, StringComparer.OrdinalIgnoreCase);
         var usageState = ReadUsageState(args);
+        var usagePage = ReadUsagePageState(args);
         if (settings && widget)
             throw new InvalidOperationException("--settings is only available on the main window; --widget has no settings page.");
+        if (usagePage is not null && widget)
+            throw new InvalidOperationException(
+                $"{UsagePageArgument} requires the main window; --widget has no usage page.");
+        if (usagePage is not null && settings)
+            throw new InvalidOperationException(
+                $"{UsagePageArgument} cannot be combined with --settings: they open different pages.");
+        if (usagePage is not null && usageState is not null)
+            throw new InvalidOperationException(
+                $"{UsagePageArgument} cannot be combined with {UsageStateArgument}: the connection state and the loaded usage page are set up by different switches.");
         if (scrollUsage && !settings)
             throw new InvalidOperationException(
                 $"{ScrollUsageArgument} requires --settings: the usage connection card only exists on the settings page.");
@@ -87,10 +121,13 @@ public static class QuotaRingsHost
         var store = usageState is null
             ? null
             : new SyntheticUsageCredentialStore(AvailabilityFor(usageState), freezeSave: usageState == "saving");
+        var usagePagePort = usagePage is null or "unconfigured" ? null : CreateUsagePageReadPort(usagePage);
         var viewModel = new MainViewModel(new SyntheticDashboardSource(),
             timeProvider: new FixedTimeProvider(FixtureNow),
+            usageReadPort: usagePagePort,
             usageCredentialStore: store,
-            usageHttpClientFactory: store is null ? null : CreateSyntheticHttpClient);
+            usageHttpClientFactory: store is null ? null : CreateSyntheticHttpClient,
+            localTimeZone: usagePage is null ? null : UsagePageZone);
         viewModel.SetSettings(viewModel.CurrentSettingsForTests with { Theme = theme, CopilotReferenceCredits = 1500m }, persist: false);
         if (args.Contains("--ja", StringComparer.OrdinalIgnoreCase))
             viewModel.Language = UiLanguage.Japanese;
@@ -101,6 +138,8 @@ public static class QuotaRingsHost
             ApplyUsageState(window, usageState);
         if (settings)
             viewModel.Navigate(AppPage.Settings);
+        if (usagePage is not null)
+            OpenUsagePage(window, usagePage);
         if (scrollUsage)
         {
             // Layout is only complete after the window has been shown, and the fixture may be
@@ -110,7 +149,7 @@ public static class QuotaRingsHost
                 () => ScrollUsageCardIntoView(window, usageState),
                 DispatcherPriority.Loaded);
         }
-        return new FixtureHost(window, viewModel, store, usageState);
+        return new FixtureHost(window, viewModel, store, usageState, usagePage, usagePagePort);
     }
 
     /// <summary>
@@ -172,6 +211,89 @@ public static class QuotaRingsHost
         main.FindControl<Button>("UsageConnectionSaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
+    /// <summary>
+    /// Opens the usage page and drives it into the requested state through production code:
+    /// navigating to <see cref="AppPage.Usage"/> starts the page's first read (the page setter owns
+    /// that load), and the stale / loading states advance to a second read by raising the real
+    /// refresh or retry button's Click, exactly like the settings fixture presses its save button.
+    /// No settings page and no Tab press is involved, and the scripted port answers locally.
+    /// </summary>
+    private static void OpenUsagePage(Window window, string usagePage)
+    {
+        if (window is not MainWindow main)
+            throw new InvalidOperationException($"{UsagePageArgument} requires the main window.");
+
+        // The CurrentPage setter starts the first read when the page becomes Usage; an explicit
+        // RefreshUsageAsync here would start a second, unwanted read before the state is set up.
+        main.ViewModel.NavigateToUsage();
+
+        // stale: the retry action inside the (still hidden) failure panel; loading: the page's
+        // own refresh button. Both handlers go through the production click path.
+        var secondRead = usagePage switch
+        {
+            "stale" or "stale-delayed" => "UsageRetryButton",
+            "loading" => "UsageRefreshButton",
+            _ => null,
+        };
+        if (secondRead is null)
+            return;
+
+        var button = main.FindControl<Button>(secondRead)
+            ?? throw new InvalidOperationException($"The main window has no {secondRead} to press.");
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    /// <summary>
+    /// Builds the scripted read sequence for a usage-page state. Every value is synthetic: the
+    /// rows come from <see cref="UsagePageSample"/>, the failures are classified
+    /// <see cref="UsageReadException"/> instances, and the loading state's second read waits on an
+    /// in-memory gate. Nothing dials out.
+    /// </summary>
+    private static ScriptedUsagePageReadPort? CreateUsagePageReadPort(string usagePage) => usagePage switch
+    {
+        "ready" => new([() => UsagePageSample(FixtureNow.AddHours(-1))]),
+        "delayed" => new([() => UsagePageSample(FixtureNow.AddHours(-13))]),
+        "stale" => new(
+        [
+            () => UsagePageSample(FixtureNow.AddHours(-1)),
+            () => throw new UsageReadException(UsageReadFailure.Transient, "synthetic transient failure"),
+        ]),
+        "stale-delayed" => new(
+        [
+            () => UsagePageSample(FixtureNow.AddHours(-13)),
+            () => throw new UsageReadException(UsageReadFailure.Transient, "synthetic transient failure"),
+        ]),
+        "error-unauthorized" => new([() => throw new UsageReadException(UsageReadFailure.Unauthorized, "synthetic rejection")]),
+        "error-transient" => new([() => throw new UsageReadException(UsageReadFailure.Transient, "synthetic transient failure")]),
+        "empty" => new([() => new DailyUsage(DateOnly.FromDateTime(FixtureNow.DateTime).AddDays(-29), DateOnly.FromDateTime(FixtureNow.DateTime), [], 0)]),
+        "loading" => new([() => UsagePageSample(FixtureNow.AddHours(-1))], gateAfterwards: true),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Five days of synthetic daily rows ending at the fixture's evaluation day, with a total that
+    /// is their exact sum and one collector receipt at <paramref name="receivedAt"/>. Two collectors
+    /// are named so the freshness line describes a real per-collector surface rather than a single
+    /// fabricated instant.
+    /// </summary>
+    private static DailyUsage UsagePageSample(DateTimeOffset receivedAt)
+    {
+        var to = DateOnly.FromDateTime(FixtureNow.DateTime);
+        var days = new List<UsageDay>
+        {
+            new(to.AddDays(-4), "collector-a", 184_200),
+            new(to.AddDays(-3), "collector-a", 201_600),
+            new(to.AddDays(-2), "collector-b", 158_400),
+            new(to.AddDays(-1), "collector-a", 213_000),
+            new(to, "collector-b", 176_500),
+        };
+        return new DailyUsage(to.AddDays(-29), to, days, days.Sum(day => day.TotalTokens),
+        [
+            new UsageCollectorReceipt("collector-a", 1, receivedAt),
+            new UsageCollectorReceipt("collector-b", 1, receivedAt),
+        ]);
+    }
+
     private static CredentialStoreAvailability AvailabilityFor(string usageState) => usageState switch
     {
         "unconfigured" or "configured" => CredentialStoreAvailability.SecureStore,
@@ -195,6 +317,20 @@ public static class QuotaRingsHost
         return value;
     }
 
+    private static string? ReadUsagePageState(string[] args)
+    {
+        var index = Array.FindIndex(args, argument => string.Equals(argument, UsagePageArgument, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return null;
+        if (index + 1 >= args.Length)
+            throw new ArgumentException($"{UsagePageArgument} needs a value: {string.Join(", ", UsagePageStates)}.");
+
+        var value = args[index + 1].Trim().ToLowerInvariant();
+        if (!UsagePageStates.Contains(value, StringComparer.Ordinal))
+            throw new ArgumentException($"Unknown {UsagePageArgument} value '{args[index + 1]}'; expected one of: {string.Join(", ", UsagePageStates)}.");
+        return value;
+    }
+
     private static HttpClient CreateSyntheticHttpClient() => new(new OfflineUsageHandler());
 
     /// <summary>Transport for the synthetic connection. It answers locally and never dials out.</summary>
@@ -206,12 +342,54 @@ public static class QuotaRingsHost
 }
 
 /// <summary>Window, view model and synthetic store produced by <see cref="QuotaRingsHost.CreateHost"/>.</summary>
-/// <param name="UsageState">Requested state, or <c>null</c> when the host was launched without one.</param>
+/// <param name="UsageState">Requested connection state, or <c>null</c> when the host was launched without one.</param>
+/// <param name="UsagePageState">Requested usage-page state, or <c>null</c> when <c>--usage-page</c> was not given.</param>
+/// <param name="UsagePageReadPort">
+/// The scripted port behind the usage page, or <c>null</c> for the unconfigured/absent states.
+/// A test can read its call count and release the gate the loading state waits on.
+/// </param>
 public sealed record FixtureHost(
     Window Window,
     MainViewModel ViewModel,
     SyntheticUsageCredentialStore? UsageCredentialStore,
-    string? UsageState);
+    string? UsageState,
+    string? UsagePageState = null,
+    ScriptedUsagePageReadPort? UsagePageReadPort = null);
+
+/// <summary>
+/// In-memory read port for the usage page. Each call answers with the next scripted outcome; a
+/// throwing outcome becomes a faulted task, exactly like the production port reports a classified
+/// failure. With <paramref name="gateAfterwards"/> the call after the scripted outcomes waits on an
+/// in-memory gate, so a capture can show the loading state that keeps the previous values.
+/// </summary>
+public sealed class ScriptedUsagePageReadPort(IReadOnlyList<Func<DailyUsage>> outcomes, bool gateAfterwards = false) : IUsageReadPort
+{
+    private readonly TaskCompletionSource<DailyUsage> gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int calls;
+
+    /// <summary>How many reads the page has requested so far.</summary>
+    public int Calls => Volatile.Read(ref calls);
+
+    /// <summary>Completes the gated read, if one is waiting. Returns false when it already completed.</summary>
+    public bool Release(Func<DailyUsage> next) => gate.TrySetResult(next());
+
+    public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken)
+    {
+        var index = Interlocked.Increment(ref calls) - 1;
+        if (gateAfterwards && index >= outcomes.Count)
+            return gate.Task;
+
+        try
+        {
+            return Task.FromResult(outcomes[Math.Min(index, outcomes.Count - 1)]());
+        }
+        catch (Exception failure)
+        {
+            return Task.FromException<DailyUsage>(failure);
+        }
+    }
+}
+
 
 /// <summary>
 /// In-memory credential store for the fixture. <see cref="Availability"/> is chosen by the
