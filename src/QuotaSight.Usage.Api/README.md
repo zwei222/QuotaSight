@@ -168,8 +168,9 @@ Enforced strictly (unknown keys are rejected, never ignored):
   the guards that abort a write are statements and schema triggers, so a
   rejected write cannot leave a receipt without its days (or vice versa), and an
   ignored reduction can never be half-applied. The D1 documentation describes the
-  rollback scope of a partly failing `batch()` inconsistently, so this is proven
-  against remote D1 by the runbook's check 4 rather than assumed here.
+  rollback scope of a partly failing `batch()` inconsistently; the runbook's
+  check 4 observed the whole batch rolling back on remote D1 on 2026-11-22, in one
+  account, so this is measured rather than assumed — for that deployment.
 
 ### Why a decrease is ignored rather than refused
 
@@ -332,41 +333,55 @@ values, client ids or key material.
 ### Unverified, and what only a real deployment can settle
 
 The list below is the behaviour this package depends on that the official
-documentation does not fix, or that has not been observed in a real account. The
-same list appears as a checklist in
+documentation does not fix, or that only a real deployment can settle; what has
+been observed is marked as such. The same list appears as a checklist in
 [docs/deployment.md](../../docs/deployment.md).
 
-- **Which status Access returns for a bad or missing service token** is decided by
-  the Zero Trust organization setting **strict service token authentication**, not
-  by this Worker. With the setting on, Access returns `401` or `403` and never
-  redirects a non-browser client to an interactive login; with it off, a
-  non-browser client is redirected (`302`) to a page it cannot complete.
-  Organizations created on or after 2026-10-05 have the setting on by default and
-  cannot turn it off. That much is documented. Still unverified here is **which**
-  of `401` and `403` a given rejection returns, and the behaviour with Managed
-  OAuth enabled — no rejection has been observed against a real Access
-  deployment. The desktop client therefore classifies a `403` as a
-  credential/scope problem and a `3xx` as a redirect that is never followed, and
-  offers the settings-page detour for both; a `302` from a `strict`-off
-  organization is the case that reads as a redirect instead of as a credential
-  problem, which is why the runbook turns the setting on before the smoke test.
+**Observed in one account on 2026-11-22**, on the free plans, with strict service
+token authentication on, a `Service Auth`-only policy and Managed OAuth off:
+
+- no credential at all → **HTTP 403**, Access's HTML error page (`text/html`), and
+  the request never reached this Worker;
+- a correct Client ID with a wrong secret → **HTTP 401**;
+- a revoked secret (the previous one after a rotation) → **HTTP 401**;
+- no `302` for any of the three;
+- a valid write token on `GET /v1/usage/daily` passed Access and this Worker
+  answered `403 forbidden_scope`, while the read token answered `200` with the
+  daily totals and `collectors[].lastReceivedAt`.
+
+So the classification this package and its clients assume — `403` is a
+credential/scope problem, `401` a rejected credential, `3xx` a redirect that is
+never followed — is the one that deployment produced. It is one account, and the
+rest of this section is what it did not settle.
+
+- **The `302` shape and the remaining rejections.** An organization with strict
+  service token authentication off, an expired token, a token minted for another
+  application and an application with Managed OAuth on have not been tested. With
+  the setting off, a non-browser client is redirected (`302`) to a login it cannot
+  complete, but that is documentation rather than an observation here: do not
+  assume the `403`/`401` split above for such an organization. Organizations
+  created on or after 2026-10-05 have the setting on by default and cannot turn it
+  off.
 - **Whether the deployment fits in 10 ms of CPU time on the free plans** is not
   measurable here: the suite proves behaviour, not CPU, and no number in this
   repository is a measurement of a deployed Worker. The runbook's CPU measurement
   gate settles it against the real account, and its fallback options are
   documented as not applied.
-- **`RETURNING` is not described in the D1 documentation.** `changedDays` and
-  `ignoredReductions` are read from the rows that `RETURNING` hands back inside
-  the write's `batch()`, so a remote database that did not support it would still
-  write the days and report `changedDays: []` instead of failing loudly. Local
-  tests run against a real local D1 and cannot settle this; only the remote smoke
-  test in the runbook can (checks 1 and 2).
-- **The rollback scope of `batch()` is described inconsistently.** The official
+- **Whether remote D1 supports `RETURNING`** is not described in the D1
+  documentation. `changedDays` and `ignoredReductions` are read from the rows that
+  `RETURNING` hands back inside the write's `batch()`, so a database that did not
+  support it would still write the days and report `changedDays: []` instead of
+  failing loudly. Local tests run against a real local D1 and cannot settle this;
+  the runbook's checks 1 to 4 did, on 2026-11-22, in one account and against one
+  D1 release. That is a proof to reproduce per deployment, not a property this
+  repository can assert.
+- **The rollback scope of `batch()`** is described inconsistently: the official
   page says batched statements are SQL transactions whose failing statement
   aborts or rolls back the sequence, and in the same section says D1 operates in
   auto-commit with each statement committing in turn. This package assumes the
-  whole batch rolls back; the runbook (check 4) proves it remotely by making the
-  last statement fail and confirming that the earlier day write is absent.
+  whole batch rolls back, and the runbook's check 4 confirmed it once, remotely,
+  by making the last statement fail and observing that the earlier day write was
+  absent. A different D1 release is still an assumption.
 
 ### Operator signal for a missing configuration
 

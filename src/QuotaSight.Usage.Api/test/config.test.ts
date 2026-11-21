@@ -103,6 +103,31 @@ describe('repository hygiene', () => {
     }
   });
 
+  it('records in the package README what a real deployment settled', async () => {
+    const readme = await readFile(join(packageRoot, 'README.md'), 'utf8');
+    // Class names and prose wrap; compare the claims, not the line breaks.
+    const flat = readme.replace(/\s+/g, ' ');
+    expect(flat).toContain('Observed in one account on 2026-11-22');
+    expect(flat).toContain('HTTP 403');
+    expect(flat).toContain('HTTP 401');
+    expect(flat).toContain('302');
+    expect(flat).toContain('checks 1 to 4');
+    // The old blanket "nothing has been observed" claim is gone; only the
+    // narrower gaps stay listed.
+    expect(readme).not.toContain('no rejection has been observed against a real Access');
+    expect(flat).toContain('strict service token authentication off');
+  });
+
+  it('drops the unobserved-Access claim from the architecture document', async () => {
+    const architecture = await readFile(join(packageRoot, '..', '..', 'docs', 'architecture.md'), 'utf8');
+    expect(architecture).not.toContain(
+      '実環境の Cloudflare Access が不正なサービス トークンに対して 403 や 302 を返すかは未検証です。',
+    );
+    expect(architecture).toContain('2026-11-22');
+    expect(architecture).toContain('403');
+    expect(architecture).toContain('401');
+  });
+
   it('has no real-looking team domain, hex secret or embedded key', async () => {
     const domain = /[A-Za-z0-9-]+\.cloudflareaccess\.com/g;
     const hex = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,64}(?![0-9A-Fa-f])/g;
@@ -136,6 +161,13 @@ describe('deployment runbook', () => {
 
   async function readRunbook(): Promise<string> {
     return readFile(runbook, 'utf8');
+  }
+
+  /** Line breaks in the runbook are prose, not contract: compare on one line. */
+  const flatten = (text: string): string => text.replace(/\s+/g, ' ');
+
+  async function readRunbookFlat(): Promise<string> {
+    return flatten(await readRunbook());
   }
 
   it('makes the three free plans the premise and drops the Paid prerequisite', async () => {
@@ -266,7 +298,7 @@ describe('deployment runbook', () => {
     expect(doc).toContain('AUD changes');
   });
 
-  it('requires a remote proof for RETURNING and for batch() rollback', async () => {
+  it('records the remote proof of RETURNING and of batch() rollback as done', async () => {
     const doc = await readRunbook();
     expect(doc).toContain('RETURNING');
     expect(doc).toContain('changedDays');
@@ -274,6 +306,80 @@ describe('deployment runbook', () => {
     expect(doc).toContain('remote D1');
     expect(doc).toContain('stale_revision');
     expect(doc).toContain('DELETE FROM usage_day');
+    // The two behaviours the prose used to demand as a future proof are now
+    // recorded as proven against remote D1, in one account, on one date, and the
+    // runbook still says a new deployment has to re-run the same four checks.
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('Observed on 2026-11-22');
+    expect(flat).toMatch(/all four checks matched/);
+    expect(flat).toContain('re-runs the same four checks');
+  });
+
+  it('records the Access status observed for each rejected credential', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('No credential at all → HTTP 403');
+    expect(flat).toContain('wrong secret → HTTP 401');
+    expect(flat).toContain('A revoked secret');
+    expect(flat).toContain('No `302` was observed');
+    // The other half of the old open question stays open, as a limitation.
+    expect(flat).toContain('strict service token authentication off');
+    expect(flat).toContain('token from another application');
+  });
+
+  it('records the end-to-end result of a valid write and read credential', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('forbidden_scope');
+    expect(flat).toContain('lastReceivedAt');
+    expect(flat).toMatch(/about 0\.09 s/);
+    expect(flat).toContain('a read token cannot `PUT`');
+  });
+
+  it('documents registering a real collector row and swapping the principals', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('INSERT INTO collectors (id, owner_id, active_generation, created_at)');
+    expect(flat).toContain("strftime('%Y-%m-%dT%H:%M:%SZ','now')");
+    expect(flat).toContain('`ownerId` must be the principal');
+    // One Client ID, one subject: the map is rejected as a whole otherwise.
+    expect(flat).toContain('one Client ID cannot appear as two subjects');
+    expect(flat).toContain('a **swap**, not an addition');
+  });
+
+  it('documents the deploy order and the uncommitted deployment configuration', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('No targets deployed');
+    expect(flat).toContain('.git/info/exclude');
+    expect(flat).toContain('database_id');
+    expect(flat).toContain('custom_domain = true');
+    // `-c` is how the file is selected, so wrangler.toml stays untouched.
+    expect(flat).toContain('`-c`');
+    expect(flat).toContain('without a route and without a workers.dev subdomain');
+  });
+
+  it('documents the wrangler login callback and the logout that follows', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('localhost:8976');
+    expect(flat).toContain('wrangler logout');
+    expect(flat).toContain('the browser is on another machine');
+  });
+
+  it('recommends a one-year token duration and records the observed maximum', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('10 years');
+    expect(flat).toContain('one year');
+    expect(flat).toContain('the default is still unconfirmed');
+  });
+
+  it('warns that the policy action selector can reset to Allow', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('Any Access Service Token');
+    expect(flat).toContain('resets to `Allow`');
+    expect(flat).toContain('create the token first');
+  });
+
+  it('records rotating a secret instead of displaying the stored one', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('rotate again after the test');
+    expect(flat).toMatch(/immediate revocation|invalidates immediately/);
   });
 
   it('documents secret rotation that leaves the Client ID unchanged', async () => {
@@ -294,13 +400,30 @@ describe('deployment runbook', () => {
     expect(doc).toContain('shell history');
   });
 
-  it('carries the unverified list as a checklist to run in a real account', async () => {
+  it('carries only the still-unverified list as a checklist to run in a real account', async () => {
     const doc = await readRunbook();
     expect(doc).toContain('Verify in a real environment');
+    expect(doc).toContain('### 8.1 Observed in one real account (2026-11-22)');
+    expect(doc).toContain('### 8.2 Still unverified');
     const items = doc.match(/^- \[ \] /gm) ?? [];
-    expect(items).toHaveLength(11);
+    expect(items).toHaveLength(9);
     expect(doc).toContain('cpuTime');
     expect(doc).toContain('[observability]');
+    // The two behaviours that moved out of the checklist are still named, as
+    // observed facts rather than as work an operator owes.
+    const observed = doc.slice(doc.indexOf('### 8.1'), doc.indexOf('### 8.2'));
+    expect(observed).toContain('RETURNING');
+    expect(observed).toContain('rollback scope');
+    expect(observed).toContain('403');
+    expect(observed).toContain('401');
+  });
+
+  it('records the remote migrations without claiming they prove transactionality', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('`0001`–`0003`');
+    expect(flat).toContain('`d1_migrations`');
+    expect(flat).toContain('two indexes and four triggers');
+    expect(flat).toContain('not a proof that each migration file runs in one transaction');
   });
 
   it('has no real host, team domain, hex id or access client id', async () => {

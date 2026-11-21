@@ -14,8 +14,16 @@ plans. No subscription is bought for it. §1 records the limits that budget rest
 on, and §6 is the measurement that decides whether it holds.
 
 Everything below is a placeholder. Replace `<ZONE>`, `<HOST>`, `<DB_NAME>`,
-`<TEAM_DOMAIN>`, `<AUD>`, `<CLIENT_ID_*>`, `<CLIENT_SECRET_*>` and
-`<COLLECTOR_ID>` with the operator's own values, and never commit the result.
+`<TEAM_DOMAIN>`, `<AUD>`, `<CLIENT_ID_*>`, `<CLIENT_SECRET_*>`, `<COLLECTOR_ID>`
+and `<OWNER>` with the operator's own values, and never commit the result.
+
+One operator has run this runbook end to end against **one** real account, on
+2026-11-22, and §8.1 records what that run observed: the status Access answered
+for each rejected credential, the result of a valid write and read credential,
+the four remote D1 checks, and the migrations applied remotely. Those are
+observations with their conditions, not a guarantee for another account — §8.2
+lists what is still open, and a new deployment re-runs §5's four checks instead
+of inheriting that result.
 
 ## What is deployed
 
@@ -29,7 +37,9 @@ collector / desktop app
 
 Access is the only intended way in. The Worker's own `401` exists for a request
 that reached it while bypassing Access: with Access in front, Access answers
-first, so the Worker's check is defense-in-depth and not the primary gate.
+first, so the Worker's check is defense-in-depth and not the primary gate. That
+ordering was observed on 2026-11-22 — a request with no credential was answered
+by Access with `403` and an HTML error page and never reached the Worker (§8.1).
 
 ## 1. Prerequisites
 
@@ -151,6 +161,8 @@ npm test
 | `<CLIENT_ID_WRITE>`, `<CLIENT_SECRET_WRITE>` | Service token used by a collector |
 | `<CLIENT_ID_READ>`, `<CLIENT_SECRET_READ>` | Service token used by the desktop app |
 | `<COLLECTOR_ID>` | Collector id: a lowercase slug, 3–64 characters of `[a-z0-9_-]` |
+| `<OWNER>` | Owner id shared by the collector row and the principal that writes to it |
+| `<CONFIG_FILE>` | Deployment configuration file outside version control (step 6) |
 
 ## 3. Steps
 
@@ -164,17 +176,17 @@ Roles: **account operator** (holds the Cloudflare account), **deployer** (runs
 | 1 | account operator | Zero Trust → Settings | Record the team domain. | Value is `https://<name>.cloudflareaccess.com`. | — |
 | 2 | account operator | Zero Trust → Access → Applications | Create a self-hosted application for `<HOST>` with an empty path (all paths). Policy action **Service Auth**, include **Service Token**. Use one application per credential class (write, read) or one application with two policies. | Record `<AUD>`. No `Bypass` policy exists. Policy action is `Service Auth`. | Delete the application and re-put `ACCESS_AUD` (the AUD changes). |
 | 3 | account operator | Zero Trust → Access controls → Access settings → Manage service tokens | Turn **strict service token authentication** on (recommended); on organizations created on or after 2026-10-05 it is already on and cannot be turned off. Do this before the smoke test. | The setting reads on. A bad credential then answers `401`/`403` instead of redirecting (§3.4). | Turn it off only if a client cannot be moved to `401`/`403` handling; record why. |
-| 4 | account operator | Zero Trust → Access → Service credentials | Create two service tokens (write, read). Choose a duration; the API example uses `8760h`, the dashboard default is not documented. Two tokens out of 50 available, and a service token does not consume a seat. | Each Client ID and Secret is shown **once**; store both in the OS credential store or a protected file. Record the expiry date. | Delete the token. |
+| 4 | account operator | Zero Trust → Access → Service credentials | Create two service tokens (write, read). Choose a duration: the dashboard offers up to **`10 years`**, and a decade-long credential outlives the operator who created it, so choose about **`one year`**. The API example uses `8760h`; the default is still unconfirmed (§8.2). Two tokens out of 50 available, and a service token does not consume a seat. | Each Client ID and Secret is shown **once**; store both in the OS credential store or a protected file. Record the expiry date. | Delete the token. |
 | 5 | deployer | Own checkout | `npx wrangler d1 create <DB_NAME>` | Command prints a `database_id`. | `npx wrangler d1 delete <DB_NAME>` (destroys data). |
-| 6 | deployer | Own checkout | Set `database_name` and `database_id` in `wrangler.toml`. Keep `workers_dev = false` and `preview_urls = false`. | `npm test` still passes (`test/config.test.ts` pins the local-only settings). | `git checkout -- wrangler.toml`. |
-| 7 | deployer | Own checkout | `npx wrangler d1 migrations apply <DB_NAME> --local`, then `npm test`. | All tests pass. Local D1 is not remote D1; this is not the remote proof. | Delete the local `.wrangler` state. |
-| 8 | deployer | Own checkout | `npx wrangler d1 migrations list <DB_NAME> --remote`, then `npx wrangler d1 migrations apply <DB_NAME> --remote`. | `d1_migrations` lists `0001`, `0002`, `0003`; `sqlite_master` has the three tables, the indexes and the triggers. | Restore a Time Travel bookmark, or add a corrective migration. |
-| 9 | deployer | Own checkout | `npx wrangler secret put ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `ACCESS_PRINCIPALS`. | `npx wrangler secret list` shows the three names; values never appear in output. | `npx wrangler secret delete <NAME>`. |
-| 10 | deployer | Own checkout | `npx wrangler deploy` | The output contains no `*.workers.dev` hostname. `npx wrangler deployments list` shows the new version. | `npx wrangler rollback` to the previous version. |
-| 11 | account operator | Dashboard → Worker → Settings → Domains & Routes | Attach the Custom Domain `<HOST>` (or add a route with `custom_domain = true` in the operator's own configuration). | DNS record and certificate exist; `<HOST>` resolves. | Delete the Custom Domain or route. |
-| 12 | deployer | Own checkout | Denial check: `curl` the API with no credential. | `401` or `403` when strict service token authentication is on; `302` when it is off (see §3.4). `npx wrangler tail` shows no request — Access did not forward it. | — |
-| 13 | deployer | Own checkout | Allow check: `GET /v1/usage/daily` and `PUT .../snapshots/<revision>` with a valid token. | `200` with the expected bodies; then run the smoke test in §5, then the CPU gate in §6 before handing the endpoint to any user. | Rotate or delete the token. |
-| 14 | deployer | Own checkout | Send a wrong Client Secret, a token from another application, and an expired token. | `401` or `403`; the Collector exits `11`/`12` and the GUI shows the credential/redirect message. | — |
+| 6 | deployer | Own checkout | Create `<CONFIG_FILE>` next to `wrangler.toml` (a copy of it) with `database_name` and `database_id` replaced, `workers_dev = false` and `preview_urls = false` kept, and **no** route yet. Pass it with `-c` on every command. Do not edit `wrangler.toml` itself. Exclude the file with `.git/info/exclude`. | `npx wrangler deploy -c <CONFIG_FILE> --dry-run` reads the account's own `database_id`; `npm test` still passes, because `test/config.test.ts` pins `wrangler.toml` to the local-only settings. `git status` does not list the file, and neither does `git ls-files -co --exclude-standard` — the file list the hygiene test scans. | Delete the file, or move it back out of the checkout. |
+| 7 | deployer | Own checkout | `npx wrangler d1 migrations apply <DB_NAME> --local -c <CONFIG_FILE>`, then `npm test`. | All tests pass. Local D1 is not remote D1; this is not the remote proof. | Delete the local `.wrangler` state. |
+| 8 | deployer | Own checkout | `npx wrangler d1 migrations list <DB_NAME> --remote -c <CONFIG_FILE>`, then `npx wrangler d1 migrations apply <DB_NAME> --remote -c <CONFIG_FILE>`. | `d1_migrations` lists `0001`–`0003`; `sqlite_master` has the three tables, the two indexes and the four triggers (§8.1). | Restore a Time Travel bookmark, or add a corrective migration. |
+| 9 | deployer | Own checkout | `npx wrangler deploy -c <CONFIG_FILE>` **before** the Custom Domain exists. | The output says `No targets deployed` — no route, no `*.workers.dev` hostname — so the Worker exists but nothing outside can reach it yet. | `npx wrangler delete -c <CONFIG_FILE>`. |
+| 10 | deployer | Own checkout | Now, with the Worker in place, `npx wrangler secret put ACCESS_TEAM_DOMAIN -c <CONFIG_FILE>`, then `ACCESS_AUD` and `ACCESS_PRINCIPALS` the same way. | `npx wrangler secret list -c <CONFIG_FILE>` shows the three names; values never appear in output. | `npx wrangler secret delete <NAME> -c <CONFIG_FILE>`. |
+| 11 | deployer | Own checkout | Add `routes = [{ pattern = "<HOST>", custom_domain = true }]` to `<CONFIG_FILE>` and redeploy with `-c`. (The dashboard equivalent is Worker → Settings → Domains & Routes.) | DNS record and certificate exist; `<HOST>` resolves; the response carries Access's headers, not the Worker's. | Remove the route from `<CONFIG_FILE>` and redeploy, or delete the Custom Domain in the dashboard. |
+| 12 | deployer | Own checkout | Denial check: `curl` the API with no credential. | **Observed: `403`**, `content-type: text/html`, the Access error page — and `npx wrangler tail` shows no request, so Access did not forward it (§3.4, §8.1). | — |
+| 13 | deployer | Own checkout | Allow check: `GET /v1/usage/daily` with the read token, then `PUT .../snapshots/<revision>` with the write token. | **Observed: `200`** for the read (about 0.09 s, daily totals and `collectors[].lastReceivedAt`), and `403 forbidden_scope` from the Worker when the write token is used on `GET` — proof that the request passed Access. Then run §5, then the CPU gate in §6 before handing the endpoint to any user. | Rotate or delete the token. |
+| 14 | deployer | Own checkout | Send a wrong Client Secret and a revoked secret (the previous secret after a rotation). | **Observed: `401`** for both, with the same Client ID. The Collector exits `11`, the GUI shows the credential message. A token from another application and an expired token are still unverified (§8.2). | — |
 | 15 | on-call operator | Zero Trust → Logs, and notification settings | Enable the service-token expiry notification one week before expiry; confirm Access authentication logs record both outcomes. | The notification arrives; logs show non-identity authentication attempts. Access logs are kept 24 hours, so read them the same day (§3.7). | Disable the notification. |
 | 16 | on-call operator | Dashboard + collector host + app | Run the rotation drill in §7. | Both secrets work during the grace period; the Client ID is unchanged. | Keep the old secret valid until the drill finishes. |
 
@@ -186,11 +198,37 @@ resolves; the reverse order leaves a window in which the hostname reaches the
 Worker with no policy in front of it, and a mis-set path or policy is then only
 visible from a live request.
 
+The `wrangler` side has the same shape, and the order it was actually run in is
+the one steps 9 to 11 describe:
+
+1. deploy the Worker **without a route and without a workers.dev subdomain**
+   (`No targets deployed`), so it exists but nothing outside can reach it;
+2. put the secrets, now that the Worker they belong to exists;
+3. add the Custom Domain and redeploy.
+
+Step 2 exists because `wrangler secret put` against a name that has never been
+deployed can ask for confirmation (or offer to create the Worker) before it
+writes anything — a prompt in the middle of a credential-handling step is the
+wrong place to discover a missing deploy. Step 1 exists because it makes the
+first two deploys harmless: a Worker with no hostname and no `workers.dev`
+subdomain serves nobody, so an incomplete configuration cannot be reached.
+
 ### 3.2 Policies: `Service Auth` only, never `Bypass`
 
 - The policy action must be `Service Auth` with the service token as the
   include. Any other action sends a non-browser client to an identity provider
   login it cannot complete.
+- **Re-read the action before saving.** In the dashboard, changing another part
+  of the policy (the include, the name, the session duration) can make the
+  existing choice disappear: the selector **resets to `Allow`** without warning,
+  which is the failure this step produced during a real deployment. Save only
+  when the action row shows `Service Auth`.
+- **Do not include `Any Access Service Token`.** Bind the specific token or
+  tokens the deployment uses. The broader include accepts a token minted for a
+  different application in the same organization, which defeats one application
+  per credential class.
+- **If the Value field offers no candidate, create the token first** (step 4) and
+  come back: the field only lists tokens that already exist.
 - Never add a `Bypass` policy to the application. It enforces no Access control
   and its requests are not logged, which turns the hostname into an
   unauthenticated Worker endpoint.
@@ -212,21 +250,46 @@ Zero Trust → Access controls → Access settings → Manage service tokens. It
 Zero Trust organization setting, not part of this repository, and it changes what
 a bad or missing token looks like:
 
-- **On:** Access returns `401` or `403` and never redirects a non-browser client.
-  Only `Service Auth` policies can authorize the request, `Allow` policies and an
-  existing `CF_Authorization` cookie are ignored, and no `CF_Authorization` cookie
-  is issued after a successful service-token authentication.
-- **Off:** a non-browser client is sent to an interactive login it cannot
+- **On** — only `Service Auth` policies can authorize the request, `Allow`
+  policies and an existing `CF_Authorization` cookie are ignored, and no
+  `CF_Authorization` cookie is issued after a successful service-token
+  authentication. What that looks like at the client was observed on 2026-11-22
+  against one account, with the setting on and a `Service Auth`-only policy:
+  - **No credential at all → HTTP 403**, `content-type: text/html`, the Access
+    error page (title `Error ・ Cloudflare Access`). The answer is Access's own page,
+    not this API's JSON, so the request did not get as far as the Worker;
+    `wrangler tail` was not watched during that run.
+  - **Correct Client ID, wrong secret → HTTP 401.** Only the status was recorded;
+    the body was not inspected.
+  - **A revoked secret → HTTP 401 as well** — the previous secret after a
+    rotation, with the Client ID unchanged.
+  - **No `302` was observed** for any of the three, which is the whole point of
+    the setting: a non-browser client is never sent to a login it cannot
+    complete.
+- **Off** — a non-browser client is sent to an interactive login it cannot
   complete, i.e. a `302`, and a rejected credential is therefore reported by the
-  clients as a redirect rather than as a credential problem.
+  clients as a redirect rather than as a credential problem. This half is
+  **not observed**: no organization with strict service token authentication off
+  was tested, so a `302` remains the documented expectation rather than a
+  measured one (§8.2).
+
+A token from another application and an expired token were **not** observed
+either; only a missing credential, a wrong secret and a revoked secret were. Do
+not read the 403/401 split above as covering them.
+
+The clients already classify these outcomes consistently with the observation
+above: the Collector maps `401` to exit `11`, `403` to exit `12` and any `3xx` to
+exit `13` with "redirect not followed", and the desktop app shows a `403` as a
+credential/scope problem and a redirect as an endpoint problem it never follows.
+Nothing in this repository needs to change with the setting — it only decides
+which of those three a client sees.
 
 Organizations created on or after 2026-10-05 have strict service token
 authentication turned on by default and cannot turn it off. For an older
 organization, turn it on before step 12 and before handing the endpoint to users,
 so that a wrong secret reads as `401`/`403` (Collector exit codes `11` and `12`)
-instead of `302` (exit code `13`). The setting changes only the status a client
-sees; Access still evaluates the service token in both cases, so nothing in this
-repository needs to change with it.
+instead of `302` (exit code `13`). Access still evaluates the service token in
+both cases.
 
 ### 3.5 The AUD changes when an application is recreated
 
@@ -311,11 +374,49 @@ deployment action, not a local edit. Afterwards, delete the header files and any
 temporary body files, and re-enable history in that shell. Do not paste these
 values into a ticket, a chat, a review comment or a commit.
 
+### 4.1 Rotating a secret instead of displaying the stored one
+
+A service token's secret cannot be read back; it is shown once when created or
+rotated. If a step needs the value and nobody has it to hand, do not ask anyone
+to reveal the stored copy — **rotate the secret immediately before use**. The
+rotation dialog's default is immediate revocation of the previous secret, so the
+value displayed in that dialog is the only working one from that moment, and
+every other client of that token stops working. That trade is acceptable for a
+one-off smoke test and wrong for a running collector.
+
+Rule for a demonstration or a test that shows a value to someone: rotate the
+secret right before the test, use the displayed value, and **rotate again after
+the test** so the value that was seen is no longer valid. With the grace period
+(§7) both secrets work for the window, which is what the rotation drill measures;
+without it, the old secret is invalid from the rotation on.
+
+### 4.2 Logging `wrangler` in when the browser is on another machine
+
+`wrangler login` completes an OAuth flow whose redirect target is
+`http://localhost:8976`. If `wrangler` runs on a headless or remote host and the
+browser is on another machine, the browser reaches *its own* localhost and the
+callback never arrives — the login stays pending.
+
+The flow can be finished by hand:
+
+1. start `npx wrangler login`, open the printed URL in the browser on whatever
+   machine has one, and approve;
+2. the browser is then sent to `http://localhost:8976/oauth/callback?...` and
+   fails to load it — copy that full callback URL from the address bar;
+3. on the machine running `wrangler`, `curl` that exact URL once:
+   `curl -sS 'http://localhost:8976/oauth/callback?<query>'`;
+4. `wrangler` prints the login result and stores the token.
+
+The `code` in that URL is single-use and time-limited; do not paste the URL into
+a ticket, a chat or a commit, and do not keep it after the login succeeds. When
+the deployment work is done, `wrangler logout` — a login that outlives the task
+is a credential nobody is watching.
+
 ## 5. Remote smoke test
 
 Two behaviours this slice depends on are not settled by the D1 documentation, so
-they must be proven against **remote D1**, not only against the local Miniflare
-database:
+they have to be proven against **remote D1**, not only against the local
+Miniflare database:
 
 1. `RETURNING` on the day upsert and on the receipt insert. `changedDays` and
    `ignoredReductions` are read out of the `batch()` results; if `RETURNING` were
@@ -324,6 +425,14 @@ database:
 2. The rollback scope of `batch()`. The official wording says a failing statement
    "aborts or rolls back" the sequence while the same page also describes
    auto-commit per statement; the write path assumes the whole batch rolls back.
+
+**Observed on 2026-11-22**, against remote D1 in one account, following this
+section: all four checks matched the expectations below, including `changedDays`,
+`ignoredReductions`, the stored day totals and the receipt count (§8.1). That
+settles the two questions for that account and that D1 release. It does not
+settle them for another account, another D1 release or a schema change, so a new
+deployment **re-runs the same four checks** before the endpoint is handed to a
+user: the result is a proof to reproduce, not a permission to skip this section.
 
 The test uses a synthetic collector and synthetic daily values only. Never send
 real usage data to prove a deployment.
@@ -335,17 +444,68 @@ owner id of its own (`smoke-owner`). Add its row and a matching principal:
 
 ```bash
 # The collector row the write path looks up (owner-filtered).
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "INSERT INTO collectors (id, owner_id, active_generation, created_at) VALUES ('smoke-2026-01-04', 'smoke-owner', 1, '2026-01-04T00:00:00Z')"
 ```
 
 Add one principal to `ACCESS_PRINCIPALS` for `<CLIENT_ID_WRITE>`:
 `{ "id": "<CLIENT_ID_WRITE>", "ownerId": "smoke-owner", "collectorId": "smoke-2026-01-04", "scopes": ["usage:write"] }`.
-Write the full array (the operator's real principals plus this one) to the
-protected file and re-put the secret. A writer may hold only `usage:write`, and
-the id in the map is the service token's Client ID.
+Write the full array (the read principal, plus this one) to the protected file
+and re-put the secret. A writer may hold only `usage:write`, and the id in the
+map is the service token's Client ID. If the write Client ID is already bound to
+the real collector in that array, remove that entry first — §5.3 explains why it
+cannot stay.
 
-### 5.2 The four checks
+### 5.2 Register the real collector
+
+The smoke collector is throwaway; the collector that actually reports needs a
+row of its own, and no migration creates it. This step was missing from earlier
+versions of this runbook, which meant a correctly deployed API had nothing to
+write to:
+
+```bash
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
+  "INSERT INTO collectors (id, owner_id, active_generation, created_at) VALUES ('<COLLECTOR_ID>', '<OWNER>', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+```
+
+Two things have to line up, and the database does not check either of them:
+
+- `ownerId` must be the principal's `ownerId` for that service token. Every
+  lookup is `WHERE id = ? AND owner_id = ?`, so a mismatch is not a permission
+  error: writes answer `404 collector_not_found` and reads return nothing for
+  that collector — a shape that looks like a missing collector rather than like
+  a misconfigured owner.
+- The id must be exactly the slug the collector is configured with. A write
+  credential is bound to one collector, so any other id is `403
+  forbidden_collector`, including an id that does not exist.
+
+`active_generation` is `1` for a new collector. Changing it later is a direct
+database update; this slice has no rotation operation (see the package README).
+
+### 5.3 One Client ID, one subject: swapping the principals
+
+`ACCESS_PRINCIPALS` is keyed by Client ID and the whole array is discarded if any
+entry is invalid, so one Client ID cannot appear as two subjects. An array that
+holds the same Client ID twice — once bound to the smoke collector, once to the
+real one — is invalid as a whole: every request then answers `503
+auth_unconfigured`, which looks like a broken deployment rather than like a bad
+principal.
+
+So this is a **swap**, not an addition:
+
+1. before the smoke test, `ACCESS_PRINCIPALS` holds the write Client ID bound to
+   the **smoke** collector, plus the read Client ID with `usage:read`;
+2. after the cleanup in §5.5, re-put `ACCESS_PRINCIPALS` with the write Client ID
+   bound to the real `<COLLECTOR_ID>` and `<OWNER>`;
+3. check with one write from the real collector before considering the
+   deployment finished. A read at that point shows the real collector with
+   `lastReceivedAt` set, which is the only cheap proof that the swap landed.
+
+Do not leave the smoke binding in place: the smoke collector then receives the
+real collector's snapshots, and the desktop app shows a collector nobody
+provisioned.
+
+### 5.4 The four checks
 
 Send each body from a file so the payload is not in the shell:
 
@@ -378,13 +538,16 @@ in ascending order, `ignoredReductions: 0`, and a `receivedAt`. A measured zero
 for a new day is data and counts as a change.
 
 ```bash
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "SELECT bucket_date, total_tokens FROM usage_day WHERE collector_id = 'smoke-2026-01-04' ORDER BY bucket_date"
 ```
 
 The three rows must match the request. Mismatched day rows with an empty
 `changedDays` is the failure mode to look for: it means `RETURNING` did not
 behave and the write path must not be deployed as is.
+
+*Observed on 2026-11-22: `changedDays` carried all three dates in ascending order
+and `ignoredReductions` was `0`, with the three day rows present and matching.*
 
 **Check 2 — a decrease is ignored while other days still move.** Revision
 `900002` carries `2026-01-01: 500` (below the accepted 1000), `2026-01-02: 2500`
@@ -396,6 +559,9 @@ Expected: `status: applied`, `changedDays` = `["2026-01-02", "2026-01-04"]`, and
 write, not merged into it. This is the case that shows the upsert's `RETURNING`
 value (the stored, larger total) is being read, not the submitted one.
 
+*Observed on 2026-11-22: `changedDays` was the two expected dates and
+`ignoredReductions` was `1`, and `usage_day` kept `2026-01-01 = 1000`.*
+
 **Check 3 — the same revision is a replay.** Resend revision `900002` with the
 identical body. Expected: `status: replayed`, `changedDays: []`,
 `ignoredReductions: 1` (the stored count of the first write, not a recomputation)
@@ -403,11 +569,15 @@ and the same `receivedAt`. The same revision with a different body is
 `409 revision_conflict` and writes nothing.
 
 ```bash
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "SELECT COUNT(*) FROM snapshot_receipts WHERE collector_id = 'smoke-2026-01-04'"
 ```
 
 The count must be `2`.
+
+*Observed on 2026-11-22: `status: replayed`, an empty `changedDays`,
+`ignoredReductions: 1` and the first write's `receivedAt` — with the receipt count
+still `2`.*
 
 **Check 4 — one failing statement rolls the whole batch back.** Send revision
 `900000`, which is lower than the accepted `900002`, carrying one brand-new day
@@ -422,29 +592,34 @@ rollback scope:
 A row for `2026-01-05` would mean each statement committed on its own and the
 write path's atomicity claim is false.
 
-### 5.3 Clean up the synthetic data
+*Observed on 2026-11-22: `409 stale_revision`, no row for `2026-01-05`, and the
+receipt count still `2` — the whole batch rolled back, so `RETURNING` and the
+rollback scope are settled for this account and this D1 release.*
+
+### 5.5 Clean up the synthetic data
 
 ```bash
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "DELETE FROM usage_day WHERE collector_id = 'smoke-2026-01-04'"
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "DELETE FROM snapshot_receipts WHERE collector_id = 'smoke-2026-01-04'"
-npx wrangler d1 execute <DB_NAME> --remote --command \
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
   "DELETE FROM collectors WHERE id = 'smoke-2026-01-04'"
 ```
 
-Verify that all three counts are `0`, delete the throwaway service token in
-Access, and re-put `ACCESS_PRINCIPALS` without the smoke principal. Delete the
-snapshot bodies and header files from the protected directory. A leftover
-synthetic day would be indistinguishable from real data in the desktop app, and a
-leftover principal is a working credential.
+Verify that all three counts are `0`, delete the smoke service token in Access if
+you created one only for this test, and re-put `ACCESS_PRINCIPALS` without the
+smoke principal — with the write Client ID moved to the real collector (§5.3).
+Delete the snapshot bodies and header files from the protected directory. A
+leftover synthetic day would be indistinguishable from real data in the desktop
+app, and a leftover principal is a working credential.
 
 ## 6. CPU measurement gate
 
 This is the check that decides whether the deployment stays. Rather than assuming
 a plan, the operator measures the CPU this Worker actually uses on the Free plan
 and keeps the endpoint unpublished until the measurement passes. Run it
-immediately after step 10 and step 13, and keep the desktop client pointed at
+immediately after step 11 and step 13, and keep the desktop client pointed at
 nothing but the smoke-test collector until it passes.
 
 ### Local estimate before the gate
@@ -636,21 +811,76 @@ immediately, and every client must be updated in the same window.
 
 ## 8. Verify in a real environment
 
-The following are not settled by the official documentation and are not proven by
-this repository's local test suite. Check each in the operator's own account
-before relying on this slice in production.
+Nothing below is settled by the official documentation or by this repository's
+local test suite. §8.1 records what one run against one real account observed on
+2026-11-22; §8.2 is what that run did not settle. Check each item of §8.2 in the
+operator's own account before relying on this slice in production.
+
+### 8.1 Observed in one real account (2026-11-22)
+
+One operator deployed this slice to their own account (Workers Free, D1 Free,
+Zero Trust Free) and ran §3, the migrations and §5. These are the results with
+the conditions they were observed under — one account, one D1 release, the
+Free plans — not a guarantee for another account.
+
+**Access**, with strict service token authentication on, a `Service Auth`-only
+policy, no `Bypass` and Managed OAuth off:
+
+- no credential → `403`, `content-type: text/html`, the Access error page; the
+  request never reached the Worker.
+- correct Client ID, wrong secret → `401`.
+- revoked secret (the previous secret after a rotation) → `401`.
+- no `302` for any of the three.
+
+**End to end**, with the tokens created for the smoke test:
+
+- a write token on `GET /v1/usage/daily` passed Access and the Worker answered
+  `403 forbidden_scope`: the request reached the Worker, so the status is about
+  scope and not about the credential.
+- the read token on the same `GET` answered `200` in about 0.09 s, with the daily
+  totals of the synthetic snapshot and `collectors[].lastReceivedAt`.
+- a read token cannot `PUT`: that answered `403 forbidden_scope` as well.
+
+**Remote D1**, the four checks of §5.4:
+
+- Check 1: `applied`, all three days changed, `ignoredReductions: 0`.
+- Check 2: `applied`, the two expected days changed, `ignoredReductions: 1`, and
+  the stored totals were the accepted ones.
+- Check 3: `replayed`, empty `changedDays`, `ignoredReductions: 1`, two receipts.
+- Check 4: `409 stale_revision`, no row for the new day, the receipt count still
+  two.
+
+That settles `RETURNING` and the rollback scope of a partly failing `batch()` for
+this account and this D1 release. It does not settle them for a different account,
+a different D1 release or a schema change, which is why §5 still asks a new
+deployment to run the same checks.
+
+**Migrations:** `0001`–`0003` applied remotely without error. The schema then
+held three tables plus `d1_migrations`, two indexes and four triggers. That
+describes this schema; it is not a proof that each migration file runs in one
+transaction, and it says nothing about a migration that fails halfway.
+
+**What that run found missing in the runbook:** the collector row. Nothing creates
+a collector, so a correctly deployed API accepted nothing until the row in §5.2
+existed. That step and the principal swap in §5.3 were added afterwards.
+
+### 8.2 Still unverified
 
 - [ ] Measure actual CPU time for a 32 KiB, 62-day `PUT` and for a 5000-row read, and confirm both stay inside the gate in §6.1 on the Free plan.
-- [ ] Confirm whether `wrangler tail` reports `cpuTime` per invocation on the Free plan, and whether enabling `[observability]` on Free makes CPU time visible at all — §6 depends on one of the two being available.
-- [ ] Confirm on remote D1 that `RETURNING` returns rows from the day upsert and the receipt insert inside `batch()`, i.e. checks 1 and 2 above report the days that were written.
-- [ ] Confirm the rollback scope of a `batch()` whose last statement fails, i.e. check 4 above leaves no day row behind.
-- [ ] Record the exact status Access returns for a missing token, a wrong secret and a wrong audience, with strict service token authentication on and off, and with Managed OAuth off.
-- [ ] Record the service token duration the dashboard offers by default (the API example uses `8760h`; no default is documented) and compare it with the expiry you recorded.
+- [ ] Confirm whether `wrangler tail` reports `cpuTime` per invocation on the Free plan — §6 depends on one of these two readings being available.
+- [ ] Confirm whether enabling `[observability]` on the Free plan makes CPU time visible at all, and whether Workers Logs then stays inside the 200,000-event daily allowance.
+- [ ] Confirm that Access logs on the Free plan are really kept only 24 hours and that no export exists, i.e. that §3.7's window is the real one.
+- [ ] Record the service token duration the dashboard offers by default: that dialog was observed to offer up to `10 years`, but the default itself is still unconfirmed, and the API example uses `8760h`.
 - [ ] Confirm whether `wrangler d1 migrations apply` runs each migration file in one transaction, by observing a deliberately failing statement inside a copy of a migration file.
 - [ ] Confirm whether Access forwards the `CF-Access-Client-Id` and `CF-Access-Client-Secret` request headers to the Worker, to judge whether they can appear in origin-side logs.
 - [ ] Confirm that remote D1's SQLite version applies the existing-row check to `ALTER TABLE ... ADD COLUMN ... CHECK`, which `migrations/0003_receipt_ignored_reductions.sql` relies on.
 - [ ] Confirm the operational effect of the AUD changing: after deleting and recreating the application, requests fail until `ACCESS_AUD` is re-put, and succeed immediately afterwards.
-- [ ] Confirm that a Free-plan account really answers `Error 1027` and a D1 limit error without any charge appearing in Billing, i.e. that the failure mode of §1 is an outage and not an invoice.
+
+Two further behaviours were simply not exercised by that run, so they are neither
+confirmed nor refuted: an organization with strict service token authentication
+off (the `302` case in §3.4), and any request that approaches a Free-plan limit —
+so §1's "a limit is an outage, not an invoice" remains an expectation rather than
+something that run paid for.
 
 ## 9. Rollback
 
@@ -664,7 +894,7 @@ restores service.
 | Wrong policy or a policy change denies clients | Restore the `Service Auth` policy or re-add the token to the include | Requests pass once the policy matches again. |
 | Suspected credential leak | Rotate without grace period, then update every client | Old secret stops working immediately. |
 | Bad migration data | `npx wrangler d1 time-travel restore <DB_NAME> --bookmark <bookmark>` for a bookmark taken before the step | Rows written after the bookmark are lost. |
-| Hostname must stop serving | Delete the Custom Domain or route | With `workers_dev = false` and `preview_urls = false`, the Worker has no reachable hostname. |
+| Hostname must stop serving | Remove the `routes` entry from `<CONFIG_FILE>` and redeploy, or delete the Custom Domain in the dashboard | With `workers_dev = false` and `preview_urls = false`, the Worker has no reachable hostname. |
 | Application must be removed | Delete the application, then re-put `ACCESS_AUD` if a new one is created | The AUD changes; the old AUD is rejected. |
 | CPU gate failed (§6) | Stop serving the hostname first, then remove routing, application and secrets | The free tier cannot carry it; the data stays in D1 until the full teardown below. |
 | Full teardown | Remove routing, then the application, then the secrets, then `npx wrangler d1 delete <DB_NAME>` | Deleting the database destroys all stored usage. |
