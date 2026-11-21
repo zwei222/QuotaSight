@@ -128,6 +128,38 @@ describe('repository hygiene', () => {
     expect(architecture).toContain('401');
   });
 
+  it('describes the v2 breakdown the API now stores and serves', async () => {
+    const readme = await readFile(join(packageRoot, 'README.md'), 'utf8');
+    const flat = readme.replace(/\s+/g, ' ');
+    // The second body shape, its two receipt fields and the read route.
+    expect(flat).toContain('schemaVersion');
+    expect(flat).toContain('changedParts');
+    expect(flat).toContain('ignoredPartReductions');
+    expect(flat).toContain('GET /v1/usage/breakdown');
+    expect(flat).toContain('usage_part');
+    expect(flat).toContain('92 days');
+    expect(flat).toContain('2000');
+    expect(flat).toContain('5000');
+    // The set semantics and the consequence a reader has to know about.
+    expect(flat).toContain('An equal total is not a new explanation');
+    expect(flat).toContain('A changed normalization rule does not repair past days');
+    expect(flat).toContain('attributed ≤ total');
+    // The section that used to declare the breakdown out of scope is gone.
+    expect(readme).not.toContain('Source / model / provider breakdown');
+  });
+
+  it('records in the architecture and security documents what v2 sends', async () => {
+    const repoRootPath = resolve(packageRoot, '..', '..');
+    const security = await readFile(join(repoRootPath, 'docs', 'security.md'), 'utf8');
+    expect(security).toContain('--wire-schema 2');
+    expect(security).toContain('ignoredPartReductions');
+    expect(security).toContain('org/model');
+    const architecture = await readFile(join(repoRootPath, 'docs', 'architecture.md'), 'utf8');
+    expect(architecture).toContain('schemaVersion` 2');
+    expect(architecture).toContain('usage_part');
+    expect(architecture).toContain('/v1/usage/breakdown');
+  });
+
   it('has no real-looking team domain, hex secret or embedded key', async () => {
     const domain = /[A-Za-z0-9-]+\.cloudflareaccess\.com/g;
     const hex = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,64}(?![0-9A-Fa-f])/g;
@@ -406,9 +438,14 @@ describe('deployment runbook', () => {
     expect(doc).toContain('### 8.1 Observed in one real account (2026-11-22)');
     expect(doc).toContain('### 8.2 Still unverified');
     const items = doc.match(/^- \[ \] /gm) ?? [];
-    expect(items).toHaveLength(10);
+    expect(items).toHaveLength(13);
     expect(doc).toContain('cpuTime');
     expect(doc).toContain('[observability]');
+    // The breakdown's own open items: the migration on existing rows, the v2 write
+    // shape and the breakdown read bounds.
+    expect(doc).toContain('`0004` applies to a database that already holds');
+    expect(doc).toContain('Measure the v2 write shape in §6.7');
+    expect(doc).toContain('`GET /v1/usage/breakdown` bounds on remote D1');
     // The two behaviours that moved out of the checklist are still named, as
     // observed facts rather than as work an operator owes.
     const observed = doc.slice(doc.indexOf('### 8.1'), doc.indexOf('### 8.2'));
@@ -416,6 +453,46 @@ describe('deployment runbook', () => {
     expect(observed).toContain('rollback scope');
     expect(observed).toContain('403');
     expect(observed).toContain('401');
+  });
+
+  it('documents the schema and Worker ordering for the breakdown migration', async () => {
+    const flat = await readRunbookFlat();
+    // Step 8 lists every migration and the state they leave behind.
+    expect(flat).toContain('`0001`–`0004`');
+    expect(flat).toContain('four tables');
+    expect(flat).toContain('seven triggers');
+    // The bookmark, the unapplied check, and the order that makes each
+    // intermediate state usable.
+    expect(flat).toContain('Time Travel bookmark');
+    expect(flat).toContain('migrations list');
+    expect(flat).toContain('`0004` is additive');
+    expect(flat).toContain('migration → Worker');
+    expect(flat).toContain('a **v2** send needs **both**');
+    expect(flat).toContain('`500`');
+  });
+
+  it('adds the v2 breakdown to the remote smoke test as work still owed', async () => {
+    const flat = await readRunbookFlat();
+    expect(flat).toContain('### 5.6 The v2 breakdown on remote D1 (not yet observed)');
+    // Every v2 rule that only remote D1 can settle.
+    expect(flat).toContain('`changedParts: 3`');
+    expect(flat).toContain('`ignoredPartReductions: 0`');
+    expect(flat).toContain('the stored set for that day is **replaced**');
+    expect(flat).toContain('the **first** set that reached');
+    expect(flat).toContain('no `usage_part` row');
+    expect(flat).toContain('`usage_part_exceeds_day_total`');
+    expect(flat).toContain('GET /v1/usage/breakdown');
+    expect(flat).toContain('leaves `usage_part` untouched');
+  });
+
+  it('documents the v2 write as a shape the CPU gate has to cover', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('### 6.7 The v2 write: what to measure');
+    expect(doc).toContain('1024 breakdown rows');
+    expect(doc).toContain('30 KiB');
+    expect(doc).toContain('`rows_read`');
+    expect(doc).toContain('`rows_written`');
+    expect(doc).toContain('--parts-budget-bytes');
   });
 
   it('records the first real CPU measurement with its sample sizes and conditions', async () => {

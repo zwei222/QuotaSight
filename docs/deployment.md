@@ -183,7 +183,7 @@ Roles: **account operator** (holds the Cloudflare account), **deployer** (runs
 | 5 | deployer | Own checkout | `npx wrangler d1 create <DB_NAME>` | Command prints a `database_id`. | `npx wrangler d1 delete <DB_NAME>` (destroys data). |
 | 6 | deployer | Own checkout | Create `<CONFIG_FILE>` next to `wrangler.toml` (a copy of it) with `database_name` and `database_id` replaced, `workers_dev = false` and `preview_urls = false` kept, and **no** route yet. Pass it with `-c` on every command. Do not edit `wrangler.toml` itself. Exclude the file with `.git/info/exclude`. | `npx wrangler deploy -c <CONFIG_FILE> --dry-run` reads the account's own `database_id`; `npm test` still passes, because `test/config.test.ts` pins `wrangler.toml` to the local-only settings. `git status` does not list the file, and neither does `git ls-files -co --exclude-standard` — the file list the hygiene test scans. | Delete the file, or move it back out of the checkout. |
 | 7 | deployer | Own checkout | `npx wrangler d1 migrations apply <DB_NAME> --local -c <CONFIG_FILE>`, then `npm test`. | All tests pass. Local D1 is not remote D1; this is not the remote proof. | Delete the local `.wrangler` state. |
-| 8 | deployer | Own checkout | `npx wrangler d1 migrations list <DB_NAME> --remote -c <CONFIG_FILE>`, then `npx wrangler d1 migrations apply <DB_NAME> --remote -c <CONFIG_FILE>`. | `d1_migrations` lists `0001`–`0003`; `sqlite_master` has the three tables, the two indexes and the four triggers (§8.1). | Restore a Time Travel bookmark, or add a corrective migration. |
+| 8 | deployer | Own checkout | Record a Time Travel bookmark first (`npx wrangler d1 time-travel info <DB_NAME>`, or Database → Time Travel in the dashboard), then `npx wrangler d1 migrations list <DB_NAME> --remote -c <CONFIG_FILE>` to see which of `0001`–`0004` are still unapplied, then `npx wrangler d1 migrations apply <DB_NAME> --remote -c <CONFIG_FILE>`. `0004` is the migration that adds a table and its triggers, so the bookmark is taken **before** it is applied. | `d1_migrations` lists `0001`–`0004`; `sqlite_master` has the four tables (plus `d1_migrations`), the two indexes and the seven triggers (§8.1 records what an earlier run saw with `0001`–`0003`). | `npx wrangler d1 time-travel restore <DB_NAME> --bookmark <bookmark>` (rows written after it are lost), or add a corrective migration. |
 | 9 | deployer | Own checkout | `npx wrangler deploy -c <CONFIG_FILE>` **before** the Custom Domain exists. | The output says `No targets deployed` — no route, no `*.workers.dev` hostname — so the Worker exists but nothing outside can reach it yet. | `npx wrangler delete -c <CONFIG_FILE>`. |
 | 10 | deployer | Own checkout | Now, with the Worker in place, `npx wrangler secret put ACCESS_TEAM_DOMAIN -c <CONFIG_FILE>`, then `ACCESS_AUD` and `ACCESS_PRINCIPALS` the same way. | `npx wrangler secret list -c <CONFIG_FILE>` shows the three names; values never appear in output. | `npx wrangler secret delete <NAME> -c <CONFIG_FILE>`. |
 | 11 | deployer | Own checkout | Add `routes = [{ pattern = "<HOST>", custom_domain = true }]` to `<CONFIG_FILE>` and redeploy with `-c`. (The dashboard equivalent is Worker → Settings → Domains & Routes.) | DNS record and certificate exist; `<HOST>` resolves; the response carries Access's headers, not the Worker's. | Remove the route from `<CONFIG_FILE>` and redeploy, or delete the Custom Domain in the dashboard. |
@@ -215,6 +215,28 @@ writes anything — a prompt in the middle of a credential-handling step is the
 wrong place to discover a missing deploy. Step 1 exists because it makes the
 first two deploys harmless: a Worker with no hostname and no `workers.dev`
 subdomain serves nobody, so an incomplete configuration cannot be reached.
+
+**The schema and the Worker are a second ordering question.** `0004` is additive:
+it creates `usage_part`, its triggers and a receipt column, and it changes
+nothing that `usage_day` or the v1 write path touches. So:
+
+- a v1 deployment runs unchanged on a database **with or without** `0004`, which
+  means the two moves do not have to be atomic and a Worker-first deploy is safe
+  for v1 traffic;
+- **the recommended order is migration → Worker** (step 8 before step 9), because
+  it is the order in which every intermediate state is one a client can use:
+  `0004` on a v1 database is invisible, while a v2-capable Worker in front of a
+  database without `0004` would answer a `schemaVersion: 2` body with `500` (a
+  missing table is a server error, not a 4xx);
+- a **v2** send needs **both**: the Worker that accepts `schemaVersion: 2` and
+  `0004` for the table. Do not turn `--wire-schema 2` on for any collector before
+  both are in place, and re-run the v2 checks in §5.6 afterwards.
+
+`0004` is also the migration that can be judged by existing rows: its triggers
+fire on new writes only, and its `CHECK`s are evaluated per inserted row, so an
+existing database with `usage_day` rows is upgraded without a backfill. That is
+why step 8 takes a Time Travel bookmark first — if the apply fails halfway, the
+bookmark is the only cheap way back.
 
 ### 3.2 Policies: `Service Auth` only, never `Bypass`
 
@@ -438,7 +460,9 @@ deployment **re-runs the same four checks** before the endpoint is handed to a
 user: the result is a proof to reproduce, not a permission to skip this section.
 
 The test uses a synthetic collector and synthetic daily values only. Never send
-real usage data to prove a deployment.
+real usage data to prove a deployment. §5.6 lists the **v2 breakdown** checks as a
+separate, additional set: they exercise the table the breakdown adds, and they
+have not been run in any real account yet.
 
 ### 5.1 Prepare the synthetic collector
 
@@ -615,7 +639,75 @@ you created one only for this test, and re-put `ACCESS_PRINCIPALS` without the
 smoke principal — with the write Client ID moved to the real collector (§5.3).
 Delete the snapshot bodies and header files from the protected directory. A
 leftover synthetic day would be indistinguishable from real data in the desktop
-app, and a leftover principal is a working credential.
+app, and a leftover principal is a working credential. Add
+`DELETE FROM usage_part WHERE collector_id = 'smoke-2026-01-04'` to the same
+cleanup when §5.6 was run: `usage_part` cascades from `collectors`, but deleting
+the rows first keeps the counts above honest and does not depend on the cascade.
+
+### 5.6 The v2 breakdown on remote D1 (not yet observed)
+
+The v1 checks above prove `RETURNING`, the rollback scope and the receipt shape.
+The breakdown adds statements of its own — a `DELETE` over `usage_part`, one
+`INSERT … SELECT` over `json_each`, and a trigger that reads `usage_day` per row —
+so a new deployment proves them against **remote D1** as well, with the same
+throwaway collector as §5.1 (generation `1`, owner `smoke-owner`). **None of this
+has been observed in a real account yet**; it is written down so that it is
+checked rather than assumed.
+
+A v2 body for the three days of §5.4, using the same collector. Every day's parts
+add up to its `totalTokens`, `keys` is ascending and every key is referenced:
+
+```bash
+cat > "$HOME/.config/quotasight-deploy/snapshot-v2-1.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "adapterVersion": "smoke-1",
+  "generation": 1,
+  "collectedAt": "2026-01-04T01:00:00Z",
+  "bucketTimeZone": "Asia/Tokyo",
+  "coveredRange": { "from": "2026-01-01", "to": "2026-01-03" },
+  "keys": [
+    ["codex", "openai", "gpt-5.1"],
+    ["gemini", "anthropic", "claude-sonnet-4-5"]
+  ],
+  "days": [
+    { "date": "2026-01-01", "totalTokens": 1000, "parts": [[0, 700, 200, 50, 0, 50], [1, 50, 0, 0, 0, 0]] },
+    { "date": "2026-01-02", "totalTokens": 2000, "parts": [[0, 1200, 700, 100, 0, 0]] },
+    { "date": "2026-01-03", "totalTokens": 0 }
+  ]
+}
+JSON
+```
+
+Send it with revision `900010`, then read `usage_part` and the breakdown route:
+
+```bash
+npx wrangler d1 execute <DB_NAME> --remote -c <CONFIG_FILE> --command \
+  "SELECT bucket_date, client, provider, model, total_tokens FROM usage_part WHERE collector_id = 'smoke-2026-01-04' ORDER BY bucket_date, client"
+```
+
+```bash
+curl -sS -H @"$HOME/.config/quotasight-deploy/headers" \
+  "https://<HOST>/v1/usage/breakdown?from=2026-01-01&to=2026-01-04"
+```
+
+| # | Body | Expected |
+| --- | --- | --- |
+| V1 | The body above (revision `900010`) | `200 applied`, `changedParts: 3`, `ignoredPartReductions: 0`; three `usage_part` rows; the GET returns `parts` summed per key plus `coverage` where `attributedTokens` equals the day total for `2026-01-01` and `2026-01-02` and is `0` for `2026-01-03` |
+| V2 | `2026-01-02` at `2500` with a **different** breakdown (`[[0, 2500, 0, 0, 0, 0]]`) | `applied`, the day listed in `changedDays`, `changedParts: 1`, and the stored set for that day is **replaced** — the old `gemini`/`codex` rows of `2026-01-02` are gone, not merged |
+| V3 | `2026-01-02` still `2500`, breakdown total `2000` | `applied`, `changedDays: []`, `changedParts: 0`, `ignoredPartReductions: 1`; the stored rows still add up to `2500` |
+| V4 | `2026-01-02` still `2500`, a *different* breakdown that also totals `2500` | `applied`, `changedParts: 0`, `ignoredPartReductions: 1`; the **first** set that reached `2500` is still stored (an equal total is not a new explanation) |
+| V5 | Revision `900000` (stale), carrying a new day `2026-01-06: 9999` **with** a part | `409 stale_revision`; no `usage_day` row for `2026-01-06` **and** no `usage_part` row for it — the rollback covers the new table too, which the v1 check cannot show |
+| V6 | A v1 body that raises `2026-01-01` to `1200`, then a v2 body for the same day with a `1200` breakdown | The v1 write is `applied` and leaves `usage_part` untouched (`usage_day` moves, the breakdown does not); the v2 write then replaces that day's set, because a day's set is compared with the sum of its stored rows (`0` here), not with the day total |
+| V7 | A direct SQL insert of a breakdown row that would push a day past its total (a `usage_part` insert with `total_tokens` above the day's remaining headroom) | The statement is refused with `usage_part_exceeds_day_total`; this is the only way to reach the guard, because the API refuses such a body at validation |
+
+Two things this section cannot check, and both belong in the §6 measurement
+instead: the CPU cost of the four-statement batch, and the rows it writes. Record
+`rows_written` and `rows_read` for V1 and V2 from the D1 metrics: V1 writes one
+day row per day, one row per part plus one receipt, and reads one `usage_day` row
+and the day's existing `usage_part` rows per inserted part (the trigger); V2
+writes one delete, the new set and one receipt. If a full v2 batch matters for the
+free allowance, that is what §6.7 measures.
 
 ## 6. CPU measurement gate
 
@@ -771,6 +863,7 @@ of these repeatedly and watch the counter:
 | Case | Shape | Why it is the worst case |
 | --- | --- | --- |
 | Largest write | 32 KiB body, `coveredRange` of 62 days, 62 day rows → 63 statements in one `batch()` | Maximum `JSON.parse`, maximum statement assembly, maximum `batch()` |
+| Largest v2 write | A 30 KiB breakdown budget over 62 days, 1024 part rows, four statements in one `batch()` | Maximum `json_each` decomposition and maximum per-row trigger work; the statement count is fixed, so the rows are the cost |
 | JWKS cache miss | A `PUT` on a fresh isolate or after the Access keys rotate | Adds a key-set fetch and the parsing of the key set to an otherwise warm request |
 | Largest read | 366-day window, 5000 rows, 64 collectors | Maximum `JSON.stringify` and aggregation |
 | Cold start | First request after the Worker has been idle | Module initialisation is on the same invocation |
@@ -829,6 +922,40 @@ not a side effect of a runbook edit. If an operator does enable it:
 - keep in mind the Free allowance: 200,000 events per day, and Workers Logs
   keeps 3 days. Exceeding the daily event allowance is a logging outage for the
   rest of that UTC day, so do not leave verbose logging on permanently.
+
+### 6.7 The v2 write: what to measure
+
+The gate in §6.1 is read on whatever shapes the deployment actually serves. A
+deployment that turns on the breakdown serves a third shape — one v2 `PUT` — and
+its cost is not the same as either v1 shape: the statement count is fixed at
+four (day upsert, `DELETE` of the replaced days, one `INSERT … SELECT` over
+`json_each`, receipt), but the rows and the per-row work are not. **Nothing here
+has been measured in a real account.**
+
+- **Shape to send:** one v2 `PUT` with 62 days and 1024 breakdown rows, built to
+  sit at the collector's default 30 KiB breakdown budget
+  (`--parts-budget-bytes`, default `30720`), each day's rows adding up to its
+  total. That is the largest body the collector emits by default.
+- **Read:** `CPU Time per execution` (P50 and P99) and the
+  `Exceeded CPU Time Limits` counter over 24 hours, exactly as §6.1, **plus** D1
+  `rows_read` and `rows_written` for the same window (Database → Metrics). The
+  v1 numbers in §6.0/§8.1 say nothing about this shape.
+- **Criteria:** the same gate — zero Error 1102 over 24 hours and a CPU-time P99
+  below 8 ms — applied to the v2 shape. A deployment whose v1 shape passes and
+  whose v2 shape is not measured has not met §6.1 for a v2 collector.
+- **What the rows cost:** per accepted day, one `usage_day` upsert; per replaced
+  day, a `DELETE` over that day's rows, one inserted row per part, and per
+  inserted part one `usage_day` read plus one read over the day's existing
+  `usage_part` rows (the day-ceiling trigger). Every one of those is a primary-key
+  seek rather than a scan, but a 1024-row batch is 1024 such seeks per statement,
+  which is why `rows_read` is the number to look at when a v2 write feels
+  expensive.
+- **If it does not fit:** lower `--parts-budget-bytes` (down to `4096`). Fewer
+  days then carry a breakdown — the oldest go first, the day totals never do, and
+  the collector prints `parts_omitted: <n>` — so CPU is traded for breakdown
+  coverage, which is the intended trade. Do not raise `MAX_PARTS_PER_SNAPSHOT`,
+  the body bound or `--parts-budget-bytes` above the API ceiling to make a failing
+  shape pass.
 
 ## 7. Rotation drill
 
@@ -922,7 +1049,10 @@ the read path at the 5000-row bound was not measured at all in this run.
 **Migrations:** `0001`–`0003` applied remotely without error. The schema then
 held three tables plus `d1_migrations`, two indexes and four triggers. That
 describes this schema; it is not a proof that each migration file runs in one
-transaction, and it says nothing about a migration that fails halfway.
+transaction, and it says nothing about a migration that fails halfway. `0004` —
+the breakdown table, its three triggers and the receipt column — was **not** part
+of that run, so the fourth table, the seven-trigger state of step 8 and every v2
+write are unobserved in a real account (§8.2).
 
 **What that run found missing in the runbook:** the collector row. Nothing creates
 a collector, so a correctly deployed API accepted nothing until the row in §5.2
@@ -937,6 +1067,9 @@ existed. That step and the principal swap in §5.3 were added afterwards.
 - [ ] Confirm that Access logs on the Free plan are really kept only 24 hours and that no export exists, i.e. that §3.7's window is the real one.
 - [ ] Record the service token duration the dashboard offers by default: that dialog was observed to offer up to `10 years`, but the default itself is still unconfirmed, and the API example uses `8760h`.
 - [ ] Confirm whether `wrangler d1 migrations apply` runs each migration file in one transaction, by observing a deliberately failing statement inside a copy of a migration file.
+- [ ] Confirm that `0004` applies to a database that already holds `usage_day` rows without failing, and that its triggers judge only new rows: the `CHECK`s are evaluated per inserted row, and `usage_part_exceeds_day_total` must not refuse the write path's own re-insert after a day's rows are deleted. This is the one migration whose failure mode is "an existing row stops being writable".
+- [ ] Measure the v2 write shape in §6.7 — 62 days, 1024 breakdown rows, the collector's 30 KiB budget — for CPU and for D1 `rows_read`/`rows_written`, and decide the §6.1 gate on that shape as well as on v1. Nothing about the v2 write has been measured in a real account.
+- [ ] Confirm the `GET /v1/usage/breakdown` bounds on remote D1: a 92-day window answers, a longer one is `400 invalid_query`, and 2000 parts / 5000 coverage rows are either served or refused with `413 result_too_large` — never truncated. Record its `rows_read` with the other D1 metrics.
 - [ ] Confirm whether Access forwards the `CF-Access-Client-Id` and `CF-Access-Client-Secret` request headers to the Worker, to judge whether they can appear in origin-side logs.
 - [ ] Confirm that remote D1's SQLite version applies the existing-row check to `ALTER TABLE ... ADD COLUMN ... CHECK`, which `migrations/0003_receipt_ignored_reductions.sql` relies on.
 - [ ] Confirm the operational effect of the AUD changing: after deleting and recreating the application, requests fail until `ACCESS_AUD` is re-put, and succeed immediately afterwards.

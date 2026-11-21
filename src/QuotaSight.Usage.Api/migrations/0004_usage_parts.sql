@@ -18,19 +18,20 @@
 --   * total_tokens is exactly the sum of the five components (CHECK)
 --   * every component and the total is a non-negative safe integer (CHECK)
 --   * identifiers are bounded to the wire contract's own limits (CHECK)
+--   * a day's rows never add up to more than that day's `usage_day.total_tokens`
+--     (trigger; see usage_part_exceeds_day_total)
 --   * a stored row is never edited to a lower total in place (trigger); the write
 --     path replaces a day's whole set instead of updating one row of it
 --
--- What is not: the per-day rule itself. A day's breakdown is one *set*: the write
--- path deletes the stored set of a day and re-inserts it when that day's total
--- grows, and leaves the day untouched when it does not (an equal total is not a
--- new explanation). Per-row maxima would let two snapshots add their
+-- What is not: when a day's set is *replaced*. A day's breakdown is one *set*: the
+-- write path deletes the stored set of a day and re-inserts it when that day's
+-- total grows, and leaves the day untouched when it does not (an equal total is
+-- not a new explanation). Per-row maxima would let two snapshots add their
 -- explanations together, so the sum of a day's rows is a property of the set, not
 -- of a column. A table cannot express "the sum of a group may only be replaced as
--- a whole", so that rule lives in `store.ts` and is covered by its tests; the
--- consequence the read path relies on — the rows of a day never add up to more
--- than that day's accepted total — follows from the set being accepted only up to
--- the day total, which itself only ever moves up.
+-- a whole", so that rule lives in `store.ts` and is covered by its tests. What the
+-- table can express — the sum of a day's rows staying at or below the day total —
+-- is the trigger above, which is what the read path's attribution relies on.
 --
 -- The 6-key primary key is also the only index the table needs: every read
 -- filters by collector, generation and a date range, and every write seeks by the
@@ -79,6 +80,40 @@ WHEN NOT EXISTS (
 )
 BEGIN
   SELECT RAISE(ABORT, 'collector_generation_inactive');
+END;
+
+-- A day's breakdown may never claim more than the day itself. The write path
+-- already deletes a day before re-inserting it, so this only refuses what the
+-- path would not produce: a row (or a handful of rows) whose total, added to what
+-- the same day already holds, goes past `usage_day.total_tokens` — the number the
+-- day itself is accounted against. Without the guard a direct statement could
+-- store a breakdown that "explains" more usage than the day reports, which the
+-- read path's attribution (`attributed <= total`) would then contradict.
+--
+-- It compares only against a day that has a total: `usage_day` is the authority,
+-- and a day nothing has written to has none to compare with. The write path puts
+-- the day upsert at the head of its batch, so in production the row is always
+-- there. Cost is a primary-key seek into `usage_day` plus a primary-key range
+-- over the day's rows in `usage_part` — the same two seeks the receipt already
+-- does — not a scan.
+CREATE TRIGGER usage_part_exceeds_day_total
+BEFORE INSERT ON usage_part
+WHEN EXISTS (
+  SELECT 1 FROM usage_day d
+  WHERE d.collector_id = NEW.collector_id
+    AND d.generation = NEW.generation
+    AND d.bucket_date = NEW.bucket_date
+    AND NEW.total_tokens + COALESCE(
+      (
+        SELECT SUM(p.total_tokens)
+        FROM usage_part p
+        WHERE p.collector_id = NEW.collector_id
+          AND p.generation = NEW.generation
+          AND p.bucket_date = NEW.bucket_date
+      ), 0) > d.total_tokens
+)
+BEGIN
+  SELECT RAISE(ABORT, 'usage_part_exceeds_day_total');
 END;
 
 -- A row is replaced, never edited downwards: the write path deletes a day's rows

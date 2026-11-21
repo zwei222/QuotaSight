@@ -21,6 +21,7 @@ import {
   breakdownCoverageSql,
   breakdownPartsParams,
   breakdownPartsSql,
+  INSERT_PARTS_SQL,
   loadOwnedCollector,
 } from '../src/store';
 import {
@@ -31,6 +32,7 @@ import {
   resetData,
   scalar,
   seedParts,
+  seedUsage,
   snapshotBody,
   snapshotBodyV2,
   type Harness,
@@ -170,6 +172,117 @@ describe('usage_part schema guards', () => {
   });
 });
 
+/**
+ * The day ceiling is a schema guard, not a write-path convention: a direct
+ * statement that bypasses `store.ts` cannot make a day's breakdown add up to
+ * more than the day total it is attributed against.
+ */
+describe('usage_part day ceiling', () => {
+  async function plan(sql: string, params: unknown[]): Promise<string> {
+    const result = await h.db
+      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+      .bind(...params)
+      .all<{ detail: string }>();
+    return (result.results ?? []).map((row) => row.detail).join(' | ');
+  }
+
+  it('refuses a row that would push the day above its accepted total', async () => {
+    await seedUsage(h.db, [{ collectorId: FIXTURE.collectorA1, date: '2026-11-18', totalTokens: 100 }]);
+    await seedParts(h.db, [
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'codex', model: 'm', input: 60, output: 0 },
+    ]);
+
+    // 60 are already attributed, so 41 would make the day explain 101 of 100.
+    await expect(
+      seedParts(h.db, [
+        { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'gemini', model: 'm', input: 41, output: 0 },
+      ]),
+    ).rejects.toThrow(/usage_part_exceeds_day_total/);
+    expect(await scalar(h.db, 'SELECT SUM(total_tokens) AS value FROM usage_part')).toBe(60);
+
+    // Equality is the boundary the rule allows: attributed <= total.
+    await seedParts(h.db, [
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'gemini', model: 'm', input: 40, output: 0 },
+    ]);
+    expect(await scalar(h.db, 'SELECT SUM(total_tokens) AS value FROM usage_part')).toBe(100);
+  });
+
+  it('compares against the total of its own collector, generation and day', async () => {
+    await seedUsage(h.db, [
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-18', totalTokens: 10 },
+      { collectorId: FIXTURE.collectorA2, date: '2026-11-18', totalTokens: 1000 },
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-19', totalTokens: 1000 },
+    ]);
+
+    // A2's larger total on the same date and the same collector's larger total
+    // on another date are both irrelevant to A1's 2026-11-18.
+    await expect(
+      seedParts(h.db, [
+        { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'codex', model: 'm', input: 11, output: 0 },
+      ]),
+    ).rejects.toThrow(/usage_part_exceeds_day_total/);
+    await seedParts(h.db, [
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'codex', model: 'm', input: 10, output: 0 },
+    ]);
+    expect(await scalar(h.db, 'SELECT SUM(total_tokens) AS value FROM usage_part')).toBe(10);
+  });
+
+  it('checks only a day that has an accepted total', async () => {
+    // The guard compares against `usage_day`, and a day nothing has been written
+    // to has no total to compare with — the table cannot invent one. The write
+    // path always writes the day first (the day upsert leads the batch), so this
+    // only states what the schema can know on its own.
+    await seedParts(h.db, [
+      { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'codex', model: 'm', input: 500, output: 0 },
+    ]);
+    expect(await scalar(h.db, 'SELECT SUM(total_tokens) AS value FROM usage_part')).toBe(500);
+  });
+
+  it('resolves the day and the stored sum by primary key, not by a scan', async () => {
+    const details = await plan(
+      `SELECT SUM(p.total_tokens) FROM usage_part AS p
+        WHERE p.collector_id = ? AND p.generation = ? AND p.bucket_date = ?`,
+      [FIXTURE.collectorA1, 1, '2026-11-18'],
+    );
+    expect(details).toContain('SEARCH p USING PRIMARY KEY');
+    expect(details).not.toContain('SCAN p');
+    expect(details).not.toContain('SCAN usage_part');
+
+    const dayDetails = await plan(
+      'SELECT d.total_tokens FROM usage_day AS d WHERE d.collector_id = ? AND d.generation = ? AND d.bucket_date = ?',
+      [FIXTURE.collectorA1, 1, '2026-11-18'],
+    );
+    expect(dayDetails).toContain('SEARCH d USING PRIMARY KEY');
+    expect(dayDetails).not.toContain('SCAN d');
+  });
+});
+
+/**
+ * The insert of a replaced day no longer carries an `ON CONFLICT ... DO UPDATE`
+ * clause: that branch could not be reached by the write path, and reaching it via
+ * a duplicate key would have silently kept the larger row. A duplicate key now
+ * aborts the statement, so the whole batch (and its receipt) rolls back.
+ */
+describe('usage_part duplicate key', () => {
+  it('aborts instead of keeping the larger row', async () => {
+    await seedUsage(h.db, [{ collectorId: FIXTURE.collectorA1, date: '2026-11-18', totalTokens: 30 }]);
+    const parts = JSON.stringify([
+      { d: '2026-11-18', c: 'codex', p: '', m: 'm', i: 10, o: 0, cr: 0, cw: 0, r: 0, t: 10, dt: 30 },
+      { d: '2026-11-18', c: 'codex', p: '', m: 'm', i: 20, o: 0, cr: 0, cw: 0, r: 0, t: 20, dt: 30 },
+    ]);
+
+    await expect(
+      h.db
+        .prepare(INSERT_PARTS_SQL)
+        .bind(FIXTURE.collectorA1, 1, '2026-11-20T00:00:00Z', parts, FIXTURE.collectorA1, 1)
+        .run(),
+    ).rejects.toThrow(/constraint failed/);
+
+    // Nothing of the aborted statement survives, not even its first row.
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_part')).toBe(0);
+  });
+});
+
 describe('applySnapshotV2 write ordering', () => {
   async function prepare(body: unknown) {
     const snapshot = parseSnapshotBody(body);
@@ -271,6 +384,53 @@ describe('applySnapshotV2 write ordering', () => {
       'status',
     ]);
     expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_part')).toBe(0);
+  });
+
+  it('answers a guard abort as a server error and commits nothing', async () => {
+    // A body the contract rejects (`sum(parts) != totalTokens`) is handed to the
+    // storage layer directly, so the schema trigger is what refuses it. The point
+    // of the test is the classification: an abort the write path cannot explain
+    // is a server error, not a 409 and not a silent partial write.
+    const snapshot = {
+      schemaVersion: 2,
+      adapterVersion: 'smoke-1',
+      generation: 1,
+      collectedAt: '2026-11-20T03:00:00Z',
+      bucketTimeZone: 'Asia/Tokyo',
+      coveredRange: { from: '2026-11-18', to: '2026-11-18' },
+      keys: [{ client: 'codex', provider: '', model: 'm' }],
+      days: [
+        {
+          date: '2026-11-18',
+          totalTokens: 50,
+          parts: [{ keyIndex: 0, input: 60, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }],
+        },
+      ],
+    };
+    const digest = 'a'.repeat(64);
+    const collector = await loadOwnedCollector(h.db, FIXTURE.collectorA1, FIXTURE.ownerA);
+    if (collector === null) throw new Error('fixture collector missing');
+
+    const error = await applySnapshotV2(
+      h.db,
+      collector,
+      snapshot as never,
+      14,
+      digest,
+      '2026-11-20T03:00:00Z',
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 500,
+      code: 'internal_error',
+      details: { reason: 'write_failed' },
+    });
+
+    // The whole batch rolled back: no day, no part, no receipt.
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_day')).toBe(0);
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_part')).toBe(0);
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(0);
   });
 });
 
