@@ -282,16 +282,15 @@ public sealed class WorkflowContractTests
         Assert.True(File.Exists(TestsDirectoryPropsPath), "tests/Directory.Build.props is missing.");
 
         var props = File.ReadAllText(TestsDirectoryPropsPath);
-        var selfContained = Assert.Single(
-            XDocument.Parse(props).Descendants("WindowsAppSDKSelfContained"));
+        var document = XDocument.Parse(props);
+        var selfContained = Assert.Single(document.Descendants("WindowsAppSDKSelfContained"));
         Assert.Equal("true", selfContained.Value);
         Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)selfContained.Parent?.Attribute("Condition"));
 
         // A self-contained Windows App SDK project must name its native architecture, which Base
         // reads from the runtime identifier under AnyCPU; without it the Windows build fails with
         // "WindowsAppSDKSelfContained requires a supported Windows architecture".
-        var runtimeIdentifier = Assert.Single(
-            XDocument.Parse(props).Descendants("RuntimeIdentifier"));
+        var runtimeIdentifier = Assert.Single(document.Descendants("RuntimeIdentifier"));
         Assert.Equal("win-x64", runtimeIdentifier.Value);
         Assert.Same(selfContained.Parent, runtimeIdentifier.Parent);
 
