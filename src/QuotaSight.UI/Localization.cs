@@ -1,3 +1,4 @@
+using System.Globalization;
 using QuotaSight.Application;
 using QuotaSight.Core;
 
@@ -18,6 +19,38 @@ public sealed class UiCopy
     public string Settings => IsJapanese ? "設定" : "Settings";
     public string Refresh => IsJapanese ? "更新" : "Refresh";
     public string QuotaRefreshing => IsJapanese ? "利用枠データを更新しています…" : "Refreshing quota data…";
+    public string ResetPending => IsJapanese ? "リセット後の最新値は未確認" : "Post-reset value not yet confirmed";
+    public string LastObserved(string value) => IsJapanese ? $"最後に確認された値: {value}" : $"Last observed: {value}";
+    public string LastObservedBeforeReset(string value) => IsJapanese ? $"リセット前の最後に確認された値: {value}" : $"Last observed before reset: {value}";
+    public string QuotaExhausted => IsJapanese ? "上限に到達・残量 0%" : "Exhausted · 0% remaining";
+    public string FactRemaining(decimal percent) => IsJapanese ? $"{percent:0.#}% 残り" : $"{percent:0.#}% remaining";
+    public string PillNormal => IsJapanese ? "通常" : "Normal";
+    public string PillAttention => IsJapanese ? "注意" : "Caution";
+    public string PillDanger => IsJapanese ? "危険" : "Danger";
+    public string PillExhausted => IsJapanese ? "上限到達" : "Limit reached";
+    public string PillStale => IsJapanese ? "古い情報" : "Stale";
+    public string PillUnknown => IsJapanese ? "不明" : "Unknown";
+    public string PillOver(decimal by) => IsJapanese ? $"{by:0.#}%超過" : $"Over {by:0.#}%";
+    public string PillResetPending => IsJapanese ? "リセット待ち" : "Reset pending";
+    public string ConnectedAccounts => IsJapanese ? "接続済みアカウント" : "Connected accounts";
+    public string SummaryAccounts(int count) => IsJapanese ? $"{count}アカウント" : $"{count} accounts";
+    public string SummaryReview(int count) => IsJapanese ? $"{count}件 要確認" : $"{count} need review";
+    public string CreditsPeriod => IsJapanese ? "クレジット" : "Credits";
+    public string CopilotCenterPercent(decimal? percent) => percent is null ? CompactUnknownValue : percent.Value.ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    public string CompactQuotaRemaining(decimal percent) => $"{percent:0.#}%";
+    public string CompactUnknownValue => "—";
+    public string CompactBadgeStale => IsJapanese ? "古い" : "Stale";
+    public string CompactBadgeUnknown => IsJapanese ? "不明" : "Unknown";
+    public string CompactBadgeResetPending => IsJapanese ? "未確認" : "Pending";
+    public string CompactBadgeOver => IsJapanese ? "上限超過" : "Over";
+    public string CompactExhausted => IsJapanese ? "上限到達" : "Exhausted";
+    public string CompactResetUnavailable => IsJapanese ? "リセット時刻不明" : "Reset time unknown";
+    public string CompactResetPassed => IsJapanese ? "リセット済み" : "Reset passed";
+    public string CompactResetDays(int days) => IsJapanese ? $"あと{days}日" : $"in {days}d";
+    public string CompactResetHours(int hours, int minutes) => IsJapanese ? $"あと{hours}時間" : minutes > 0 ? $"in {hours}h {minutes}m" : $"in {hours}h";
+    public string CompactResetMinutes(int minutes) => IsJapanese ? $"あと{minutes}分" : $"in {minutes}m";
+    public string CopilotUsageVsReference(decimal percent) => IsJapanese ? $"参考枠の{percent:0.#}%" : $"{percent:0.#}% of reference";
+    public string AdditionalRingWindows(int count) => IsJapanese ? $"+{count}件はリング外に表示" : $"+{count} more windows outside rings";
     public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
     public string Subtitle => IsJapanese ? "次回のリセットまでの利用状況を確認できます。" : "A calm view of what is left before your next reset.";
     public string EmptyTitle => IsJapanese ? "利用枠データがありません" : "No quota data yet";
@@ -55,10 +88,11 @@ public sealed class UiCopy
         ? IsJapanese ? $"参考枠に対する使用率 {value:0.#}%" : $"Usage vs manual reference: {value:0.#}%"
         : CopilotUsagePercentUnavailable;
     public string CopilotUsagePercentUnavailable => IsJapanese ? "参考枠に対する使用率を表示できません" : "Usage vs manual reference unavailable";
+    public string CopilotRateDisclaimer => IsJapanese ? "参考値・残量ではありません" : "Reference only · not remaining";
     public string CopilotReferencePercentDisplay(decimal? percent) => percent is { } value ? $"{value:0.#}%" : IsJapanese ? "—" : "Unavailable";
     public string CopilotManualReferenceBadge => IsJapanese ? "手動参考枠" : "MANUAL REFERENCE";
     public string CopilotReferenceShortCaption => IsJapanese ? "参考枠に対する使用率" : "of manual reference";
-    public string CopilotReferenceDisclaimer => IsJapanese ? "個人の残高・契約上限ではありません。" : "Not a personal balance or plan limit.";
+    public string CopilotReferenceDisclaimer => IsJapanese ? "参考値・残量ではありません。個人の残高・契約上限ではありません。" : "Reference only · not remaining. Not a personal balance or plan limit.";
     public string CopilotReferenceLabel => IsJapanese ? "Copilot手動参考枠（クレジット）" : "Copilot manual reference credits";
     public string CopilotReferenceHint => IsJapanese ? "比較用の設定値です。個人の残高・契約上限ではありません。空欄で解除できます。" : "A comparison preference only—not a personal balance or plan limit. Leave blank to clear.";
     public string CopilotReferenceSave => IsJapanese ? "保存" : "Save";

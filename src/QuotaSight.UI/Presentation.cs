@@ -44,7 +44,93 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public QuotaWindowKind WindowKind { get; init; }
     public UsageBand Band { get; init; }
     public bool IsQuantityOnly { get; init; }
-    public bool IsGaugeVisible => !IsQuantityOnly && CopilotNoDataPeriod is null;
+    public bool IsResetPending { get; init; }
+    public string ResetPendingText { get; init; } = string.Empty;
+    public string CompactValueText { get; init; } = string.Empty;
+    public string CompactResetText { get; init; } = string.Empty;
+    public string CompactPrimaryText => $"{WindowName} {CompactValueText}".TrimEnd();
+    public string CompactTilePrimaryText => CompactPrimaryText;
+    public string CompactTileResetText
+    {
+        get
+        {
+            if (IsQuantityOnly) return string.Empty;
+            if (ResetAt is null) return $"· {new UiCopy(CurrentLanguage).CompactUnknownValue}";
+            return CompactResetText.Length == 0 ? string.Empty : $"· {CompactResetText}";
+        }
+    }
+    public bool IsCompactResetVisible => IsCompactTileVisible && !HasCompactStateBadge && CompactTileResetText.Length > 0;
+    public string CompactTileText => CompactTileResetText.Length == 0 ? CompactTilePrimaryText : $"{CompactTilePrimaryText} {CompactTileResetText}";
+    public string FactValueText
+    {
+        get
+        {
+            var copy = new UiCopy(CurrentLanguage);
+            if (IsQuantityOnly) return QuantityGrossText;
+            if (CopilotNoDataPeriod is not null) return WindowName;
+            if (UsedPercent is null) return copy.CompactUnknownValue;
+            if (Snapshot?.Provider == ProviderKind.Copilot) return copy.CopilotUsageVsReference(UsedPercent.Value);
+            return copy.FactRemaining(Math.Max(0m, 100m - UsedPercent.Value));
+        }
+    }
+    public string FactResetText
+    {
+        get
+        {
+            var copy = new UiCopy(CurrentLanguage);
+            if (IsResetPending) return string.Empty; // the state pill carries "reset pending"; mock keeps the pill word only
+            if (ResetAt is null) return copy.CompactUnknownValue;
+            return CompactResetText;
+        }
+    }
+    public string PillText
+    {
+        get
+        {
+            if (IsQuantityOnly) return string.Empty;
+            var copy = new UiCopy(CurrentLanguage);
+            if (IsResetPending) return copy.PillResetPending;
+            if (UsedPercent is null) return copy.PillUnknown;
+            if (UsedPercent > 100m) return copy.PillOver(UsedPercent.Value - 100m);
+            if (UsedPercent == 100m) return copy.PillExhausted;
+            if (IsStale) return copy.PillStale;
+            return Band switch { UsageBand.Danger => copy.PillDanger, UsageBand.Attention => copy.PillAttention, _ => copy.PillNormal };
+        }
+    }
+    public bool HasPill => PillText.Length > 0;
+    public bool IsFactVisible => IsPercentVisible || IsQuantityVisible;
+    public string QuantityNoteText => IsQuantityOnly ? new UiCopy(CurrentLanguage).CopilotRateDisclaimer : string.Empty;
+    public string HeaderFreshnessText { get; init; } = string.Empty;
+    public bool IsStackedFactVisible => IsPercentVisible && !IsCompactFactLine;
+    public bool IsInlineFactVisible => IsPercentVisible && IsCompactFactLine;
+    public bool IsCompactFactLine { get; init; }
+    public bool IsPillOver => !IsStale && !IsResetPending && UsedPercent > 100m;
+    public bool IsPillBad => !IsStale && !IsResetPending && UsedPercent is not > 100m && (UsedPercent == 100m || Band == UsageBand.Danger);
+    public bool IsPillWarn => !IsStale && !IsResetPending && !IsPillBad && UsedPercent is not > 100m && Band == UsageBand.Attention;
+    public bool IsPillNeutral => IsStale || IsResetPending || UsedPercent is null;
+    public UiLanguage CurrentLanguage { get; init; }
+    public string CompactStateBadge
+    {
+        get
+        {
+            if (IsQuantityOnly) return string.Empty;
+            var copy = new UiCopy(CurrentLanguage);
+            if (IsResetPending) return copy.CompactBadgeResetPending;
+            if (UsedPercent is null) return copy.CompactBadgeUnknown;
+            if (UsedPercent > 100m) return copy.CompactBadgeOver;
+            if (UsedPercent == 100m) return copy.CompactExhausted;
+            if (IsStale) return copy.CompactBadgeStale;
+            return string.Empty;
+        }
+    }
+    public bool HasCompactStateBadge => CompactStateBadge.Length > 0;
+    public bool IsCompactBadgeWarning => UsedPercent is > 100m or 100m || IsResetPending;
+    public bool IsCompactBadgeMuted => !IsCompactBadgeWarning;
+    public bool IsCompactTileVisible => IsPercentVisible || IsCopilotNoData;
+    public bool IsGaugeVisible => !IsQuantityOnly && CopilotNoDataPeriod is null && Snapshot?.Provider != ProviderKind.Copilot;
+    public bool IsPercentVisible => !IsQuantityOnly && CopilotNoDataPeriod is null;
+    public bool IsCurrentPercentVisible => IsPercentVisible && !IsStale;
+    public bool IsStalePercentVisible => IsPercentVisible && IsStale;
     public bool IsQuantityVisible => IsQuantityOnly;
     public bool IsQuantityCompositionVisible { get; init; }
     public decimal IncludedCompositionRatio { get; init; }
@@ -66,8 +152,95 @@ public sealed record QuotaRowViewModel(string WindowName, string Metric, double 
     public bool IsStatusVisible => IsNotCopilotNoData && !IsQuantityOnly;
     public bool IsStatusOrNoDataVisible => IsStatusVisible || IsCopilotNoData;
 }
+public sealed record QuotaRingSegmentViewModel(string WindowName, QuotaWindowKind WindowKind, decimal? RemainingPercent, UsageBand Band, bool IsStale);
+
 public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, string Account, string Accent, string StateText, bool IsDemo, IReadOnlyList<QuotaRowViewModel> Windows)
 {
+    private IReadOnlyList<QuotaRowViewModel> RingEligibleWindows => Windows
+        .Where(row => Provider != ProviderKind.Copilot && row.IsGaugeVisible)
+        .OrderBy(row => RingDuration(row) ?? TimeSpan.MaxValue)
+        .ThenBy(row => QuotaWindowOrdering.FallbackRank(row.WindowKind))
+        .ThenBy(row => row.WindowName, StringComparer.Ordinal)
+        .ThenBy(row => row.Metric, StringComparer.Ordinal)
+        .ToList();
+    private IReadOnlyList<QuotaRowViewModel> RingWindowsToDraw
+    {
+        get
+        {
+            var ordered = RingEligibleWindows;
+            if (ordered.Count <= 3) return ordered;
+            var middle = ordered.Skip(1).Take(ordered.Count - 2).ToList();
+            var constrained = middle
+                .Where(row => !row.IsStale && !row.IsResetPending && Remaining(row) is not null)
+                .OrderByDescending(row => row.Band == UsageBand.OverLimit)
+                .ThenBy(row => Remaining(row))
+                .ThenBy(row => RingDuration(row) ?? TimeSpan.MaxValue)
+                .ThenBy(row => QuotaWindowOrdering.FallbackRank(row.WindowKind))
+                .ThenBy(row => row.WindowName, StringComparer.Ordinal)
+                .ThenBy(row => row.Metric, StringComparer.Ordinal)
+                .FirstOrDefault() ?? middle[0];
+            return new[] { ordered[0], constrained, ordered[^1] }
+                .OrderBy(row => RingDuration(row) ?? TimeSpan.MaxValue)
+                .ThenBy(row => QuotaWindowOrdering.FallbackRank(row.WindowKind))
+                .ThenBy(row => row.WindowName, StringComparer.Ordinal)
+                .ThenBy(row => row.Metric, StringComparer.Ordinal)
+                .ToList();
+        }
+    }
+    private IReadOnlyList<QuotaRingSegmentViewModel> CurrentKnownRingSegments => RingSegments
+        .Where(segment => !segment.IsStale && segment.RemainingPercent is not null)
+        .OrderBy(segment => segment.RemainingPercent)
+        .ThenByDescending(segment => segment.Band == UsageBand.OverLimit)
+        .ToList();
+    public IReadOnlyList<QuotaRingSegmentViewModel> RingSegments
+    {
+        get
+        {
+            if (Provider == ProviderKind.Copilot && IsCopilotReferenceVisible && CopilotNoDataPeriod is null)
+                return [new QuotaRingSegmentViewModel(new UiCopy(CurrentLanguage).CreditsPeriod, QuotaWindowKind.Monthly, null, UsageBand.Normal, false)];
+            return RingWindowsToDraw
+                .Select(row => new QuotaRingSegmentViewModel(row.WindowName, row.WindowKind, row.IsResetPending ? null : Remaining(row), row.Band, row.IsStale))
+                .ToList();
+        }
+    }
+    public bool IsMultiWindowFacts => Windows.Count >= 3;
+    // The short rate note appears on quantity rows only when the card-level reference note is
+    // absent (no manual reference configured), so the two copies never show together.
+    public bool IsRateNoteVisible => !IsCopilotReferenceVisible;
+    // Mock plan A widget: windows sit side by side in two star-sized columns (left column gets
+    // the first window, right the second), so column width never depends on fixed pixel sums.
+    public IReadOnlyList<QuotaRowViewModel> WindowsLeft => Windows.Where((_, index) => index % 2 == 0).ToArray();
+    public IReadOnlyList<QuotaRowViewModel> WindowsRight => Windows.Where((_, index) => index % 2 == 1).ToArray();
+    public int AdditionalRingWindowCount => Math.Max(0, RingEligibleWindows.Count - RingSegments.Count);
+    public bool HasRingSegments => RingSegments.Count > 0;
+    public bool HasAdditionalRingWindows => AdditionalRingWindowCount > 0;
+    public string AdditionalRingWindowText => new UiCopy(CurrentLanguage).AdditionalRingWindows(AdditionalRingWindowCount);
+    private bool HasCopilotReferenceCenter => Provider == ProviderKind.Copilot && IsCopilotReferenceVisible && CopilotGrossUsed is >= 0 && ManualReferenceCredits is > 0;
+    public string RemainingCenterText => CurrentKnownRingSegments
+        .Select(segment => segment.RemainingPercent!.Value.ToString("0.#", CultureInfo.InvariantCulture) + "%")
+        .FirstOrDefault() ?? (HasCopilotReferenceCenter ? new UiCopy(CurrentLanguage).CopilotCenterPercent(SafeReferencePercent(CopilotGrossUsed!.Value, ManualReferenceCredits!.Value)) : "—");
+    public string RemainingCenterPeriodText => CurrentKnownRingSegments
+        .Select(segment => segment.WindowName)
+        .FirstOrDefault() ?? (HasCopilotReferenceCenter ? new UiCopy(CurrentLanguage).CreditsPeriod : string.Empty);
+    public string ProviderMonogram => Provider switch { ProviderKind.ChatGpt => "G", ProviderKind.Claude => "C", ProviderKind.OpenCode => "O", ProviderKind.Copilot => "⌘", _ => "M" };
+    public bool HasKnownRemainingCenter => CurrentKnownRingSegments.Count > 0 || HasCopilotReferenceCenter;
+    public string FreshnessText => Windows.Where(row => !row.IsQuantityOnly).OrderByDescending(row => row.FetchedAt).Select(row => row.FreshnessText).FirstOrDefault() ?? string.Empty;
+    public string HeaderFreshnessText => Windows
+        .OrderByDescending(row => row.FetchedAt)
+        .Select(row => row.HeaderFreshnessText)
+        .FirstOrDefault(text => text.Length > 0) ?? string.Empty;
+    private static decimal? Remaining(QuotaRowViewModel row) => row.UsedPercent is { } used ? Math.Clamp(100m - used, 0m, 100m) : null;
+    private static TimeSpan? RingDuration(QuotaRowViewModel row)
+    {
+        if (row.Snapshot is { } snapshot && snapshot.Window.EffectiveDuration > TimeSpan.Zero) return snapshot.Window.EffectiveDuration;
+        return row.WindowKind switch
+        {
+            QuotaWindowKind.Daily => TimeSpan.FromDays(1),
+            QuotaWindowKind.Weekly => TimeSpan.FromDays(7),
+            QuotaWindowKind.Monthly => TimeSpan.FromDays(30),
+            _ => null
+        };
+    }
     public string AccessibleLabel => CopilotNoDataPeriod is { } period
         ? $"{Name}, {Account}. {new UiCopy(CurrentLanguage).CopilotNoDataAutomation(new UiCopy(CurrentLanguage).CopilotMonthPeriod(period.Year, period.Month))}"
         : $"{Name}, {Account}. {StateText}";
@@ -92,6 +265,7 @@ public sealed record ProviderCardViewModel(ProviderKind Provider, string Name, s
     }
     public string CopilotReferenceText => ManualReferenceCredits is not > 0 ? string.Empty : new UiCopy(CurrentLanguage).CopilotReferenceDetail(CopilotGrossUsed, ManualReferenceCredits.Value);
     public string CopilotReferenceDisclaimer => new UiCopy(CurrentLanguage).CopilotReferenceDisclaimer;
+    public string CopilotRateDisclaimer => new UiCopy(CurrentLanguage).CopilotRateDisclaimer;
 }
 
 public static class QuotaPresentationFormatter
@@ -102,6 +276,7 @@ public static class QuotaPresentationFormatter
         var reset = snapshot.Window.ResetAt is { } at ? FormatReset(at, now, language) : japanese ? "リセット時刻は不明" : "Reset time unavailable";
         var stale = snapshot.IsStale(now);
         var freshness = stale ? (japanese ? $"データが古い可能性があります（最終更新: {FormatAge(snapshot.Fetched, now, language)}）" : "Stale · last updated " + FormatAge(snapshot.Fetched, now, language)) : (japanese ? $"{FormatAge(snapshot.Fetched, now, language)}に更新" : "Updated " + FormatAge(snapshot.Fetched, now, language));
+        var headerFreshness = japanese ? $"更新 {FormatAge(snapshot.Fetched, now, language)}" : $"Updated {FormatAge(snapshot.Fetched, now, language)}";
         var source = japanese ? snapshot.Source switch { QuotaSource.Manual => "手動", QuotaSource.Experimental => "実験的", QuotaSource.Delayed => "遅延", _ => "公式" } : snapshot.Source.ToString();
         if (snapshot.Provider == ProviderKind.Copilot && snapshot.CopilotUsage is { } usage)
         {
@@ -127,7 +302,9 @@ public static class QuotaPresentationFormatter
                 ? $"総量の内訳バー。含まれる分 {includedRatio:P1}、追加分 {additionalRatio:P1}。総量: {grossValueText}。"
                 : $"Gross composition bar. Included {includedRatio:P1}, Additional {additionalRatio:P1}. Total: {grossValueText}.";
             var quantityFreshness = $"{freshness} · {period} · {retrieved} · {delay}";
-            return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), 0, string.Empty, quantityStatus, period, source, quantityFreshness, stale, quantityStatus)
+            var quantityProgress = string.Join(language == UiLanguage.Japanese ? "。" : ". ",
+                new[] { gross, discount, net, quantityStatus, source, quantityFreshness }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), 0, string.Empty, quantityStatus, period, source, quantityFreshness, stale, quantityProgress)
             {
                 FetchedAt = snapshot.Fetched,
                 WindowEnd = snapshot.Window.End,
@@ -147,21 +324,61 @@ public static class QuotaPresentationFormatter
                 CompositionAdditionalLabel = additionalLabel,
                 QuantityGrossText = gross,
                 QuantityDiscountText = discount,
-                QuantityNetText = net
+                QuantityNetText = net,
+                CompactValueText = gross,
+                CompactResetText = FormatCompactReset(snapshot.Window.ResetAt, now, new UiCopy(language)),
+                HeaderFreshnessText = language == UiLanguage.Japanese ? $"更新 {FormatAge(snapshot.Fetched, now, language)}" : $"Updated {FormatAge(snapshot.Fetched, now, language)}",
+                CurrentLanguage = language
             };
         }
         var percent = snapshot.EffectivePercent;
         var numeric = percent ?? 0m;
         var visual = (double)Math.Clamp(numeric, 0m, 100m);
         var band = percent is null ? UsageBand.Attention : numeric > 100m ? UsageBand.OverLimit : numeric >= 80m ? UsageBand.Danger : numeric >= 60m ? UsageBand.Attention : UsageBand.Normal;
-        var percentText = percent is null ? (japanese ? "使用率を表示できません" : "Usage unavailable") : japanese ? numeric > 100m ? $"使用率 {numeric:0.#}%（残り 0%・上限を{numeric - 100m:0.#}%超過）" : $"使用率 {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
-        var status = percent is null ? (japanese ? "データなし・値: —" : "No quota value · value: —") : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
-        return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, percentText, status, reset, source, freshness, stale, BuildProgressLabel(percentText, status, reset, language)) { FetchedAt = snapshot.Fetched, WindowEnd = snapshot.Window.End, FreshUntil = snapshot.FreshUntil, ResetAt = snapshot.Window.ResetAt, UsedPercent = percent, Source = snapshot.Source, WindowKind = snapshot.Window.Kind, Band = band, Snapshot = snapshot };
+        var isCopilotReferenceRate = snapshot.Provider == ProviderKind.Copilot;
+        var percentText = percent is null ? (japanese ? "使用率を表示できません" : "Usage unavailable") : isCopilotReferenceRate ? japanese ? $"使用率 {numeric:0.#}% · {new UiCopy(language).CopilotRateDisclaimer}" : $"{numeric:0.#}% used · {new UiCopy(language).CopilotRateDisclaimer}" : japanese ? numeric > 100m ? $"使用率 {numeric:0.#}%（残り 0%・上限を{numeric - 100m:0.#}%超過）" : $"使用率 {numeric:0.#}%・残り {100m - numeric:0.#}%" : $"{numeric:0.#}% used · {Math.Max(0m, 100m - numeric):0.#}% remaining";
+        var status = percent is null ? (japanese ? "データなし・値: —" : "No quota value · value: —") : isCopilotReferenceRate ? new UiCopy(language).CopilotRateDisclaimer : numeric == 100m ? new UiCopy(language).QuotaExhausted : japanese ? band switch { UsageBand.OverLimit => $"上限を{numeric - 100m:0.#}%超過", UsageBand.Danger => "上限間近", UsageBand.Attention => "注意", _ => "余裕あり" } : band switch { UsageBand.OverLimit => $"Over limit by {numeric - 100m:0.#}%", UsageBand.Danger => $"Danger · {numeric:0.#}%", UsageBand.Attention => $"Attention · {numeric:0.#}%", _ => $"Normal · {numeric:0.#}%" };
+        var resetPending = snapshot.Window.ResetAt is { } resetAt && resetAt <= now && snapshot.Fetched <= resetAt;
+        var copy = new UiCopy(language);
+        var displayPercentText = resetPending ? copy.LastObservedBeforeReset(percentText) : stale ? copy.LastObserved(percentText) : percentText;
+        var displayStatus = resetPending ? copy.LastObservedBeforeReset(status) : stale ? copy.LastObserved(status) : status;
+        var compactValue = isCopilotReferenceRate
+            ? percent is null ? copy.CompactUnknownValue : copy.CopilotUsageVsReference(numeric)
+            : percent is null ? copy.CompactUnknownValue : copy.CompactQuotaRemaining(Math.Max(0m, 100m - numeric));
+        var compactReset = FormatCompactReset(snapshot.Window.ResetAt, now, copy);
+        return new QuotaRowViewModel(japanese ? LocalizeWindow(snapshot.Window.Kind) : snapshot.Window.Kind.ToString(), LocalizeMetric(snapshot.Metric, snapshot.Window.Kind, language), visual, displayPercentText, displayStatus, reset, source, freshness, stale, BuildProgressLabel(displayPercentText, displayStatus, reset, freshness, resetPending ? copy.ResetPending : string.Empty, source, language))
+        {
+            FetchedAt = snapshot.Fetched,
+            WindowEnd = snapshot.Window.End,
+            FreshUntil = snapshot.FreshUntil,
+            ResetAt = snapshot.Window.ResetAt,
+            UsedPercent = percent,
+            Source = snapshot.Source,
+            WindowKind = snapshot.Window.Kind,
+            Band = band,
+            Snapshot = snapshot,
+            IsResetPending = resetPending,
+            ResetPendingText = resetPending ? copy.ResetPending : string.Empty,
+            CompactValueText = compactValue,
+            CompactResetText = compactReset,
+            HeaderFreshnessText = headerFreshness,
+            CurrentLanguage = language
+        };
     }
     private static string FormatQuantity(decimal? value, string label, bool japanese) => value is null ? (japanese ? $"不明 · {label}" : $"Unavailable · {label}") : $"{value.Value.ToString("#,0.##", CultureInfo.InvariantCulture)} {label}";
     private static decimal SafeCompositionRatio(decimal value, decimal gross, decimal upperBound) => value <= 0m || gross <= 0m || upperBound <= 0m ? 0m : value >= gross ? upperBound : Math.Min(value / gross, upperBound);
 
     public static QuotaRowViewModel Relocalize(QuotaRowViewModel row, DateTimeOffset now, UiLanguage language) => row.Snapshot is { } snapshot ? Format(snapshot, now, language) : row;
+
+    private static string FormatCompactReset(DateTimeOffset? resetAt, DateTimeOffset now, UiCopy copy)
+    {
+        if (resetAt is null) return copy.CompactResetUnavailable;
+        var remaining = resetAt.Value - now;
+        if (remaining.TotalSeconds <= 0) return copy.CompactResetPassed;
+        if (remaining.TotalDays >= 1) return copy.CompactResetDays((int)remaining.TotalDays);
+        if (remaining.TotalHours >= 1) return copy.CompactResetHours((int)remaining.TotalHours, remaining.Minutes);
+        return copy.CompactResetMinutes(Math.Max(1, (int)remaining.TotalMinutes));
+    }
 
     public static string FormatReset(DateTimeOffset resetAt, DateTimeOffset now, UiLanguage language = UiLanguage.English)
     {
@@ -184,7 +401,7 @@ public static class QuotaPresentationFormatter
         return language == UiLanguage.Japanese ? minutes < 1 ? "たった今" : minutes < 60 ? $"{minutes}分前" : $"{minutes / 60}時間前" : minutes < 1 ? "just now" : minutes < 60 ? $"{minutes}m ago" : $"{minutes / 60}h ago";
     }
     private static string FormatJapaneseRelative(TimeSpan delta) => delta.TotalSeconds <= 0 ? "リセット済み" : delta.TotalDays >= 1 ? $"あと{(int)delta.TotalDays}日{(delta.Hours > 0 ? $"{delta.Hours}時間" : string.Empty)}" : delta.TotalHours >= 1 ? $"あと{(int)delta.TotalHours}時間{(delta.Minutes > 0 ? $"{delta.Minutes}分" : string.Empty)}" : $"あと{Math.Max(1, (int)delta.TotalMinutes)}分";
-    public static string LocalizeWindow(QuotaWindowKind kind) => kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "ローリング枠", _ => "カスタム" };
+    public static string LocalizeWindow(QuotaWindowKind kind) => kind switch { QuotaWindowKind.Daily => "日次", QuotaWindowKind.Weekly => "週次", QuotaWindowKind.Monthly => "月次", QuotaWindowKind.Rolling => "ローリング", _ => "カスタム" };
     private static string LocalizeMetric(string metric, QuotaWindowKind window, UiLanguage language)
     {
         if (language != UiLanguage.Japanese) return metric;
@@ -195,7 +412,11 @@ public static class QuotaPresentationFormatter
             (window == QuotaWindowKind.Rolling && metric.Equals("rolling", StringComparison.OrdinalIgnoreCase))) return string.Empty;
         return metric switch { "Messages" => "メッセージ", "Requests" => "リクエスト", "Fast window" => "短時間枠", "monthly" => "月次", "weekly" => "週次", "Codex primary" => "Codexの主要利用枠", "Codex secondary" => "Codexの副利用枠", _ => metric };
     }
-    private static string BuildProgressLabel(string percentText, string status, string reset, UiLanguage language) => language == UiLanguage.Japanese ? $"{percentText}。{status}。{reset}" : $"{percentText}. {status}. {reset}";
+    private static string BuildProgressLabel(string percentText, string status, string reset, string freshness, string resetPending, string source, UiLanguage language)
+    {
+        var separator = language == UiLanguage.Japanese ? "。" : ". ";
+        return string.Join(separator, new[] { percentText, status, resetPending, reset, source, freshness }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
 }
 
 public interface IDashboardSource { bool IsDemo { get; } IReadOnlyList<ProviderCardViewModel> Load(); }
@@ -1432,6 +1653,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private CredentialStoreAvailability credentialAvailability = CredentialStoreAvailability.Unavailable;
     private PresentationState presentationState = PresentationState.Ready;
     public ObservableCollection<ProviderCardViewModel> Cards { get; } = [];
+    public string SummaryAccountsText => new UiCopy(Language).SummaryAccounts(Cards.Count);
+    private int ReviewableCardCount => Cards.Count(card => card.Windows.Any(row =>
+        row.IsStale || row.IsResetPending || row.Band is UsageBand.Danger or UsageBand.OverLimit or UsageBand.Attention));
+    public string SummaryReviewText => new UiCopy(Language).SummaryReview(ReviewableCardCount);
+    public string SummaryFreshnessText => Cards.SelectMany(card => card.Windows)
+        .OrderByDescending(row => row.FetchedAt)
+        .Select(row => row.HeaderFreshnessText)
+        .FirstOrDefault(text => text.Length > 0) ?? string.Empty;
+    public string ConnectedAccountsHead => new UiCopy(Language).ConnectedAccounts;
+    public bool HasReviewableCards => ReviewableCardCount > 0;
+    public bool HasFreshnessChip => SummaryFreshnessText.Length > 0;
     public SettingsState Settings { get; } = new();
     public HistoryState History { get; }
 
@@ -2020,12 +2252,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         IsCopilotFlowActive = active;
         foreach (var name in new[] { nameof(IsCopilotFlowActive), nameof(CanStartCopilot), nameof(CanPollCopilot) }) OnPropertyChanged(name);
     }
-    private ProviderCardViewModel WithCopilotReference(ProviderCardViewModel card) => card with
+    private ProviderCardViewModel WithCopilotReference(ProviderCardViewModel card)
     {
-        ManualReferenceCredits = card.Provider == ProviderKind.Copilot ? Settings.CopilotReferenceCredits : null,
-        CopilotGrossUsed = card.Provider == ProviderKind.Copilot ? card.Windows.Select(row => row.Snapshot?.CopilotUsage?.GrossQuantity).FirstOrDefault(value => value is not null) : null,
-        CurrentLanguage = Language
-    };
+        var updated = card with
+        {
+            ManualReferenceCredits = card.Provider == ProviderKind.Copilot ? Settings.CopilotReferenceCredits : null,
+            CopilotGrossUsed = card.Provider == ProviderKind.Copilot ? card.Windows.Select(row => row.Snapshot?.CopilotUsage?.GrossQuantity).FirstOrDefault(value => value is not null) : null,
+            CurrentLanguage = Language
+        };
+        return updated with { Windows = updated.Windows.Select(row => row with { IsCompactFactLine = updated.Windows.Count >= 3 }).ToList() };
+    }
     private void RefreshCopilotReferences()
     {
         for (var i = 0; i < Cards.Count; i++) Cards[i] = WithCopilotReference(Cards[i]);
@@ -2048,7 +2284,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var copy = new UiCopy(Language);
         var windowName = copy.CopilotMonthPeriod(period.Year, period.Month);
         var status = copy.CopilotNoDataDetails;
-        var row = new QuotaRowViewModel(windowName, string.Empty, 0, string.Empty, status, string.Empty, string.Empty, string.Empty, false, status) { WindowKind = QuotaWindowKind.Monthly, CopilotNoDataPeriod = period };
+        var row = new QuotaRowViewModel(windowName, string.Empty, 0, string.Empty, status, string.Empty, string.Empty, string.Empty, false, status) { WindowKind = QuotaWindowKind.Monthly, CopilotNoDataPeriod = period, CurrentLanguage = Language };
         var card = Cards.FirstOrDefault(item => item.Provider == ProviderKind.Copilot && item.Account == account);
         if (card is null) card = new(ProviderKind.Copilot, copy.ProviderName(ProviderKind.Copilot), account, "#78A9FF", copy.CopilotNoUsageState, false, []);
         var windows = card.Windows.Where(item => item.Snapshot is { Source: QuotaSource.Manual }).Append(row).ToArray();
@@ -2092,8 +2328,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var card = Cards[i];
             var state = card.CopilotNoDataPeriod is not null ? (Language == UiLanguage.Japanese ? "明細なし" : "No usage details") : Language == UiLanguage.Japanese ? card.StateText switch { "Healthy" => "正常", "Needs attention" => "注意", "Over limit" => "超過", "Connected" => "接続済み", "Manual" => "手動", _ => card.StateText } : card.StateText switch { "正常" => "Healthy", "注意" => "Needs attention", "超過" => "Over limit", "接続済み" => "Connected", "手動" => "Manual", _ => card.StateText };
-            var windows = card.Windows.Select(row => row.CopilotNoDataPeriod is { } period ? row with { StatusText = new UiCopy(Language).CopilotNoDataDetails, ProgressLabel = new UiCopy(Language).CopilotNoDataDetails, WindowName = new UiCopy(Language).CopilotMonthPeriod(period.Year, period.Month) } : QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList();
-            Cards[i] = card with { Account = Language == UiLanguage.Japanese ? card.Account switch { "Personal account" => "個人アカウント", "Workspace · demo" => "ワークスペース · デモ", _ => card.Account } : card.Account switch { "個人アカウント" => "Personal account", "ワークスペース · デモ" => "Workspace · demo", _ => card.Account }, StateText = state, Windows = windows, CurrentLanguage = Language };
+            var windows = card.Windows.Select(row => row.CopilotNoDataPeriod is { } period ? row with { StatusText = new UiCopy(Language).CopilotNoDataDetails, ProgressLabel = new UiCopy(Language).CopilotNoDataDetails, WindowName = new UiCopy(Language).CopilotMonthPeriod(period.Year, period.Month), CurrentLanguage = Language } : QuotaPresentationFormatter.Relocalize(row, timeProvider.GetUtcNow(), Language)).ToList();
+            Cards[i] = card with { Account = Language == UiLanguage.Japanese ? card.Account switch { "Personal account" => "個人アカウント", "Workspace · demo" => "ワークスペース · デモ", _ => card.Account } : card.Account switch { "個人アカウント" => "Personal account", "ワークスペース · デモ" => "Workspace · demo", _ => card.Account }, StateText = state, Windows = windows.Select(row => row with { IsCompactFactLine = windows.Count >= 3 }).ToList(), CurrentLanguage = Language };
         }
         OnPropertyChanged(nameof(Cards));
     }

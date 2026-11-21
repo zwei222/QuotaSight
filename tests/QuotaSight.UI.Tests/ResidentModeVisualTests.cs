@@ -153,7 +153,8 @@ public sealed class ResidentModeVisualTests
             var compositionText = card.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsVisible).Select(text => text.Text ?? string.Empty).ToArray();
             Assert.Contains(compositionText, text => text.Contains("Included", StringComparison.Ordinal));
             Assert.Contains(compositionText, text => text.Contains("Additional", StringComparison.Ordinal));
-            Assert.DoesNotContain(compositionText, text => text.Contains("remaining", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(compositionText, text => text.Contains("Reference only", StringComparison.Ordinal));
+            Assert.Contains(compositionText, text => text.Contains("not remaining", StringComparison.OrdinalIgnoreCase));
         }
         finally { window.Close(); vm.Dispose(); }
     }
@@ -181,7 +182,7 @@ public sealed class ResidentModeVisualTests
     }
 
     [AvaloniaFact]
-    public void Compact_gauges_resolve_normal_attention_danger_and_over_limit_brushes_in_light_and_dark()
+    public void Compact_rings_resolve_normal_attention_danger_and_over_limit_brushes_in_light_and_dark()
     {
         var app = Assert.IsType<App>(Avalonia.Application.Current);
         var previous = UiSettings.AppliedTheme;
@@ -201,16 +202,13 @@ public sealed class ResidentModeVisualTests
                 window.RequestedThemeVariant = variant;
                 window.UpdateLayout();
                 var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key?.ToString() == (variant == ThemeVariant.Light ? "Light" : "Dark")).Value!;
-                var expected = new[] { "GaugeNormalBrush", "GaugeAttentionBrush", "GaugeDangerBrush", "GaugeOverBrush" };
-                var gauges = window.FindControl<ItemsControl>("CompactProviderCards")!.GetVisualDescendants().OfType<ProgressBar>().Where(bar => bar.DataContext is QuotaRowViewModel).ToArray();
+                var rings = window.FindControl<ItemsControl>("CompactProviderCards")!.GetVisualDescendants().OfType<QuotaRingControl>().ToArray();
 
-                Assert.Equal(4, gauges.Length);
-                for (var index = 0; index < gauges.Length; index++)
-                {
-                    var actual = Assert.IsAssignableFrom<ISolidColorBrush>(gauges[index].Foreground);
-                    var wanted = Assert.IsAssignableFrom<ISolidColorBrush>(theme[expected[index]]);
-                    Assert.Equal(wanted.Color, actual.Color);
-                }
+                Assert.Single(rings);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeNormalBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].NormalBrush).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeAttentionBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].AttentionBrush).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeDangerBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].DangerBrush).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeOverBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].OverLimitBrush).Color);
             }
         }
         finally

@@ -18,6 +18,261 @@ namespace QuotaSight.UI.Tests;
 
 public sealed class UiRequirementsTests
 {
+    [Fact]
+    public void Ring_projection_keeps_unknown_distinct_from_zero_and_zero_from_over_limit()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        QuotaRowViewModel Row(QuotaWindowKind kind, TimeSpan duration, decimal? used) =>
+            QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.ChatGpt, "work", kind.ToString(), new(kind, now, now.Add(duration), duration), null, null, used, "%", now, now, QuotaSource.Experimental, QuotaConfidence.Reported, now.AddHours(1)), now, UiLanguage.Japanese);
+        var card = new ProviderCardViewModel(ProviderKind.ChatGpt, "ChatGPT", "work", "#73D6B1", "Ready", false,
+        [Row(QuotaWindowKind.Custom, TimeSpan.FromDays(10), 112), Row(QuotaWindowKind.Daily, TimeSpan.FromDays(1), 100), Row(QuotaWindowKind.Rolling, TimeSpan.FromHours(5), null)]);
+
+        Assert.Null(card.RingSegments.Single(segment => segment.WindowKind == QuotaWindowKind.Rolling).RemainingPercent);
+        Assert.Equal(0m, card.RingSegments.Single(segment => segment.WindowKind == QuotaWindowKind.Daily).RemainingPercent);
+        Assert.Contains("上限に到達", card.Windows.Single(row => row.WindowKind == QuotaWindowKind.Daily).StatusText);
+        var over = Assert.Single(card.RingSegments, segment => segment.WindowKind == QuotaWindowKind.Custom);
+        Assert.Equal(0m, over.RemainingPercent);
+        Assert.Equal(UsageBand.OverLimit, over.Band);
+        Assert.Equal("0%", card.RemainingCenterText);
+        Assert.Equal("カスタム", card.RemainingCenterPeriodText);
+
+        var unknownOnly = card with { Windows = [Row(QuotaWindowKind.Rolling, TimeSpan.FromHours(5), null)] };
+        Assert.Equal("—", unknownOnly.RemainingCenterText);
+        Assert.Empty(unknownOnly.RemainingCenterPeriodText);
+    }
+
+    [Fact]
+    public void Ring_marking_keeps_zero_unknown_stale_and_over_limit_visually_distinct()
+    {
+        QuotaRingSegmentViewModel Segment(decimal? remaining, UsageBand band, bool stale = false) => new("week", QuotaWindowKind.Weekly, remaining, band, stale);
+        Assert.Equal(QuotaRingMark.Zero, QuotaRingControl.GetMark(Segment(0, UsageBand.Normal)));
+        Assert.Equal(QuotaRingMark.Unknown, QuotaRingControl.GetMark(Segment(null, UsageBand.Attention)));
+        Assert.Equal(QuotaRingMark.Stale, QuotaRingControl.GetMark(Segment(20, UsageBand.Normal, stale: true)));
+        Assert.Equal(QuotaRingMark.OverLimit, QuotaRingControl.GetMark(Segment(0, UsageBand.OverLimit)));
+        Assert.Equal(QuotaRingMark.StaleOverLimit, QuotaRingControl.GetMark(Segment(0, UsageBand.OverLimit, stale: true)));
+        Assert.Equal(QuotaRingMark.Remaining, QuotaRingControl.GetMark(Segment(75, UsageBand.Normal)));
+    }
+
+    [Fact]
+    public void Stale_and_reset_pending_windows_never_supply_the_current_ring_center()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        var current = QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.Claude, "alice", "5h", new(QuotaWindowKind.Rolling, now.AddHours(-1), now.AddHours(4), TimeSpan.FromHours(5)), 40, 100, null, "%", now, now, QuotaSource.Official, QuotaConfidence.Reported, now.AddHours(2)), now);
+        var stale = QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.Claude, "alice", "Messages", new(QuotaWindowKind.Weekly, now.AddDays(-2), now.AddDays(5), TimeSpan.FromDays(7)), 90, 100, null, "%", now.AddHours(-3), now.AddHours(-3), QuotaSource.Official, QuotaConfidence.Reported, now.AddHours(-2)), now);
+        var resetAt = now.AddMinutes(-30);
+        var pending = QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.Claude, "alice", "Messages", new(QuotaWindowKind.Monthly, now.AddDays(-2), now.AddDays(28), TimeSpan.FromDays(30), resetAt), 64, 100, null, "%", now.AddHours(-1), now.AddHours(-1), QuotaSource.Manual, QuotaConfidence.Manual, now.AddHours(2)), now);
+        var card = new ProviderCardViewModel(ProviderKind.Claude, "Claude Pro", "alice", "#73D6B1", "Ready", false, [stale, pending, current]);
+
+        Assert.True(stale.IsStale);
+        Assert.Contains("Last observed", stale.PercentText);
+        Assert.True(stale.IsStalePercentVisible);
+        Assert.False(stale.IsCurrentPercentVisible);
+        Assert.True(pending.IsResetPending);
+        Assert.Contains("Last observed before reset", pending.PercentText);
+        Assert.Contains("36% remaining", pending.PercentText);
+        Assert.Equal(10m, card.RingSegments.Single(segment => segment.WindowKind == QuotaWindowKind.Weekly).RemainingPercent);
+        Assert.True(card.RingSegments.Single(segment => segment.WindowKind == QuotaWindowKind.Weekly).IsStale);
+        Assert.Null(card.RingSegments.Single(segment => segment.WindowKind == QuotaWindowKind.Monthly).RemainingPercent);
+        Assert.Equal("60%", card.RemainingCenterText);
+        Assert.Equal("Rolling", card.RemainingCenterPeriodText);
+
+        var noCurrentRing = card with { Windows = [stale, pending] };
+        Assert.False(noCurrentRing.HasKnownRemainingCenter);
+        Assert.Equal("—", noCurrentRing.RemainingCenterText);
+        Assert.Empty(noCurrentRing.RemainingCenterPeriodText);
+    }
+
+    [Fact]
+    public void Over_limit_wins_zero_remaining_ties_for_the_constrained_middle_ring()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        QuotaRowViewModel Row(QuotaWindowKind kind, TimeSpan duration, decimal used) =>
+            QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.ChatGpt, "work", kind.ToString(), new(kind, now, now.Add(duration), duration), used, 100, null, "%", now, now, QuotaSource.Official, QuotaConfidence.Reported, now.AddHours(1)), now);
+        var card = new ProviderCardViewModel(ProviderKind.ChatGpt, "ChatGPT", "work", "#73D6B1", "Ready", false,
+        [
+            Row(QuotaWindowKind.Monthly, TimeSpan.FromDays(30), 60),
+            Row(QuotaWindowKind.Daily, TimeSpan.FromDays(1), 100),
+            Row(QuotaWindowKind.Weekly, TimeSpan.FromDays(7), 112),
+            Row(QuotaWindowKind.Custom, TimeSpan.FromDays(10), 80),
+            Row(QuotaWindowKind.Rolling, TimeSpan.FromHours(5), 40)
+        ]);
+
+        Assert.Equal([QuotaWindowKind.Rolling, QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], card.RingSegments.Select(segment => segment.WindowKind));
+        Assert.Equal(2, card.AdditionalRingWindowCount);
+        Assert.Equal(UsageBand.OverLimit, card.RingSegments[1].Band);
+        Assert.Equal("0%", card.RemainingCenterText);
+        Assert.Equal("Weekly", card.RemainingCenterPeriodText);
+    }
+
+    [AvaloniaFact]
+    public void Exposed_quota_text_has_a_per_window_accessible_name()
+    {
+        var window = new MainWindow(new MainViewModel(new DemoDashboardSource()));
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var row = window.ViewModel.Cards.SelectMany(card => card.Windows).First(row => row.IsPercentVisible);
+            var value = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsEffectivelyVisible && text.Bounds.Width > 0),
+                text => ReferenceEquals(text.DataContext, row) && text.Text == row.FactValueText);
+            Assert.Equal(row.ProgressLabel, AutomationProperties.GetName(value));
+        }
+        finally { window.Close(); window.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Stale_values_are_muted_and_readable_in_both_dashboard_and_compact_rows()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        var snapshot = new QuotaSnapshot(ProviderKind.Claude, "alice", "5h",
+            new(QuotaWindowKind.Rolling, now.AddHours(-3), now.AddHours(2), TimeSpan.FromHours(5)),
+            38, 100, null, "%", now.AddHours(-3), now.AddHours(-3), QuotaSource.Official,
+            QuotaConfidence.Reported, now.AddHours(-2));
+        await vm.ApplyProviderSnapshotsAsync([snapshot]);
+        var row = Assert.Single(Assert.Single(vm.Cards).Windows);
+        Assert.True(row.IsStale);
+        Assert.Contains("Last observed", row.PercentText);
+
+        var main = new MainWindow(vm);
+        var compact = new CompactQuotaWindow(vm);
+        try
+        {
+            main.Show(); compact.Show(); main.UpdateLayout(); compact.UpdateLayout();
+            var app = Assert.IsType<App>(Avalonia.Application.Current);
+            var key = main.ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark ? "Dark" : "Light";
+            var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == key).Value!;
+            var expectedMuted = ((ISolidColorBrush)theme["TextMutedBrush"]!).Color;
+            foreach (var window in new Window[] { main, compact })
+            {
+                // Mock plan A: the stale state is carried by the muted pill, the value stays primary-colored.
+                var value = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsEffectivelyVisible && text.Bounds.Width > 0), text =>
+                    ReferenceEquals(text.DataContext, row) && text.Text == row.FactValueText);
+                Assert.Equal(row.ProgressLabel, AutomationProperties.GetName(value));
+                var pill = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsEffectivelyVisible && text.Bounds.Width > 0), text =>
+                    ReferenceEquals(text.DataContext, row) && text.Text == row.PillText);
+                Assert.False(string.IsNullOrWhiteSpace(pill.Text));
+                Assert.Equal(expectedMuted, Assert.IsAssignableFrom<ISolidColorBrush>(pill.Foreground).Color);
+                Assert.Equal(row.PillText, AutomationProperties.GetName(pill));
+                Assert.DoesNotContain(window.GetVisualDescendants().OfType<TextBlock>(), text =>
+                    text.IsVisible && ReferenceEquals(text.DataContext, row) && text.Text == row.StatusText && row.IsPercentVisible);
+            }
+        }
+        finally { main.Close(); compact.Close(); }
+    }
+
+    [Fact]
+    public void Past_reset_keeps_the_observed_balance_and_exposes_pending_reset_in_accessible_copy()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        var resetAt = now.AddMinutes(-30);
+        var snapshot = new QuotaSnapshot(ProviderKind.Claude, "alice", "weekly", new(QuotaWindowKind.Weekly, now.AddDays(-2), now.AddDays(5), TimeSpan.FromDays(7), resetAt), 64, 100, null, "%", now.AddHours(-1), now.AddHours(-1), QuotaSource.Manual, QuotaConfidence.Manual, now.AddHours(1));
+        var row = QuotaPresentationFormatter.Format(snapshot, now, UiLanguage.Japanese);
+
+        Assert.True(row.IsResetPending);
+        Assert.Contains("未確認", row.ResetPendingText);
+        Assert.Contains("残り 36%", row.PercentText);
+        Assert.Contains("リセット後の最新値は未確認", row.ProgressLabel);
+    }
+
+    [AvaloniaFact]
+    public void Dashboard_and_compact_cards_render_rings_at_their_responsive_sizes()
+    {
+        var dashboard = new MainWindow(new MainViewModel(new DemoDashboardSource()));
+        var narrowDashboard = new MainWindow(new MainViewModel(new DemoDashboardSource())) { Width = 760 };
+        var compact = new CompactQuotaWindow(new MainViewModel(new DemoDashboardSource()));
+        try
+        {
+            dashboard.Show();
+            narrowDashboard.Show();
+            compact.Show();
+            dashboard.UpdateLayout();
+            narrowDashboard.UpdateLayout();
+            compact.UpdateLayout();
+
+            var dashboardRings = dashboard.GetVisualDescendants().OfType<QuotaRingControl>().Where(ring => ring.IsEffectivelyVisible).ToArray();
+            var compactRings = compact.GetVisualDescendants().OfType<QuotaRingControl>().Where(ring => ring.IsEffectivelyVisible).ToArray();
+            // Mock plan A restores the large ring (about 86px dashboard / 72px widget); the demo
+            // Copilot card has no manual reference configured, so its ring stays hidden there.
+            Assert.Equal(3, dashboardRings.Length);
+            Assert.Equal(3, compactRings.Length);
+            Assert.All(dashboardRings, ring => Assert.Equal(86, ring.Bounds.Width));
+            Assert.All(compactRings, ring => Assert.Equal(72, ring.Bounds.Width));
+            Assert.All(dashboardRings.Where(ring => ring.DataContext is not ProviderCardViewModel { Provider: ProviderKind.Copilot }), ring => Assert.NotEmpty(ring.Segments));
+            Assert.All(dashboardRings, ring => Assert.Equal(86, ring.Bounds.Width));
+
+            var tileBorders = dashboard.GetVisualDescendants().OfType<Border>()
+                .Where(border => border.DataContext is ProviderCardViewModel && border.Classes.Contains("tile") && border.IsEffectivelyVisible)
+                .ToArray();
+            var columns = tileBorders.Select(border => border.TranslatePoint(new Point(0, 0), dashboard)!.Value.X).Distinct().Count();
+            Assert.Equal(4, tileBorders.Length);
+            Assert.All(tileBorders, border => Assert.Equal(160, border.Bounds.Height));
+            // Cards are at least 300px wide (mock plan A); with the unchanged 220px sidebar that
+            // yields two equal columns at 1100px, three columns from about 1250px.
+            Assert.True(columns >= 2, $"Expected at least two dashboard columns at 1100px; rendered {columns}.");
+            Assert.All(tileBorders, border => Assert.True(border.Bounds.Width >= 300, $"Card width {border.Bounds.Width:0.#} is below the 300px mock minimum."));
+
+            Assert.Equal(760, narrowDashboard.Bounds.Width);
+            var narrowTileBorders = narrowDashboard.GetVisualDescendants().OfType<Border>()
+                .Where(border => border.DataContext is ProviderCardViewModel && border.Classes.Contains("tile") && border.IsEffectivelyVisible)
+                .ToArray();
+            var narrowColumns = narrowTileBorders.Select(border => border.TranslatePoint(new Point(0, 0), narrowDashboard)!.Value.X).Distinct().Count();
+            Assert.InRange(narrowColumns, 1, 2);
+            Assert.All(narrowTileBorders, border => Assert.True(border.TranslatePoint(new Point(border.Bounds.Width, 0), narrowDashboard)!.Value.X <= narrowDashboard.Bounds.Width));
+
+            var compactCards = compact.GetVisualDescendants().OfType<Border>()
+                .Where(border => border.DataContext is ProviderCardViewModel && border.Classes.Contains("compact-tile") && border.IsEffectivelyVisible)
+                .ToArray();
+            Assert.Equal(4, compactCards.Length);
+            Assert.All(compactCards.Where(border => border.DataContext is ProviderCardViewModel { IsCopilotReferenceVisible: false }), border => Assert.InRange(border.Bounds.Height, 112, 140));
+            Assert.All(compactCards, border => Assert.True(border.TranslatePoint(new Point(border.Bounds.Width, 0), compact)!.Value.X <= compact.Bounds.Width));
+        }
+        finally
+        {
+            dashboard.Close();
+            dashboard.ViewModel.Dispose();
+            narrowDashboard.Close();
+            narrowDashboard.ViewModel.Dispose();
+            compact.Close();
+            compact.ViewModel.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Copilot_credit_and_reference_percentages_are_not_rendered_as_remaining_quota_rings()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "Acme", "AI credits", new(QuotaWindowKind.Monthly, now, now.AddDays(30), TimeSpan.FromDays(30), now.AddDays(30)), null, null, 83, "credits", now, now, QuotaSource.Experimental, QuotaConfidence.Estimated, now.AddHours(1));
+        var row = QuotaPresentationFormatter.Format(snapshot, now, UiLanguage.Japanese);
+        var card = new ProviderCardViewModel(ProviderKind.Copilot, "Copilot Business", "Acme", "#78A9FF", "接続済み", false, [row]);
+
+        Assert.Empty(card.RingSegments);
+        Assert.Contains("使用率 83%", card.Windows[0].PercentText);
+        Assert.Contains("残量ではありません", card.Windows[0].PercentText);
+    }
+
+    [Fact]
+    public void Quota_ring_summary_orders_short_windows_outside_and_centers_the_lowest_known_remaining_value()
+    {
+        var now = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
+        QuotaRowViewModel Row(QuotaWindowKind kind, TimeSpan duration, decimal used) =>
+            QuotaPresentationFormatter.Format(new QuotaSnapshot(ProviderKind.Claude, "alice", kind.ToString(), new(kind, now, now.Add(duration), duration, now.Add(duration)), used, 100, null, "%", now, now, QuotaSource.Manual, QuotaConfidence.Manual, now.AddHours(1)), now, UiLanguage.Japanese);
+        var card = new ProviderCardViewModel(ProviderKind.Claude, "Claude Max", "alice", "#73D6B1", "通常", false,
+        [
+            Row(QuotaWindowKind.Monthly, TimeSpan.FromDays(30), 88),
+            Row(QuotaWindowKind.Rolling, TimeSpan.FromHours(5), 38),
+            Row(QuotaWindowKind.Weekly, TimeSpan.FromDays(7), 71),
+            Row(QuotaWindowKind.Daily, TimeSpan.FromDays(1), 20)
+        ]);
+
+        Assert.Equal([QuotaWindowKind.Rolling, QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], card.RingSegments.Select(segment => segment.WindowKind));
+        Assert.Equal(1, card.AdditionalRingWindowCount);
+        Assert.Equal("+1 more windows outside rings", card.AdditionalRingWindowText);
+        Assert.Equal("+1件はリング外に表示", (card with { CurrentLanguage = UiLanguage.Japanese }).AdditionalRingWindowText);
+        Assert.Equal("12%", card.RemainingCenterText);
+        Assert.Equal("月次", card.RemainingCenterPeriodText);
+    }
+
     [AvaloniaFact]
     public async Task Codex_code_copy_uses_injected_clipboard_service()
     {
@@ -644,7 +899,7 @@ public sealed class UiRequirementsTests
         Assert.Equal("月次", monthly.WindowName);
         Assert.Equal(string.Empty, monthly.Metric);
         Assert.Equal("monthly", QuotaPresentationFormatter.Format(DemoSnapshot(10) with { Window = monthly.Snapshot!.Window, Metric = "monthly" }, now, UiLanguage.English).Metric);
-        Assert.Equal("ローリング枠", rolling.WindowName);
+        Assert.Equal("ローリング", rolling.WindowName);
         Assert.Equal("短時間枠", rolling.Metric);
     }
 
@@ -779,7 +1034,7 @@ public sealed class UiRequirementsTests
 
 
     [AvaloniaFact]
-    public void Rendered_progress_bars_use_the_four_semantic_theme_fills()
+    public void Rendered_quota_rings_use_the_four_semantic_theme_fills()
     {
         var window = new MainWindow(new MainViewModel(new DemoDashboardSource()), new UiProviderFacade());
         window.Show();
@@ -795,13 +1050,14 @@ public sealed class UiRequirementsTests
                 [UsageBand.OverLimit] = theme == ThemeMode.Light ? Color.Parse("#7952A3") : Color.Parse("#D0A4F2")
             };
 
-            var bars = window.GetVisualDescendants().OfType<ProgressBar>().Where(bar => !bar.IsIndeterminate && bar.DataContext is QuotaRowViewModel).ToList();
-            Assert.Equal(8, bars.Count);
-            foreach (var bar in bars)
+            var rings = window.GetVisualDescendants().OfType<QuotaRingControl>().ToList();
+            Assert.NotEmpty(rings);
+            foreach (var ring in rings)
             {
-                Assert.NotNull(bar.DataContext);
-                var row = Assert.IsType<QuotaRowViewModel>(bar.DataContext);
-                Assert.Equal(expected[row.Band], ((ISolidColorBrush)bar.Foreground!).Color);
+                Assert.Equal(expected[UsageBand.Normal], ((ISolidColorBrush)ring.NormalBrush!).Color);
+                Assert.Equal(expected[UsageBand.Attention], ((ISolidColorBrush)ring.AttentionBrush!).Color);
+                Assert.Equal(expected[UsageBand.Danger], ((ISolidColorBrush)ring.DangerBrush!).Color);
+                Assert.Equal(expected[UsageBand.OverLimit], ((ISolidColorBrush)ring.OverLimitBrush!).Color);
             }
         }
 

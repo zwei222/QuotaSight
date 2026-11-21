@@ -27,7 +27,37 @@ public sealed class CopilotReferenceAllowanceTests
     }
 
     [AvaloniaFact]
-    public async Task Manual_reference_uses_clamped_gauge_and_one_disclaimer_in_both_cards()
+    public async Task Copilot_reference_cards_hide_empty_ring_gutter_and_render_one_complete_disclaimer()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        await vm.SetCopilotReferenceAsync("1900");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
+        var main = new MainWindow(vm);
+        var compact = new CompactQuotaWindow(vm);
+        try
+        {
+            main.Show();
+            compact.Show();
+            main.UpdateLayout();
+            compact.UpdateLayout();
+            var mainCard = main.GetVisualDescendants().OfType<Border>().Single(border => border.DataContext is ProviderCardViewModel { Provider: ProviderKind.Copilot } && border.Classes.Contains("tile"));
+            var compactCard = compact.GetVisualDescendants().OfType<Border>().Single(border => border.DataContext is ProviderCardViewModel { Provider: ProviderKind.Copilot } && border.Classes.Contains("compact-tile"));
+            // Mock plan A draws the Copilot reference ring dashed instead of hiding the gutter.
+            Assert.True((mainCard.GetVisualDescendants().OfType<QuotaRingControl>().Single().Parent as Grid)!.IsVisible);
+            Assert.True((compactCard.GetVisualDescendants().OfType<QuotaRingControl>().Single().Parent as Grid)!.IsVisible);
+            foreach (var card in new[] { mainCard, compactCard })
+            {
+                var disclaimer = Assert.Single(card.GetVisualDescendants().OfType<TextBlock>(), text =>
+                    text.IsVisible && text.Text == new UiCopy(UiLanguage.English).CopilotReferenceDisclaimer);
+                Assert.Contains("Reference only", disclaimer.Text, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Not a personal balance", disclaimer.Text, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        finally { main.Close(); compact.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Manual_reference_uses_text_only_and_one_disclaimer_in_both_cards()
     {
         using var vm = new MainViewModel(new EmptyDashboardSource());
         await vm.SetCopilotReferenceAsync("1900");
@@ -41,8 +71,10 @@ public sealed class CopilotReferenceAllowanceTests
         Assert.DoesNotContain(card.Windows.Single().CompositionBarLabel, "Gross composition bar");
         var main = new MainWindow(vm); var compact = new CompactQuotaWindow(vm);
         main.Show(); compact.Show();
-        Assert.Contains(main.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CopilotReferenceGauge" && bar.IsVisible && bar.Value == 100 && AutomationProperties.GetName(bar)?.Contains("manual reference", StringComparison.OrdinalIgnoreCase) == true && AutomationProperties.GetName(bar)?.Contains("200%", StringComparison.Ordinal) == true);
-        Assert.Contains(compact.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CompactCopilotReferenceGauge" && bar.IsVisible && bar.Value == 100 && AutomationProperties.GetName(bar)?.Contains("manual reference", StringComparison.OrdinalIgnoreCase) == true && AutomationProperties.GetName(bar)?.Contains("200%", StringComparison.Ordinal) == true);
+        Assert.DoesNotContain(main.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CopilotReferenceGauge");
+        Assert.DoesNotContain(compact.GetVisualDescendants().OfType<ProgressBar>(), bar => bar.Name == "CompactCopilotReferenceGauge");
+        Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.Text?.Contains("Reference only · not remaining", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.Text?.Contains("Reference only · not remaining", StringComparison.OrdinalIgnoreCase) == true);
         main.Close(); compact.Close();
     }
 
@@ -111,10 +143,10 @@ public sealed class CopilotReferenceAllowanceTests
         Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
         Assert.Contains(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("Not a personal balance or plan limit.") == true);
         Assert.Contains(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text?.Contains("15.8%") == true);
-        Assert.Single(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
-        Assert.Single(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
-        var mainDisclaimer = main.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
-        var compactDisclaimer = compact.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Not a personal balance or plan limit.");
+        Assert.Single(main.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Reference only · not remaining. Not a personal balance or plan limit.");
+        Assert.Single(compact.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Reference only · not remaining. Not a personal balance or plan limit.");
+        var mainDisclaimer = main.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Reference only · not remaining. Not a personal balance or plan limit.");
+        var compactDisclaimer = compact.GetVisualDescendants().OfType<TextBlock>().Single(text => text.IsVisible && text.Text == "Reference only · not remaining. Not a personal balance or plan limit.");
         Assert.Equal(Avalonia.Media.TextWrapping.Wrap, mainDisclaimer.TextWrapping);
         Assert.Equal(Avalonia.Media.TextWrapping.Wrap, compactDisclaimer.TextWrapping);
         Assert.InRange(mainDisclaimer.Bounds.Width, 1, 300);

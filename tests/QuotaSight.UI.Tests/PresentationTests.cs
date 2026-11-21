@@ -10,11 +10,20 @@ using Avalonia.Automation;
 using QuotaSight.Core;
 using QuotaSight.UI;
 
-[assembly: AvaloniaTestApplication(typeof(App))]
+[assembly: AvaloniaTestApplication(typeof(QuotaSight.UI.Tests.SkiaHeadlessTestAppBuilder))]
 [assembly: AvaloniaTestIsolation(AvaloniaTestIsolationLevel.PerAssembly)]
 [assembly: CollectionBehavior(CollectionBehavior.CollectionPerAssembly, DisableTestParallelization = true)]
 
 namespace QuotaSight.UI.Tests;
+
+public sealed class SkiaHeadlessTestAppBuilder
+{
+    // Real Skia rendering (not the no-op headless drawing path) so tests can capture rendered
+    // frames and assert the actual QuotaRingControl render output pixel-by-pixel.
+    public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>()
+        .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+        .UseSkia();
+}
 
 public sealed class PresentationTests
 {
@@ -246,15 +255,22 @@ public sealed class PresentationTests
                 var key = variant == ThemeVariant.Light ? "Light" : "Dark";
                 var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key.ToString() == key).Value!;
                 var surface = ((ISolidColorBrush)theme["CardBrush"]!).Color;
-                var expected = ((ISolidColorBrush)theme["StatusTextForegroundBrush"]!).Color;
-                var statusTexts = new Window[] { main, compact }.Select(window => window.GetVisualDescendants().OfType<TextBlock>()
-                    .Where(text => text.DataContext is QuotaRowViewModel row && text.Text == row.StatusText).ToList()).ToArray();
-                Assert.All(statusTexts, Assert.NotEmpty);
-                foreach (var status in statusTexts.SelectMany(items => items))
+                var badges = new Window[] { main, compact }.Select(window => window.GetVisualDescendants().OfType<TextBlock>()
+                    .Where(text => text.DataContext is QuotaRowViewModel row && row.PillText.Length > 0 && text.Text == row.PillText && text.IsVisible).ToList()).ToArray();
+                Assert.All(badges, Assert.NotEmpty);
+                foreach (var badge in badges.SelectMany(items => items))
                 {
-                    var actual = Assert.IsAssignableFrom<ISolidColorBrush>(status.Foreground).Color;
-                    Assert.Equal(expected, actual);
-                    Assert.True(ContrastRatio(surface, actual) >= 4.5, $"{key} rendered row status contrast must be at least 4.5:1.");
+                    var actual = Assert.IsAssignableFrom<ISolidColorBrush>(badge.Foreground).Color;
+                    Assert.IsType<QuotaRowViewModel>(badge.DataContext);
+                    var expectedWarning = ((ISolidColorBrush)theme["WarningForegroundBrush"]!).Color;
+                    var expectedMuted = ((ISolidColorBrush)theme["TextMutedBrush"]!).Color;
+                    var expectedNormal = ((ISolidColorBrush)theme["TextPrimaryBrush"]!).Color;
+                    var expectedDanger = ((ISolidColorBrush)theme["GaugeDangerBrush"]!).Color;
+                    var expectedOver = ((ISolidColorBrush)theme["GaugeOverBrush"]!).Color;
+                    // Mock plan A pill palette: warn/danger/over accent colors, stale/unknown muted,
+                    // and the ordinary "Normal" pill in the primary text color.
+                    Assert.Contains(actual, new[] { expectedWarning, expectedMuted, expectedNormal, expectedDanger, expectedOver });
+                    Assert.True(ContrastRatio(surface, actual) >= 4.5, $"{key} rendered state badge contrast must be at least 4.5:1.");
                 }
             }
         }

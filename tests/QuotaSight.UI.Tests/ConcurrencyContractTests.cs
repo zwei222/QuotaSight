@@ -67,7 +67,7 @@ public sealed class ConcurrencyContractTests
         var localized = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         state.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.Count > 0 && state.FilteredEntries.All(entry => entry.WindowDisplay == "ローリング枠")) localized.TrySetResult(true);
+            if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.Count > 0 && state.FilteredEntries.All(entry => entry.WindowDisplay == "ローリング")) localized.TrySetResult(true);
         };
         state.SetLanguage(UiLanguage.Japanese);
         await localized.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -618,7 +618,7 @@ public sealed class ConcurrencyContractAvaloniaTests
         await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(5));
         scheduler.Release();
         await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.All(state.FilteredEntries.Take(10), entry => Assert.Equal("ローリング枠", entry.WindowDisplay));
+        Assert.All(state.FilteredEntries.Take(10), entry => Assert.Equal("ローリング", entry.WindowDisplay));
 
         Assert.True(await state.DeleteAsync(history.Events[0].EventId).WaitAsync(TimeSpan.FromSeconds(10)));
         await state.AppendAndReloadAsync([Snapshot(7)]).WaitAsync(TimeSpan.FromSeconds(10));
