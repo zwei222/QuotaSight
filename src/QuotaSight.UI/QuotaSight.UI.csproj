@@ -30,7 +30,14 @@
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <!-- Only the toast notification API is used (Microsoft.Windows.AppNotifications lives in
+         Foundation). Referencing the Microsoft.WindowsAppSDK metapackage also pulled in
+         WinUI, onnxruntime and DirectML, inflating the Windows ZIP with ~300 unused files. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <!-- Foundation 2.3.12 declares a dependency on InteractiveExperiences >= 2.1.8, but 2.1.8 was
+         never published, so NuGet resolves 2.1.9 and raises NU1603. Pinning the version it
+         actually resolves keeps warnings-as-errors enabled instead of suppressing NU1603. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
   <ItemGroup><AvaloniaResource Include="Assets/quotasight-icon.svg" /><AvaloniaResource Include="Assets/quotasight-*.png" /><AvaloniaResource Include="Assets/quotasight.ico" /></ItemGroup>

@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Xunit;
 
 namespace QuotaSight.Tests;
@@ -235,6 +236,38 @@ public sealed class WorkflowContractTests
     {
         Assert.Contains("Start-Process -FilePath .\\publish\\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru", Ci);
         Assert.Contains("$process.ExitCode -ne 0", Ci);
+    }
+
+    [Fact]
+    public void Ui_project_references_windows_app_sdk_foundation_instead_of_the_metapackage()
+    {
+        var references = XDocument.Parse(UiProject).Descendants("PackageReference").ToArray();
+
+        Assert.DoesNotContain(references, reference => (string?)reference.Attribute("Include") == "Microsoft.WindowsAppSDK");
+
+        var foundation = Assert.Single(
+            references,
+            reference => (string?)reference.Attribute("Include") == "Microsoft.WindowsAppSDK.Foundation");
+        Assert.Equal("2.3.12", (string?)foundation.Attribute("Version"));
+        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)foundation.Parent?.Attribute("Condition"));
+    }
+
+    [Fact]
+    public void Ui_project_pins_interactive_experiences_at_the_version_foundation_resolves_to()
+    {
+        var reference = Assert.Single(
+            XDocument.Parse(UiProject).Descendants("PackageReference"),
+            element => (string?)element.Attribute("Include") == "Microsoft.WindowsAppSDK.InteractiveExperiences");
+
+        Assert.Equal("2.1.9", (string?)reference.Attribute("Version"));
+        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)reference.Parent?.Attribute("Condition"));
+    }
+
+    [Fact]
+    public void Ui_project_keeps_windows_app_sdk_self_contained()
+    {
+        Assert.Contains("<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>", UiProject);
+        Assert.DoesNotContain("WindowsAppSDKSelfContained>false", UiProject);
     }
 
     private static string FindRoot()
