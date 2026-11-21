@@ -438,11 +438,13 @@ describe('deployment runbook', () => {
     expect(doc).toContain('### 8.1 Observed in one real account (2026-11-22)');
     expect(doc).toContain('### 8.2 Still unverified');
     const items = doc.match(/^- \[ \] /gm) ?? [];
-    expect(items).toHaveLength(13);
+    expect(items).toHaveLength(12);
     expect(doc).toContain('cpuTime');
     expect(doc).toContain('[observability]');
-    // The breakdown's own open items: the migration on existing rows, the v2 write
-    // shape and the breakdown read bounds.
+    // The tail reading of `cpuTime` is settled, so it is not on the list any more.
+    expect(doc).not.toContain('Confirm whether `wrangler tail` reports `cpuTime`');
+    // The breakdown's own open items: the migration on existing rows, the D1 side
+    // of the v2 write and the breakdown read bounds.
     expect(doc).toContain('`0004` applies to a database that already holds');
     expect(doc).toContain('Measure the v2 write shape in §6.7');
     expect(doc).toContain('`GET /v1/usage/breakdown` bounds on remote D1');
@@ -485,11 +487,35 @@ describe('deployment runbook', () => {
     expect(flat).toContain('leaves `usage_part` untouched');
   });
 
+  it('records the second measurement of the v2 shapes and why the default budget moved', async () => {
+    const flat = await readRunbookFlat();
+    const start = flat.indexOf('### 6.0.1 Second measurement (2026-11-22, the v2 shapes)');
+    expect(start).toBeGreaterThan(-1);
+    const section = flat.slice(start, flat.indexOf('### 6.1 Pass condition'));
+    // The same conditions discipline as §6.0: one account, one region, one tool.
+    expect(section).toContain('one account');
+    expect(section).toContain('Workers Free');
+    expect(section).toContain('Tokyo / NRT');
+    expect(section).toContain('wrangler tail');
+    expect(section).toContain('2026-11-22');
+    // Every reading keeps its sample size, and small-number resolution is named.
+    expect(section).toContain('8 invocations');
+    expect(section).toContain('6 invocations');
+    expect(section).toContain('median 7.5 ms');
+    expect(section).toContain('median 3.5 ms');
+    expect(section).toContain('P99 17.62 ms');
+    expect(section).toContain('integer number of milliseconds');
+    // The decision, what it trades away, and the counter still unread.
+    expect(section).toContain('16 KiB');
+    expect(section).toContain('rows_read');
+    expect(section).toContain('stays undecided');
+  });
+
   it('documents the v2 write as a shape the CPU gate has to cover', async () => {
     const doc = await readRunbook();
     expect(doc).toContain('### 6.7 The v2 write: what to measure');
     expect(doc).toContain('1024 breakdown rows');
-    expect(doc).toContain('30 KiB');
+    expect(doc).toContain('16 KiB');
     expect(doc).toContain('`rows_read`');
     expect(doc).toContain('`rows_written`');
     expect(doc).toContain('--parts-budget-bytes');
@@ -564,6 +590,11 @@ describe('deployment runbook', () => {
     expect(observed).toContain('3.84 ms');
     expect(observed).toContain('14.93 ms');
     expect(observed).toContain('not the gate');
+    // The second run read `cpuTime` per invocation and covered the v2 shapes.
+    expect(observed).toContain('wrangler tail');
+    expect(observed).toContain('median 7.5 ms');
+    expect(observed).toContain('median 3.5 ms');
+    expect(observed).toContain('16 KiB');
     // The read path at the documented bound was not exercised, and §8.1 says so.
     expect(observed).toContain('5000-row bound');
   });

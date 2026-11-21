@@ -28,7 +28,7 @@ dotnet run --project src/QuotaSight.Collector -- --preview --generation 1 --buck
 | `--bucket-time-zone <zone>` | Required. The zone the operator *verified* that the upstream scan bucketed days in. The `graph` JSON does **not** report it, so it is never inferred from the dates; API v1 only accepts `Asia/Tokyo` today, so anything else is rejected. |
 | `--upstream-partial` | Declares that upstream reported partial, unpriced or stale-priced usage (its stderr warning). The candidate is still emitted in preview, but the exit code becomes `3`. Cannot be combined with `--send`. |
 | `--wire-schema <1\|2>` | Default `1`. `1` sends daily totals only. `2` also sends the per-client/provider/model breakdown (see "Wire v2: the breakdown"), which the API stores and serves from `GET /v1/usage/breakdown`. Opt-in on purpose: the API has to understand v2 before a collector starts sending it. |
-| `--parts-budget-bytes <bytes>` | Wire v2 only; with `--wire-schema 1` it is a usage error, because v1 carries no breakdown. Body budget for the breakdown, `4096` to `32768` bytes, default `30720` (30 KiB — headroom below the API's 32 KiB body ceiling). The day totals are always sent; this only decides how much breakdown fits beside them. |
+| `--parts-budget-bytes <bytes>` | Wire v2 only; with `--wire-schema 1` it is a usage error, because v1 carries no breakdown. Body budget for the breakdown, `4096` to `32768` bytes, default `16384` (16 KiB — headroom below the API's 32 KiB body ceiling; lowered from 30 KiB by the 2026-11-22 measurement in the deployment runbook, §6.0.1). The day totals are always sent; this only decides how much breakdown fits beside them. |
 
 A v2 preview, byte-identical to what a v2 send would transmit:
 
@@ -113,6 +113,13 @@ rather than being truncated. The serialized body is then reduced until it fits
 `--parts-budget-bytes`: the **oldest** day's breakdown is dropped first, because a
 reader looks at recent days first, and a day total is never dropped. If even the
 day totals alone do not fit the budget, the run exits `4` and sends nothing.
+
+The default budget is 16 KiB (`16384` bytes, down from 30 KiB). The change comes
+from the 2026-11-22 measurement of a deployed Worker: a v2 send of about 31.9 KiB
+measured a 7.5 ms median with three of eight runs above 10 ms, while the same
+replacement pattern at 16 KiB measured 3.5 ms at the median and 7 ms at the
+maximum. The accepted range (`4096` to `32768`) is unchanged, so a larger body
+can still be requested explicitly.
 
 **Withheld days.** Every day whose breakdown is withheld — no client rows
 upstream, a sum that does not match the day total, an unreadable row, more rows or

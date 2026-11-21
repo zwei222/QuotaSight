@@ -93,6 +93,35 @@ public sealed class SnapshotWireV2Tests
         Assert.Equal((byte)'\n', wire.Bytes[^1]);
     }
 
+    [Fact]
+    public void TheDefaultPartsBudgetIs16KiBUnderTheBodyCeiling()
+    {
+        // Measured on 2026-11-22 in one account: the heaviest v2 write (about
+        // 31.9 KiB) sat at a 7.5 ms median with three of eight runs over 10 ms,
+        // while the same shape at 16 KiB stayed at a 3.5 ms median and a 7 ms
+        // maximum. The default therefore moved to 16 KiB; the accepted range is
+        // unchanged, so an operator can still choose anything from 4 to 32 KiB.
+        Assert.Equal(16 * 1024, TokscaleGraphContract.DefaultPartsBodyBytes);
+        Assert.Equal(4 * 1024, TokscaleGraphContract.MinPartsBudgetBytes);
+        Assert.Equal(32 * 1024, TokscaleGraphContract.MaxPartsBudgetBytes);
+    }
+
+    [Fact]
+    public void ABodyThatFitsUnder30KiBIsReducedToTheDefaultBudget()
+    {
+        // 8 days x 32 shared keys is 256 rows: inside every row and key bound,
+        // and inside the API ceiling, but larger than 16 KiB once the token
+        // values are twelve digits. The default budget alone has to reduce it.
+        var candidate = Synthetic(days: 8, keysPerDay: 32, sharedKeys: true, tokensPerComponent: 123456789012);
+
+        var wire = SnapshotWire.Serialize(candidate, 1, WireSchema.V2);
+
+        Assert.True(
+            wire.Bytes.Length <= 16 * 1024,
+            $"the default budget has to bound the body, but it was {wire.Bytes.Length} bytes");
+        Assert.True(wire.OmittedPartDays > 0, "the byte budget, not a row or key bound, has to reduce this body");
+    }
+
     /// <summary>
     /// The breakdown budget is an operator decision: the same candidate serialized
     /// with a small budget keeps fewer breakdown days, and never loses a day total.
@@ -214,7 +243,7 @@ public sealed class SnapshotWireV2Tests
     {
         // 32 days x 32 shared keys is exactly the row bound, so neither the key
         // count nor the row count can be what reduces the body: twelve-digit token
-        // values alone push it past 30 KiB.
+        // values alone push it past 16 KiB.
         var candidate = Synthetic(days: 32, keysPerDay: 32, sharedKeys: true, tokensPerComponent: 123456789012);
 
         var wire = SnapshotWire.Serialize(candidate, 1, WireSchema.V2);

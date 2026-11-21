@@ -50,8 +50,14 @@ public static class TokscaleGraphContract
     /// <see cref="MaxOutputBytes"/> is deliberate headroom: the API counts bytes,
     /// this counts bytes, and a rejection at the hard bound would throw away the
     /// whole snapshot instead of the breakdown of its oldest days.
+    ///
+    /// 16 KiB rather than the former 30 KiB: in one account on 2026-11-22 the
+    /// heaviest v2 write (about 31.9 KiB) measured a 7.5 ms median with three of
+    /// eight runs above 10 ms, while the same shape at 16 KiB measured 3.5 ms at
+    /// the median and 7 ms at the maximum. The accepted range below and above is
+    /// unchanged, so an operator who wants the largest body can still ask for it.
     /// </summary>
-    public const int DefaultPartsBodyBytes = 30 * 1024;
+    public const int DefaultPartsBodyBytes = 16 * 1024;
 
     /// <summary>
     /// Smallest accepted <c>--parts-budget-bytes</c>.
