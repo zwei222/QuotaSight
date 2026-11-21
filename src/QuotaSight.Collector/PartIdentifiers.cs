@@ -16,12 +16,22 @@ namespace QuotaSight.Collector;
 public static class PartIdentifiers
 {
     /// <summary>
-    /// Normalizes a client id.
+    /// Suffixes of local weight files.
     ///
-    /// Accepted only as a lowercase ASCII slug (<c>[a-z0-9][a-z0-9._-]{0,31}</c>).
-    /// Upstream casing is not "fixed" to lowercase: a client that reporters spell
-    /// inconsistently would silently merge into another client's row, so anything
-    /// that is not already lowercase stays unknown.
+    /// A value ending in one of these names a file on disk, never a model id. The
+    /// API applies the same list (`MODEL_FILE_SUFFIXES` in schema.ts).
+    /// </summary>
+    private static readonly string[] ModelFileSuffixes = [".gguf", ".safetensors", ".bin", ".onnx"];
+
+    /// <summary>
+    /// Normalizes a client id: lowercased (ASCII), then accepted only if it is a
+    /// slug (<c>[a-z0-9][a-z0-9._-]{0,31}</c>).
+    ///
+    /// Casing is not meaningful in a client name — reporters write <c>Codex</c>,
+    /// <c>codex</c> and <c>CODEX</c> for the same tool — so the value is folded
+    /// first and the pattern is applied to the folded form, exactly as for
+    /// provider and model. Only ASCII is folded: a non-ASCII value fails the
+    /// pattern instead of being transformed into another string.
     /// </summary>
     /// <param name="raw">Upstream value, or <c>null</c> when the field was absent.</param>
     public static string NormalizeClient(string? raw)
@@ -31,21 +41,22 @@ public static class PartIdentifiers
             return TokscaleGraphContract.UnknownIdentifier;
         }
 
-        if (!IsLowerAlphaNumeric(raw[0]))
+        var lowered = AsciiLower(raw);
+        if (!IsLowerAlphaNumeric(lowered[0]))
         {
             return TokscaleGraphContract.UnknownIdentifier;
         }
 
-        for (var index = 1; index < raw.Length; index++)
+        for (var index = 1; index < lowered.Length; index++)
         {
-            var character = raw[index];
+            var character = lowered[index];
             if (!IsLowerAlphaNumeric(character) && character is not ('.' or '_' or '-'))
             {
                 return TokscaleGraphContract.UnknownIdentifier;
             }
         }
 
-        return raw;
+        return lowered;
     }
 
     /// <summary>
@@ -142,12 +153,15 @@ public static class PartIdentifiers
     /// True when a (lowercased) model value describes a filesystem location rather
     /// than a model id.
     ///
-    /// The rules are deliberately narrow so that a real identifier survives:
+    /// The rules are deliberately narrow so that a real identifier survives, and
+    /// they are the same ones the API applies (<c>isPathShaped</c> in
+    /// <c>src/QuotaSight.Usage.Api/src/schema.ts</c>):
     /// <list type="bullet">
     /// <item>a leading separator (<c>/…</c>, <c>\…</c>) — absolute path;</item>
     /// <item>any backslash — a Windows path separator, never an identifier;</item>
     /// <item>a drive letter (<c>c:…</c>) — a Windows path;</item>
-    /// <item>a <c>.gguf</c> suffix — a local model file;</item>
+    /// <item>a local weight-file suffix (<c>.gguf</c>, <c>.safetensors</c>,
+    /// <c>.bin</c>, <c>.onnx</c>) — a file on disk, whatever its directory;</item>
     /// <item>two or more slashes — a directory traversal, as in
     /// <c>org/sub/model</c>. A single slash stays accepted, because
     /// <c>org/model</c> is a documented model id form and dropping it would fold
@@ -172,9 +186,12 @@ public static class PartIdentifiers
             return true;
         }
 
-        if (value.EndsWith(".gguf", StringComparison.Ordinal))
+        foreach (var suffix in ModelFileSuffixes)
         {
-            return true;
+            if (value.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return true;
+            }
         }
 
         var slashes = 0;
@@ -229,4 +246,25 @@ public static class PartIdentifiers
 
     private static bool IsLowerAlphaNumeric(char character) =>
         character is >= 'a' and <= 'z' or >= '0' and <= '9';
+
+    /// <summary>
+    /// Folds ASCII letters to lower case, leaving every other character alone.
+    ///
+    /// Deliberately not <c>ToLowerInvariant</c>: that can change a string's length
+    /// (`İ` becomes two characters) and would let a non-ASCII value turn into a
+    /// different identifier instead of being rejected by the pattern.
+    /// </summary>
+    private static string AsciiLower(string value)
+    {
+        var buffer = value.ToCharArray();
+        for (var index = 0; index < buffer.Length; index++)
+        {
+            if (buffer[index] is >= 'A' and <= 'Z')
+            {
+                buffer[index] = (char)(buffer[index] + ('a' - 'A'));
+            }
+        }
+
+        return new string(buffer);
+    }
 }

@@ -45,13 +45,31 @@ public static class TokscaleGraphContract
     public const int MaxOutputBytes = 32 * 1024;
 
     /// <summary>
-    /// Body budget the collector holds itself to when it decides how much of the
-    /// breakdown to send. The difference from <see cref="MaxOutputBytes"/> is
-    /// deliberate headroom: the API counts bytes, this counts bytes, and a
-    /// rejection at the hard bound would throw away the whole snapshot instead of
-    /// the breakdown of its oldest days.
+    /// Default body budget the collector holds itself to when it decides how much of
+    /// the breakdown to send (<c>--parts-budget-bytes</c>). The difference from
+    /// <see cref="MaxOutputBytes"/> is deliberate headroom: the API counts bytes,
+    /// this counts bytes, and a rejection at the hard bound would throw away the
+    /// whole snapshot instead of the breakdown of its oldest days.
     /// </summary>
-    public const int MaxPartsBodyBytes = 30 * 1024;
+    public const int DefaultPartsBodyBytes = 30 * 1024;
+
+    /// <summary>
+    /// Smallest accepted <c>--parts-budget-bytes</c>.
+    ///
+    /// 4 KiB is the point below which the day rows of a full snapshot no longer
+    /// fit: 62 days with twelve-digit totals are about 3 KiB before the envelope,
+    /// so a smaller budget could not be honoured even with every breakdown
+    /// dropped, and the collector would fail instead of sending the totals.
+    /// </summary>
+    public const int MinPartsBudgetBytes = 4 * 1024;
+
+    /// <summary>
+    /// Largest accepted <c>--parts-budget-bytes</c>: the API's own body ceiling.
+    ///
+    /// A budget above it would promise room the API does not have, and the request
+    /// would be rejected at the body bound instead of reduced here.
+    /// </summary>
+    public const int MaxPartsBudgetBytes = MaxOutputBytes;
 
     /// <summary>Maximum number of day rows in a snapshot.</summary>
     public const int MaxDays = 62;

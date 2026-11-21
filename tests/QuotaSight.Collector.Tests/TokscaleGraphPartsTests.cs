@@ -4,12 +4,14 @@ using System.Text;
 namespace QuotaSight.Collector.Tests;
 
 /// <summary>
-/// How <c>contributions[].clients</c> becomes a day's breakdown.
+/// How <c>contributions[].clients</c> becomes a day's breakdown, and how little the
+/// wire v1 path cares about it.
 ///
 /// The rule under test throughout: a day's breakdown either explains that day's
 /// total exactly or is not sent at all, and withheld days are counted so the
 /// operator can tell "no breakdown upstream" from "a breakdown this collector
-/// refused to send".
+/// refused to send". A day whose client rows cannot be read at all is withheld,
+/// never a reason to reject the snapshot: the daily totals are still true.
 /// </summary>
 public sealed class TokscaleGraphPartsTests
 {
@@ -20,18 +22,20 @@ public sealed class TokscaleGraphPartsTests
     public void PinnedPartsFixtureYieldsAscendingKeysAndExactSums()
     {
         var candidate = Assert.IsType<SnapshotCandidate>(
-            TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts)).Candidate);
+            TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts), WireSchema.V2).Candidate);
 
         Assert.Equal(0, candidate.OmittedPartDays);
         Assert.Equal(new[] { "2026-11-17", "2026-11-18" }, candidate.Days.Select(day => day.Date));
 
         var first = candidate.Days[0].Parts;
         Assert.NotNull(first);
+        // The mixed-case client is folded to lower case; the path-shaped model
+        // stays unknown, so the key is one the API accepts.
         Assert.Equal(
             new[]
             {
-                (new SnapshotPartKey("", "anthropic,openai", "claude-sonnet-5-5[1m]"), 100L, 20L, 10L, 0L, 5L),
                 (new SnapshotPartKey("codex", "", ""), 190L, 10L, 5L, 0L, 0L),
+                (new SnapshotPartKey("conduit", "anthropic,openai", "claude-sonnet-5-5[1m]"), 100L, 20L, 10L, 0L, 5L),
             },
             first!.Select(part => (part.Key, part.Input, part.Output, part.CacheRead, part.CacheWrite, part.Reasoning)));
         Assert.Equal(340, first.Sum(part => part.Total));
@@ -49,7 +53,7 @@ public sealed class TokscaleGraphPartsTests
             ("2026-11-17", 120,
             [
                 """{"client": "codex", "modelId": "GPT-5.1", "providerId": "openai", "tokens": {"input": 40, "output": 5, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0}}""",
-                """{"client": "codex", "modelId": "gpt-5.1", "providerId": "OpenAI", "tokens": {"input": 60, "output": 10, "cacheRead": 5, "cacheWrite": 0, "reasoning": 0}}""",
+                """{"client": "CODEX", "modelId": "gpt-5.1", "providerId": "OpenAI", "tokens": {"input": 60, "output": 10, "cacheRead": 5, "cacheWrite": 0, "reasoning": 0}}""",
             ]));
 
         var candidate = Normalize(document);
@@ -57,6 +61,7 @@ public sealed class TokscaleGraphPartsTests
         var parts = candidate.Days[0].Parts;
         Assert.NotNull(parts);
         var part = Assert.Single(parts!);
+        // Both client spellings fold to the same identifier, so the rows add up.
         Assert.Equal(new SnapshotPartKey("codex", "openai", "gpt-5.1"), part.Key);
         Assert.Equal((100L, 15L, 5L, 0L, 0L), (part.Input, part.Output, part.CacheRead, part.CacheWrite, part.Reasoning));
         Assert.Equal(120, part.Total);
@@ -114,39 +119,47 @@ public sealed class TokscaleGraphPartsTests
     [Theory]
     [InlineData("extra")]
     [InlineData("costProvenance")]
-    public void AnUnknownClientFieldIsRejected(string field)
+    [InlineData("sessionCount")]
+    public void AnUnknownClientFieldWithholdsThatDayInsteadOfRejectingTheSnapshot(string field)
     {
         var document = Graph(
             ("2026-11-17", 10,
             [
-                "{\"" + "client\": \"codex\", \"modelId\": \"gpt-5.1\", \"tokens\": {\"input\": 10, "
+                "{\"client\": \"codex\", \"modelId\": \"gpt-5.1\", \"tokens\": {\"input\": 10, "
                 + ZeroComponents + "}, \"" + field + "\": {}}",
+            ]),
+            ("2026-11-18", 20,
+            [
+                """{"client": "codex", "modelId": "gpt-5.1", "tokens": {"input": 20, "output": 0, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0}}""",
             ]));
 
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var candidate = Normalize(document);
 
-        Assert.Equal(NormalizationStatus.Rejected, result.Status);
-        Assert.Equal("contributions[0].clients[0]." + field, result.Field);
-        Assert.Equal("unexpected_field", result.Reason);
+        // The unreadable day keeps its total and loses its breakdown; the next day
+        // is read normally, so one bad day cannot cost the whole snapshot.
+        Assert.Null(candidate.Days[0].Parts);
+        Assert.Equal(10, candidate.Days[0].TotalTokens);
+        Assert.NotNull(candidate.Days[1].Parts);
+        Assert.Equal(1, candidate.OmittedPartDays);
     }
 
     [Fact]
-    public void AClientRowWithoutTokensIsRejected()
+    public void AClientRowWithoutTokensWithholdsThatDay()
     {
         var document = Graph(("2026-11-17", 10, ["""{"client": "codex", "modelId": "gpt-5.1"}"""]));
 
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var candidate = Normalize(document);
 
-        Assert.Equal(NormalizationStatus.Rejected, result.Status);
-        Assert.Equal("contributions[0].clients[0].tokens", result.Field);
-        Assert.Equal("missing_field", result.Reason);
+        Assert.Null(candidate.Days[0].Parts);
+        Assert.Equal(10, candidate.Days[0].TotalTokens);
+        Assert.Equal(1, candidate.OmittedPartDays);
     }
 
     [Theory]
     [InlineData("input")]
     [InlineData("cacheRead")]
     [InlineData("reasoning")]
-    public void AClientTokenComponentThatIsMissingIsRejectedRatherThanZeroed(string missing)
+    public void AClientTokenComponentThatIsMissingWithholdsThatDayRatherThanZeroing(string missing)
     {
         var all = new Dictionary<string, string>
         {
@@ -165,15 +178,14 @@ public sealed class TokscaleGraphPartsTests
                 "{" + ClientHeader + ", \"tokens\": {" + tokens + "}}",
             ]));
 
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var candidate = Normalize(document);
 
-        Assert.Equal(NormalizationStatus.Rejected, result.Status);
-        Assert.Equal("contributions[0].clients[0].tokens." + missing, result.Field);
-        Assert.Equal("missing_field", result.Reason);
+        Assert.Null(candidate.Days[0].Parts);
+        Assert.Equal(1, candidate.OmittedPartDays);
     }
 
     [Fact]
-    public void AClientTokenComponentThatIsNotAnIntegerIsRejected()
+    public void AClientTokenComponentThatIsNotAnIntegerWithholdsThatDay()
     {
         var document = Graph(
             ("2026-11-17", 10,
@@ -181,24 +193,57 @@ public sealed class TokscaleGraphPartsTests
                 "{" + ClientHeader + ", \"tokens\": {\"input\": 10.5, " + ZeroComponents + "}}",
             ]));
 
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var candidate = Normalize(document);
 
-        Assert.Equal(NormalizationStatus.Rejected, result.Status);
-        Assert.Equal("contributions[0].clients[0].tokens.input", result.Field);
-        Assert.Equal("invalid_integer", result.Reason);
+        Assert.Null(candidate.Days[0].Parts);
+        Assert.Equal(1, candidate.OmittedPartDays);
     }
 
     [Fact]
-    public void ClientsThatAreNotAnArrayAreRejected()
+    public void ClientsThatAreNotAnArrayWithholdThatDay()
     {
         var document = "{\n  \"meta\": {\"generatedAt\": \"2026-11-19T18:49:08.875485588+00:00\", \"version\": \"4.23.0\"},\n"
             + "  \"contributions\": [{\"date\": \"2026-11-17\", \"totals\": {\"tokens\": 10}, \"clients\": \"none\"}]\n}\n";
 
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var candidate = Normalize(document);
 
-        Assert.Equal(NormalizationStatus.Rejected, result.Status);
-        Assert.Equal("contributions[0].clients", result.Field);
-        Assert.Equal("invalid_type", result.Reason);
+        Assert.Null(candidate.Days[0].Parts);
+        Assert.Equal(10, candidate.Days[0].TotalTokens);
+        Assert.Equal(1, candidate.OmittedPartDays);
+    }
+
+    /// <summary>
+    /// Wire v1 never reads <c>clients[]</c>, so nothing about the breakdown can
+    /// break it: unknown client fields, a null provider, an over-long key list and
+    /// a very large array all produce the bytes the collector produced before the
+    /// breakdown existed. The expected text is pinned literally for that reason.
+    /// </summary>
+    [Fact]
+    public void WireV1IgnoresEverythingAboutTheBreakdown()
+    {
+        var rows = new List<string>();
+        for (var index = 0; index < 600; index++)
+        {
+            rows.Add(
+                "{\"client\": \"codex\", \"modelId\": \"m"
+                + index.ToString("000", CultureInfo.InvariantCulture)
+                + "\", \"providerId\": null, \"tokens\": {\"input\": 1, " + ZeroComponents
+                + "}, \"sessionCount\": " + index.ToString(CultureInfo.InvariantCulture) + "}");
+        }
+
+        var document = Graph(("2026-11-17", 400, [.. rows]), ("2026-11-18", 1200, [.. rows]));
+
+        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document), WireSchema.V1);
+
+        var candidate = Assert.IsType<SnapshotCandidate>(result.Candidate);
+        Assert.Equal(0, candidate.OmittedPartDays);
+        Assert.All(candidate.Days, day => Assert.Null(day.Parts));
+        Assert.Equal(
+            "{\"schemaVersion\":1,\"adapterVersion\":\"tokscale-4.23.0\",\"generation\":5,"
+            + "\"collectedAt\":\"2026-11-19T18:49:08.875Z\",\"bucketTimeZone\":\"Asia/Tokyo\","
+            + "\"coveredRange\":{\"from\":\"2026-11-17\",\"to\":\"2026-11-18\"},"
+            + "\"days\":[{\"date\":\"2026-11-17\",\"totalTokens\":400},{\"date\":\"2026-11-18\",\"totalTokens\":1200}]}\n",
+            SnapshotWire.Text(SnapshotWire.Serialize(candidate, generation: 5)));
     }
 
     /// <summary>Builds a pinned-shape document from dated rows and their client rows.</summary>
@@ -226,7 +271,7 @@ public sealed class TokscaleGraphPartsTests
 
     private static SnapshotCandidate Normalize(string document)
     {
-        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document));
+        var result = TokscaleGraphNormalizer.Normalize(FixtureFiles.Utf8(document), WireSchema.V2);
         Assert.Equal(NormalizationStatus.Candidate, result.Status);
         return Assert.IsType<SnapshotCandidate>(result.Candidate);
     }

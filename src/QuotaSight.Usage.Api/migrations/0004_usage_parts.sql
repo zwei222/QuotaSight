@@ -13,16 +13,31 @@
 -- part of the key for the same reason as in `usage_day`: a superseded
 -- generation keeps its history and can never be written again.
 --
--- Invariants enforced here, not only by the write path:
+-- What is enforced here, not only by the write path:
 --   * only the collector's active generation may be written (trigger)
---   * a stored component total may never be lowered (trigger)
 --   * total_tokens is exactly the sum of the five components (CHECK)
 --   * every component and the total is a non-negative safe integer (CHECK)
 --   * identifiers are bounded to the wire contract's own limits (CHECK)
+--   * a stored row is never edited to a lower total in place (trigger); the write
+--     path replaces a day's whole set instead of updating one row of it
 --
--- `total_tokens` is stored rather than computed so the monotonic-upsert
--- statement can compare one integer, and so the rows that add up to the day's
--- attribution can be summed without recomputing five columns per row.
+-- What is not: the per-day rule itself. A day's breakdown is one *set*: the write
+-- path deletes the stored set of a day and re-inserts it when that day's total
+-- grows, and leaves the day untouched when it does not (an equal total is not a
+-- new explanation). Per-row maxima would let two snapshots add their
+-- explanations together, so the sum of a day's rows is a property of the set, not
+-- of a column. A table cannot express "the sum of a group may only be replaced as
+-- a whole", so that rule lives in `store.ts` and is covered by its tests; the
+-- consequence the read path relies on — the rows of a day never add up to more
+-- than that day's accepted total — follows from the set being accepted only up to
+-- the day total, which itself only ever moves up.
+--
+-- The 6-key primary key is also the only index the table needs: every read
+-- filters by collector, generation and a date range, and every write seeks by the
+-- same prefix.
+--
+-- `total_tokens` is stored rather than computed so the read path can sum one
+-- integer per row instead of recomputing five columns.
 
 CREATE TABLE usage_part (
   collector_id       TEXT    NOT NULL REFERENCES collectors (id) ON DELETE CASCADE,
@@ -66,7 +81,10 @@ BEGIN
   SELECT RAISE(ABORT, 'collector_generation_inactive');
 END;
 
-CREATE TRIGGER usage_part_rejects_unverified_reduction
+-- A row is replaced, never edited downwards: the write path deletes a day's rows
+-- and inserts the new set, so no statement of its own lowers a stored total.
+-- This trigger keeps a direct UPDATE from doing what the write path never does.
+CREATE TRIGGER usage_part_rejects_in_place_reduction
 BEFORE UPDATE OF total_tokens ON usage_part
 WHEN NEW.total_tokens < OLD.total_tokens
 BEGIN
@@ -75,8 +93,10 @@ END;
 
 -- The receipt has to explain a v2 write as completely as it explains a v1
 -- write: `ignored_reductions` counts day totals that were kept at a higher
--- accepted value, and the new column counts the same thing per breakdown row.
--- The bound is the wire's own per-snapshot part limit (32 days x 32 parts).
+-- accepted value, and the new column counts the same thing for the breakdown.
+-- It counts *days* (not rows), because a day's breakdown is accepted or replaced
+-- as a whole, so its bound is the snapshot's day bound: 62 days. (The row bounds
+-- are separate: 32 rows per day and 1024 rows per snapshot.)
 ALTER TABLE snapshot_receipts
   ADD COLUMN ignored_part_reductions INTEGER NOT NULL DEFAULT 0
-  CHECK (ignored_part_reductions >= 0 AND ignored_part_reductions <= 1024);
+  CHECK (ignored_part_reductions >= 0 AND ignored_part_reductions <= 62);

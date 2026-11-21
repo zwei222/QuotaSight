@@ -108,6 +108,13 @@ public static class CollectorCli
     /// </summary>
     public const string WireSchemaOption = "--wire-schema";
 
+    /// <summary>
+    /// Body budget for the wire v2 breakdown, in bytes (default
+    /// <see cref="TokscaleGraphContract.DefaultPartsBodyBytes"/>). The day totals are
+    /// always sent; this only decides how much breakdown fits beside them.
+    /// </summary>
+    public const string PartsBudgetOption = "--parts-budget-bytes";
+
     /// <summary>Initialises the state document with an explicit revision floor.</summary>
     public const string StateInitFlag = "--state-init";
 
@@ -171,6 +178,8 @@ public static class CollectorCli
         var stateAdvance = false;
         var stateShow = false;
         var wireSchema = WireSchema.V1;
+        var partsBudgetBytes = TokscaleGraphContract.DefaultPartsBodyBytes;
+        var partsBudgetGiven = false;
         long? generation = null;
         long? firstRevision = null;
         string? bucketTimeZone = null;
@@ -264,6 +273,19 @@ public static class CollectorCli
                     }
 
                     break;
+                case PartsBudgetOption:
+                    if (!TryTakeValue(args, ref index, out var budgetValue, stderr, PartsBudgetOption))
+                    {
+                        return CollectorExitCodes.Usage;
+                    }
+
+                    if (!TryParsePartsBudget(budgetValue, out partsBudgetBytes, out var budgetError))
+                    {
+                        return Usage(stderr, budgetError);
+                    }
+
+                    partsBudgetGiven = true;
+                    break;
                 default:
                     if (TrySplitOption(argument, RemovedRevisionOption, out _))
                     {
@@ -320,6 +342,17 @@ public static class CollectorCli
                         break;
                     }
 
+                    if (TrySplitOption(argument, PartsBudgetOption, out var inlineBudget))
+                    {
+                        if (!TryParsePartsBudget(inlineBudget, out partsBudgetBytes, out var inlineBudgetError))
+                        {
+                            return Usage(stderr, inlineBudgetError);
+                        }
+
+                        partsBudgetGiven = true;
+                        break;
+                    }
+
                     return Usage(stderr, "unknown argument.");
             }
         }
@@ -347,7 +380,7 @@ public static class CollectorCli
         {
             if (endpoint is not null || collectorId is not null || generation is not null
                 || bucketTimeZone is not null || firstRevision is not null || upstreamPartial
-                || wireSchema != WireSchema.V1)
+                || wireSchema != WireSchema.V1 || partsBudgetGiven)
             {
                 return Usage(stderr, "state_usage: --state-show and --state-advance take no other option.");
             }
@@ -360,7 +393,7 @@ public static class CollectorCli
         if (stateInit)
         {
             if (endpoint is not null || bucketTimeZone is not null || upstreamPartial
-                || wireSchema != WireSchema.V1)
+                || wireSchema != WireSchema.V1 || partsBudgetGiven)
             {
                 return Usage(stderr, "state_usage: --state-init takes --collector-id, --generation and --first-revision only.");
             }
@@ -401,6 +434,15 @@ public static class CollectorCli
         if (sendRequested && upstreamPartial)
         {
             return Usage(stderr, "send_usage: --send cannot be combined with --upstream-partial.");
+        }
+
+        if (partsBudgetGiven && wireSchema != WireSchema.V2)
+        {
+            // The budget only describes how much of the breakdown fits; wire v1
+            // carries no breakdown, so the option would silently do nothing.
+            return Usage(
+                stderr,
+                "usage: --parts-budget-bytes only applies to --wire-schema 2 (the wire version that carries the breakdown).");
         }
 
         Uri? sendEndpoint = null;
@@ -444,26 +486,27 @@ public static class CollectorCli
 
         if (sendRequested)
         {
-            return Send(send, sendEndpoint!, collectorId!, generation.Value, wireSchema, stdin, stderr);
+            return Send(send, sendEndpoint!, collectorId!, generation.Value, wireSchema, partsBudgetBytes, stdin, stderr);
         }
 
-        return Preview(generation.Value, upstreamPartial, wireSchema, stdin, stdout, stderr);
+        return Preview(generation.Value, upstreamPartial, wireSchema, partsBudgetBytes, stdin, stdout, stderr);
     }
 
     private static int Preview(
         long generation,
         bool upstreamPartial,
         WireSchema wireSchema,
+        int partsBudgetBytes,
         Stream stdin,
         Stream stdout,
         TextWriter stderr)
     {
-        if (!TryNormalize(stdin, stderr, out var candidate, out var exitCode))
+        if (!TryNormalize(stdin, stderr, wireSchema, out var candidate, out var exitCode))
         {
             return exitCode;
         }
 
-        var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema);
+        var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema, partsBudgetBytes);
         ReportOmittedPartDays(stderr, wire.OmittedPartDays);
         stdout.Write(wire.Bytes, 0, wire.Bytes.Length);
         stdout.Flush();
@@ -487,6 +530,7 @@ public static class CollectorCli
         string collectorId,
         long generation,
         WireSchema wireSchema,
+        int partsBudgetBytes,
         Stream stdin,
         TextWriter stderr)
     {
@@ -545,12 +589,12 @@ public static class CollectorCli
                         return CollectorExitCodes.StateBlocked;
                     }
 
-                    if (!TryNormalize(stdin, stderr, out var candidate, out var normalizeExit))
+                    if (!TryNormalize(stdin, stderr, wireSchema, out var candidate, out var normalizeExit))
                     {
                         return normalizeExit;
                     }
 
-                    var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema);
+                    var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema, partsBudgetBytes);
                     ReportOmittedPartDays(stderr, wire.OmittedPartDays);
 
                     var credentials = send?.Credentials ?? new SystemdLoadCredentialSource();
@@ -816,8 +860,13 @@ public static class CollectorCli
         return CollectorExitCodes.StateUnavailable;
     }
 
-    /// <summary>Reads one bounded document from stdin and normalizes it. Nothing is emitted here.</summary>
-    private static bool TryNormalize(Stream stdin, TextWriter stderr, out SnapshotCandidate? candidate, out int exitCode)
+    /// <summary>Reads one bounded document from stdin and normalizes it for the requested wire version. Nothing is emitted here.</summary>
+    private static bool TryNormalize(
+        Stream stdin,
+        TextWriter stderr,
+        WireSchema wireSchema,
+        out SnapshotCandidate? candidate,
+        out int exitCode)
     {
         candidate = null;
         exitCode = CollectorExitCodes.Candidate;
@@ -833,7 +882,7 @@ public static class CollectorCli
             return false;
         }
 
-        var result = TokscaleGraphNormalizer.Normalize(document);
+        var result = TokscaleGraphNormalizer.Normalize(document, wireSchema);
         switch (result.Status)
         {
             case NormalizationStatus.Rejected:
@@ -905,6 +954,56 @@ public static class CollectorCli
                 schema = WireSchema.V1;
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Parses <c>--parts-budget-bytes</c>: a decimal byte count between
+    /// <see cref="TokscaleGraphContract.MinPartsBudgetBytes"/> and
+    /// <see cref="TokscaleGraphContract.MaxPartsBudgetBytes"/>.
+    ///
+    /// The bounds are part of the option, not a surprise at run time: a budget the
+    /// collector could not honour (too small for the day totals) or one the API
+    /// would not accept (above its body ceiling) is a usage error with the accepted
+    /// range in the message.
+    /// </summary>
+    /// <param name="raw">Argument value.</param>
+    /// <param name="value">Parsed budget, or the default when the value is not usable.</param>
+    /// <param name="error">Message naming the range, empty on success.</param>
+    private static bool TryParsePartsBudget(string raw, out int value, out string error)
+    {
+        value = TokscaleGraphContract.DefaultPartsBodyBytes;
+        error = string.Empty;
+        if (raw.Length == 0 || !IsDecimalDigits(raw))
+        {
+            error = $"--parts-budget-bytes must be a whole number of bytes between "
+                + $"{TokscaleGraphContract.MinPartsBudgetBytes} and {TokscaleGraphContract.MaxPartsBudgetBytes}.";
+            return false;
+        }
+
+        if (!long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+            || parsed < TokscaleGraphContract.MinPartsBudgetBytes
+            || parsed > TokscaleGraphContract.MaxPartsBudgetBytes)
+        {
+            error = $"--parts-budget-bytes must be between {TokscaleGraphContract.MinPartsBudgetBytes} and "
+                + $"{TokscaleGraphContract.MaxPartsBudgetBytes} bytes (the API body ceiling).";
+            return false;
+        }
+
+        value = (int)parsed;
+        return true;
+    }
+
+    private static bool IsDecimalDigits(string raw)
+    {
+        foreach (var character in raw)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryParsePositiveInteger(string raw, out long value)

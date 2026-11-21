@@ -1,0 +1,12 @@
+{
+  "providerElementLengths": {
+    "accepted": [1, 2, 63, 64],
+    "rejected": [65]
+  },
+  "modelFileSuffixes": [".gguf", ".safetensors", ".bin", ".onnx"],
+  "acceptedModelForm": "org/model",
+  "clientLengths": {
+    "accepted": [1, 32],
+    "rejected": [33]
+  }
+}

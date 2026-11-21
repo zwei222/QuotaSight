@@ -39,6 +39,15 @@ export const MAX_BREAKDOWN_PARTS = 2_000;
 /** Upper bound on the coverage rows of one GET /v1/usage/breakdown response. */
 export const MAX_BREAKDOWN_COVERAGE = 5_000;
 
+/**
+ * Widest window `GET /v1/usage/breakdown` answers.
+ *
+ * The breakdown aggregates every key of every day in the range, so a wide range
+ * multiplies the rows the database has to read. The reader asks for 7 or 30
+ * days; 92 (three months) leaves room for a month-boundary window and no more.
+ */
+export const MAX_BREAKDOWN_QUERY_SPAN_DAYS = 92;
+
 /** Longest accepted client identifier (without the terminator). */
 export const MAX_CLIENT_LENGTH = 32;
 
@@ -80,11 +89,17 @@ const REVISION_PATTERN = /^(?:0|[1-9]\d*)$/;
  *   (the collector splits, trims, lowercases, de-duplicates and sorts), or `''`.
  * * model: lowercase identifier that may contain brackets; a path-shaped value
  *   is never a model id, so it is `''` instead.
+ *
+ * Lengths are inclusive of the terminator: a client is at most 32 characters, a
+ * provider element at most 64, a model at most 96. The collector enforces the
+ * same numbers, and both sides have boundary tests at the exact edge.
  */
 const CLIENT_PATTERN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
-const PROVIDER_ELEMENT_PATTERN = /^[a-z0-9][a-z0-9._:/@+-]{0,62}$/;
+const PROVIDER_ELEMENT_PATTERN = /^[a-z0-9][a-z0-9._:/@+-]{0,63}$/;
 const MODEL_PATTERN = /^[a-z0-9][a-z0-9._:/@+[\]-]{0,95}$/;
 const DRIVE_LETTER_PATTERN = /^[a-z]:/;
+/** Suffixes of local weight files: a value ending in one describes a file. */
+const MODEL_FILE_SUFFIXES = ['.gguf', '.safetensors', '.bin', '.onnx'] as const;
 
 export interface SnapshotDay {
   readonly date: string;
@@ -407,11 +422,21 @@ export function parseSnapshot(raw: unknown): Snapshot {
   };
 }
 
-/** True when `value` is a path, which is never a model identifier. */
+/**
+ * True when `value` is a path, which is never a model identifier.
+ *
+ * The rules are deliberately narrow so that a real identifier survives:
+ * a leading separator, any backslash, a drive letter, a local weight-file suffix
+ * (`.gguf`, `.safetensors`, `.bin`, `.onnx`), or two or more slashes. A single
+ * slash is the legitimate `org/model` form and stays accepted; the collector
+ * applies exactly the same rules.
+ */
 function isPathShaped(value: string): boolean {
   if (value.startsWith('/') || value.includes('\\')) return true;
   if (DRIVE_LETTER_PATTERN.test(value)) return true;
-  if (value.endsWith('.gguf')) return true;
+  for (const suffix of MODEL_FILE_SUFFIXES) {
+    if (value.endsWith(suffix)) return true;
+  }
   // Two separators describe a directory (`org/sub/model`), while a single one is
   // the legitimate `org/model` form and stays accepted.
   return value.split('/').length - 1 >= 2;
@@ -915,7 +940,16 @@ export function sumTokensSafely(values: readonly number[]): number {
   return total;
 }
 
-export function parseDailyQuery(url: URL): DailyQuery {
+/**
+ * Parses the shared `from`/`to`/`collector` query.
+ *
+ * `maxSpanDays` is the only thing the two read routes decide differently: the
+ * daily read accepts a year, the breakdown three months (see
+ * {@link MAX_BREAKDOWN_QUERY_SPAN_DAYS}). The error for an over-long range is the
+ * same 400 `invalid_query`/`range_too_long` shape on both, so a caller does not
+ * have to know which route answered to understand it.
+ */
+export function parseDailyQuery(url: URL, maxSpanDays: number = MAX_DAILY_QUERY_SPAN_DAYS): DailyQuery {
   const allowed = new Set(['from', 'to', 'collector']);
   for (const key of url.searchParams.keys()) {
     if (!allowed.has(key)) {
@@ -954,8 +988,8 @@ export function parseDailyQuery(url: URL): DailyQuery {
   if (span < 0) {
     throw queryError('from', 'inverted_range', 'from must not be after to.');
   }
-  if (span > MAX_DAILY_QUERY_SPAN_DAYS - 1) {
-    throw queryError('from', 'range_too_long', `The range must not exceed ${MAX_DAILY_QUERY_SPAN_DAYS} days.`);
+  if (span > maxSpanDays - 1) {
+    throw queryError('from', 'range_too_long', `The range must not exceed ${maxSpanDays} days.`);
   }
 
   const collectorRaw = url.searchParams.get('collector');

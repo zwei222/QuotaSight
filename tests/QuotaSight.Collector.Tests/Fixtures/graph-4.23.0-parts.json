@@ -22,7 +22,7 @@
       "tokenBreakdown": { "input": 290, "output": 30, "cacheRead": 15, "cacheWrite": 0, "reasoning": 5 },
       "clients": [
         {
-          "client": "Hermes",
+          "client": "Conduit",
           "modelId": "Claude-Sonnet-5-5[1m]",
           "providerId": "Anthropic, openai",
           "tokens": { "input": 100, "output": 20, "cacheRead": 10, "cacheWrite": 0, "reasoning": 5 },

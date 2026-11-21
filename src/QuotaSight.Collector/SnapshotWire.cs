@@ -51,8 +51,17 @@ public static class SnapshotWire
     /// <param name="candidate">Normalized candidate snapshot.</param>
     /// <param name="generation">Operator-supplied collector generation (positive safe integer).</param>
     /// <param name="schema">Wire contract to emit.</param>
+    /// <param name="partsBudgetBytes">
+    /// Body budget for the breakdown of wire v2, in bytes. Defaults to
+    /// <see cref="TokscaleGraphContract.DefaultPartsBodyBytes"/>; the day totals are
+    /// always sent, whatever it is.
+    /// </param>
     /// <returns>The wire bytes and how many days had their breakdown withheld.</returns>
-    public static WireSnapshot Serialize(SnapshotCandidate candidate, long generation, WireSchema schema)
+    public static WireSnapshot Serialize(
+        SnapshotCandidate candidate,
+        long generation,
+        WireSchema schema,
+        int partsBudgetBytes = TokscaleGraphContract.DefaultPartsBodyBytes)
     {
         ArgumentNullException.ThrowIfNull(candidate);
         if (generation < 1 || generation > TokscaleGraphContract.MaxSafeInteger)
@@ -61,6 +70,16 @@ public static class SnapshotWire
                 nameof(generation),
                 generation,
                 "generation must be a positive safe integer.");
+        }
+
+        if (partsBudgetBytes < TokscaleGraphContract.MinPartsBudgetBytes
+            || partsBudgetBytes > TokscaleGraphContract.MaxPartsBudgetBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(partsBudgetBytes),
+                partsBudgetBytes,
+                $"the breakdown budget must be between {TokscaleGraphContract.MinPartsBudgetBytes} and "
+                + $"{TokscaleGraphContract.MaxPartsBudgetBytes} bytes.");
         }
 
         if (!string.Equals(candidate.BucketTimeZone, TokscaleGraphContract.SupportedBucketTimeZone, StringComparison.Ordinal))
@@ -80,7 +99,7 @@ public static class SnapshotWire
 
         if (schema == WireSchema.V2)
         {
-            return SerializeV2(candidate, generation);
+            return SerializeV2(candidate, generation, partsBudgetBytes);
         }
 
         // Wire v1 never sends a breakdown, so there is nothing withheld to report:
@@ -131,7 +150,7 @@ public static class SnapshotWire
     /// costs less than losing it for today, and the day totals themselves are never
     /// dropped — the snapshot always explains every day it covers.
     /// </summary>
-    private static WireSnapshot SerializeV2(SnapshotCandidate candidate, long generation)
+    private static WireSnapshot SerializeV2(SnapshotCandidate candidate, long generation, int partsBudgetBytes)
     {
         var omitted = candidate.OmittedPartDays;
         var retained = new List<List<SnapshotPart>?>(candidate.Days.Count);
@@ -159,7 +178,7 @@ public static class SnapshotWire
             }
 
             var wire = WriteV2(candidate, generation, retained, keys);
-            if (wire.Length <= TokscaleGraphContract.MaxPartsBodyBytes
+            if (wire.Length <= partsBudgetBytes
                 && keys.Count <= TokscaleGraphContract.MaxKeys
                 && totalParts <= TokscaleGraphContract.MaxPartsPerSnapshot)
             {
@@ -192,7 +211,8 @@ public static class SnapshotWire
                 // No breakdown is left, so only the day totals remain; if those do
                 // not fit, the snapshot cannot be sent at all rather than sent short.
                 throw new InvalidOperationException(
-                    $"The day totals alone exceed the {TokscaleGraphContract.MaxPartsBodyBytes}-byte body budget.");
+                    $"The day totals alone exceed the {partsBudgetBytes}-byte breakdown budget "
+                    + $"(--parts-budget-bytes; the body ceiling is {TokscaleGraphContract.MaxOutputBytes} bytes).");
             }
         }
     }

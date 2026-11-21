@@ -13,7 +13,7 @@ public sealed class SnapshotWireV2Tests
 {
     private static SnapshotCandidate PartsCandidate() =>
         Assert.IsType<SnapshotCandidate>(
-            TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts)).Candidate);
+            TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts), WireSchema.V2).Candidate);
 
     [Fact]
     public void EmitsExactlyTheBytesTheApiTestStores()
@@ -87,10 +87,49 @@ public sealed class SnapshotWireV2Tests
     {
         var wire = SnapshotWire.Serialize(PartsCandidate(), 1, WireSchema.V2);
 
-        Assert.InRange(wire.Bytes.Length, 1, TokscaleGraphContract.MaxPartsBodyBytes);
+        Assert.InRange(wire.Bytes.Length, 1, TokscaleGraphContract.DefaultPartsBodyBytes);
         Assert.InRange(wire.Bytes.Length, 1, TokscaleGraphContract.MaxOutputBytes);
         Assert.Equal((byte)'{', wire.Bytes[0]);
         Assert.Equal((byte)'\n', wire.Bytes[^1]);
+    }
+
+    /// <summary>
+    /// The breakdown budget is an operator decision: the same candidate serialized
+    /// with a small budget keeps fewer breakdown days, and never loses a day total.
+    /// </summary>
+    [Fact]
+    public void ASmallerBudgetDropsBreakdownsAndKeepsEveryDayTotal()
+    {
+        var candidate = Synthetic(days: 20, keysPerDay: 8, sharedKeys: true, tokensPerComponent: 123456789);
+
+        var roomy = SnapshotWire.Serialize(candidate, 1, WireSchema.V2);
+        var tight = SnapshotWire.Serialize(
+            candidate,
+            1,
+            WireSchema.V2,
+            TokscaleGraphContract.MinPartsBudgetBytes);
+
+        Assert.True(tight.Bytes.Length <= TokscaleGraphContract.MinPartsBudgetBytes);
+        Assert.True(tight.Bytes.Length < roomy.Bytes.Length);
+        Assert.True(tight.OmittedPartDays > roomy.OmittedPartDays);
+
+        using var document = JsonDocument.Parse(tight.Bytes);
+        Assert.Equal(20, document.RootElement.GetProperty("days").GetArrayLength());
+        foreach (var day in document.RootElement.GetProperty("days").EnumerateArray())
+        {
+            Assert.True(day.GetProperty("totalTokens").GetInt64() > 0);
+        }
+    }
+
+    [Fact]
+    public void ABudgetOutsideTheAcceptedRangeIsRefused()
+    {
+        var candidate = PartsCandidate();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SnapshotWire.Serialize(candidate, 1, WireSchema.V2, TokscaleGraphContract.MinPartsBudgetBytes - 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SnapshotWire.Serialize(candidate, 1, WireSchema.V2, TokscaleGraphContract.MaxPartsBudgetBytes + 1));
     }
 
     [Fact]
@@ -180,7 +219,7 @@ public sealed class SnapshotWireV2Tests
 
         var wire = SnapshotWire.Serialize(candidate, 1, WireSchema.V2);
 
-        Assert.InRange(wire.Bytes.Length, 1, TokscaleGraphContract.MaxPartsBodyBytes);
+        Assert.InRange(wire.Bytes.Length, 1, TokscaleGraphContract.DefaultPartsBodyBytes);
         Assert.True(wire.OmittedPartDays > 0);
         AssertEveryKeyIsReferenced(wire.Bytes);
         using var document = JsonDocument.Parse(wire.Bytes);

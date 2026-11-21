@@ -5,16 +5,24 @@ namespace QuotaSight.Collector;
 
 /// <summary>
 /// Bounded, strict reader for the pinned <c>tokscale graph --json</c> document
-/// (version 4.23.0) that produces an API wire v1 candidate snapshot.
+/// (version 4.23.0) that produces an API wire candidate snapshot.
 ///
 /// Rules, all deliberate:
 /// <list type="bullet">
 /// <item>Only <c>meta.version</c>, <c>meta.generatedAt</c>, <c>contributions[].date</c>,
-/// <c>contributions[].totals.tokens</c> and <c>contributions[].clients[]</c> are
-/// consumed; every other value is skipped and never echoed.</item>
-/// <item>Client rows are reduced to the five token components and a normalized
-/// (client, provider, model) key. Costs, message counts and anything else upstream
-/// carries are never mapped.</item>
+/// <c>contributions[].totals.tokens</c> and (for wire v2 only)
+/// <c>contributions[].clients[]</c> are consumed; every other value is skipped and
+/// never echoed.</item>
+/// <item>The requested <see cref="WireSchema"/> decides whether <c>clients[]</c> is
+/// read at all. For wire v1 it is skipped exactly as it always was, so a document
+/// whose client rows changed shape still produces the daily totals it produced
+/// before the breakdown existed.</item>
+/// <item>For wire v2, client rows are reduced to the five token components and a
+/// normalized (client, provider, model) key. Costs, message counts and anything
+/// else upstream carries are never mapped. A day whose client rows cannot be read
+/// is sent with its total only and counted, rather than rejecting the whole
+/// snapshot: withholding one day's breakdown is a smaller loss than sending
+/// nothing, and guessing the rows from a broken shape is not an option.</item>
 /// <item>A day's breakdown is kept only when it explains the day's total exactly
 /// and fits one day's row bound; otherwise that day is sent with its total only and
 /// the withheld day is counted.</item>
@@ -46,10 +54,23 @@ public static class TokscaleGraphNormalizer
     /// </summary>
     private const int MaxClientRowsPerDay = 512;
 
-    /// <summary>Normalizes one bounded upstream document.</summary>
+    /// <summary>Normalizes one bounded upstream document for wire v1.</summary>
     /// <param name="utf8">UTF-8 bytes of the whole document; no more than the input bound.</param>
     /// <returns>A candidate, a no-dated-rows outcome, or a rejection.</returns>
-    public static NormalizationResult Normalize(ReadOnlySpan<byte> utf8)
+    public static NormalizationResult Normalize(ReadOnlySpan<byte> utf8) =>
+        Normalize(utf8, WireSchema.V1);
+
+    /// <summary>
+    /// Normalizes one bounded upstream document for the requested wire version.
+    ///
+    /// The version only decides whether <c>contributions[].clients[]</c> is read:
+    /// wire v1 carries daily totals and skips that field, wire v2 carries the
+    /// breakdown as well.
+    /// </summary>
+    /// <param name="utf8">UTF-8 bytes of the whole document; no more than the input bound.</param>
+    /// <param name="schema">Wire version the candidate will be serialized into.</param>
+    /// <returns>A candidate, a no-dated-rows outcome, or a rejection.</returns>
+    public static NormalizationResult Normalize(ReadOnlySpan<byte> utf8, WireSchema schema)
     {
         if (utf8.Length > TokscaleGraphContract.MaxInputBytes)
         {
@@ -74,7 +95,7 @@ public static class TokscaleGraphNormalizer
             });
 
             var builder = new GraphBuilder();
-            ReadDocument(ref reader, builder);
+            ReadDocument(ref reader, builder, schema);
 
             if (!IsWhitespaceOnly(utf8[(int)reader.BytesConsumed..]))
             {
@@ -96,7 +117,7 @@ public static class TokscaleGraphNormalizer
         }
     }
 
-    private static void ReadDocument(ref Utf8JsonReader reader, GraphBuilder builder)
+    private static void ReadDocument(ref Utf8JsonReader reader, GraphBuilder builder, WireSchema schema)
     {
         if (!reader.Read())
         {
@@ -108,7 +129,7 @@ public static class TokscaleGraphNormalizer
             throw Reject("$", "invalid_body", "The upstream document root must be a JSON object.");
         }
 
-        ReadRootObject(ref reader, builder);
+        ReadRootObject(ref reader, builder, schema);
     }
 
     private static bool IsWhitespaceOnly(ReadOnlySpan<byte> tail)
@@ -124,7 +145,7 @@ public static class TokscaleGraphNormalizer
         return true;
     }
 
-    private static void ReadRootObject(ref Utf8JsonReader reader, GraphBuilder builder)
+    private static void ReadRootObject(ref Utf8JsonReader reader, GraphBuilder builder, WireSchema schema)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var sawMeta = false;
@@ -158,7 +179,7 @@ public static class TokscaleGraphNormalizer
                     break;
                 case "contributions":
                     sawContributions = true;
-                    ReadContributions(ref reader, builder);
+                    ReadContributions(ref reader, builder, schema);
                     break;
                 default:
                     SkipValue(ref reader);
@@ -260,7 +281,7 @@ public static class TokscaleGraphNormalizer
         }
     }
 
-    private static void ReadContributions(ref Utf8JsonReader reader, GraphBuilder builder)
+    private static void ReadContributions(ref Utf8JsonReader reader, GraphBuilder builder, WireSchema schema)
     {
         if (reader.TokenType != JsonTokenType.StartArray)
         {
@@ -276,7 +297,7 @@ public static class TokscaleGraphNormalizer
                 break;
             }
 
-            ReadContribution(ref reader, builder, $"contributions[{index}]");
+            ReadContribution(ref reader, builder, $"contributions[{index}]", schema);
             index++;
 
             if (index > TokscaleGraphContract.MaxDays)
@@ -289,7 +310,7 @@ public static class TokscaleGraphNormalizer
         }
     }
 
-    private static void ReadContribution(ref Utf8JsonReader reader, GraphBuilder builder, string field)
+    private static void ReadContribution(ref Utf8JsonReader reader, GraphBuilder builder, string field, WireSchema schema)
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
@@ -300,6 +321,7 @@ public static class TokscaleGraphNormalizer
         string? date = null;
         long tokens = 0;
         List<SnapshotPart>? clients = null;
+        var clientsWithheld = false;
         var sawDate = false;
         var sawTotals = false;
 
@@ -345,7 +367,18 @@ public static class TokscaleGraphNormalizer
                     sawTotals = true;
                     break;
                 case "clients":
-                    clients = ReadClients(ref reader, $"{field}.clients");
+                    if (schema == WireSchema.V1)
+                    {
+                        // Wire v1 has carried this field since before the breakdown
+                        // existed and never read past it: the daily totals do not
+                        // depend on it, so a changed shape is not a reason to reject
+                        // a document v1 would have accepted before.
+                        SkipValue(ref reader);
+                        break;
+                    }
+
+                    clients = ReadClientsOrWithhold(ref reader, $"{field}.clients");
+                    clientsWithheld = clients is null;
                     break;
                 default:
                     // intensity and tokenBreakdown are upstream detail; they are discarded.
@@ -366,7 +399,66 @@ public static class TokscaleGraphNormalizer
             throw Reject($"{field}.totals", "missing_field", $"{field}.totals is required.");
         }
 
-        builder.AddDay(date!, tokens, clients ?? []);
+        builder.AddDay(date!, tokens, clients ?? [], clientsWithheld);
+    }
+
+    /// <summary>
+    /// Reads one day's client rows, or returns <c>null</c> when they cannot be read.
+    ///
+    /// A malformed day is withheld rather than fatal for the snapshot, which is the
+    /// same rule the rest of this file follows: a day whose breakdown is missing is
+    /// still a true daily total, while a rejected snapshot is no data at all. The
+    /// reader is left positioned on the end of the `clients` value either way, so
+    /// the rest of the day is read normally.
+    /// </summary>
+    /// <param name="reader">Reader positioned on the start of the value.</param>
+    /// <param name="field">Dotted path, used only for the skipped value's bounds.</param>
+    private static List<SnapshotPart>? ReadClientsOrWithhold(ref Utf8JsonReader reader, string field)
+    {
+        var valueDepth = reader.CurrentDepth;
+        try
+        {
+            return ReadClients(ref reader, field);
+        }
+        catch (RejectionException)
+        {
+            SkipToEndOfValue(ref reader, valueDepth);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Consumes the remainder of a value whose start token is at <paramref name="valueDepth"/>.
+    ///
+    /// Used only after a failed read of that value: the reader may be anywhere
+    /// inside it, so this walks forward to the token that closes it. A scalar value
+    /// has nothing to consume; a value the reader has already left is left alone.
+    /// </summary>
+    private static void SkipToEndOfValue(ref Utf8JsonReader reader, int valueDepth)
+    {
+        if (reader.CurrentDepth == valueDepth
+            && reader.TokenType is not (JsonTokenType.StartObject or JsonTokenType.StartArray))
+        {
+            return;
+        }
+
+        while (reader.Read())
+        {
+            if (reader.CurrentDepth == valueDepth
+                && reader.TokenType is JsonTokenType.EndArray or JsonTokenType.EndObject)
+            {
+                return;
+            }
+
+            if (reader.CurrentDepth < valueDepth)
+            {
+                // The value closed without a token at its own depth (a scalar that
+                // was the last value of its parent); nothing is left to skip.
+                return;
+            }
+        }
+
+        throw Reject("$", "invalid_json", "The upstream document ended inside a value.");
     }
 
     /// <summary>
@@ -790,14 +882,24 @@ public static class TokscaleGraphNormalizer
 
     private sealed class GraphBuilder
     {
-        private readonly List<(string Date, long Tokens, List<SnapshotPart> Clients)> _days = [];
+        private readonly List<(string Date, long Tokens, List<SnapshotPart> Clients, bool Withheld)> _days = [];
 
         internal string? UpstreamVersion { get; set; }
 
         internal string? CollectedAt { get; set; }
 
-        internal void AddDay(string date, long tokens, List<SnapshotPart> clients) =>
-            _days.Add((date, tokens, clients));
+        /// <summary>
+        /// Records one dated day.
+        /// </summary>
+        /// <param name="date">Strict date of the row.</param>
+        /// <param name="tokens">Observed total for the day.</param>
+        /// <param name="clients">Client rows, empty when upstream had none.</param>
+        /// <param name="withheld">
+        /// True when the client rows existed but could not be read; the day is sent
+        /// with its total only and counted as withheld.
+        /// </param>
+        internal void AddDay(string date, long tokens, List<SnapshotPart> clients, bool withheld) =>
+            _days.Add((date, tokens, clients, withheld));
 
         internal NormalizationResult Build()
         {
@@ -840,7 +942,18 @@ public static class TokscaleGraphNormalizer
 
             var omitted = 0;
             var days = ordered
-                .Select(day => new SnapshotDay(day.Date, day.Tokens, BuildParts(day.Tokens, day.Clients, ref omitted)))
+                .Select(day =>
+                {
+                    if (day.Withheld)
+                    {
+                        // The rows existed but were unreadable: withhold the day's
+                        // breakdown and count it, instead of sending nothing.
+                        omitted++;
+                        return new SnapshotDay(day.Date, day.Tokens);
+                    }
+
+                    return new SnapshotDay(day.Date, day.Tokens, BuildParts(day.Tokens, day.Clients, ref omitted));
+                })
                 .ToArray();
 
             return NormalizationResult.FromCandidate(new SnapshotCandidate(
@@ -858,7 +971,7 @@ public static class TokscaleGraphNormalizer
         /// Builds one day's breakdown, or <c>null</c> when the day must be sent with
         /// its total only.
         ///
-        /// Three rules, all of them "withhold rather than guess":
+        /// Four rules, all of them "withhold rather than guess":
         /// <list type="bullet">
         /// <item>Upstream reported no client rows for the day — nothing to attribute.</item>
         /// <item>The client rows do not add up to the day total. The API requires the
@@ -866,6 +979,8 @@ public static class TokscaleGraphNormalizer
         /// would be inventing a number; the day is therefore sent without parts.</item>
         /// <item>More distinct keys than one day may carry — a truncated list would
         /// silently drop real usage.</item>
+        /// <item>A component sum overflows — the row cannot be represented, so the day
+        /// is sent with its total only rather than with a wrapped number.</item>
         /// </list>
         /// Rows that normalize to the same key (the same client/model/provider under
         /// two spellings, or several rows for one key) are summed component by
@@ -879,23 +994,32 @@ public static class TokscaleGraphNormalizer
             }
 
             var sums = new Dictionary<SnapshotPartKey, SnapshotPart>();
-            foreach (var client in clients)
+            try
             {
-                if (sums.TryGetValue(client.Key, out var existing))
+                foreach (var client in clients)
                 {
-                    sums[client.Key] = existing with
+                    if (sums.TryGetValue(client.Key, out var existing))
                     {
-                        Input = existing.Input + client.Input,
-                        Output = existing.Output + client.Output,
-                        CacheRead = existing.CacheRead + client.CacheRead,
-                        CacheWrite = existing.CacheWrite + client.CacheWrite,
-                        Reasoning = existing.Reasoning + client.Reasoning,
-                    };
+                        sums[client.Key] = new SnapshotPart(
+                            client.Key,
+                            checked(existing.Input + client.Input),
+                            checked(existing.Output + client.Output),
+                            checked(existing.CacheRead + client.CacheRead),
+                            checked(existing.CacheWrite + client.CacheWrite),
+                            checked(existing.Reasoning + client.Reasoning));
+                    }
+                    else
+                    {
+                        sums[client.Key] = client;
+                    }
                 }
-                else
-                {
-                    sums[client.Key] = client;
-                }
+            }
+            catch (OverflowException)
+            {
+                // Two rows for one key that together exceed the representable range
+                // cannot be sent as one row, and splitting them would invent keys.
+                omitted++;
+                return null;
             }
 
             var parts = sums.Values.OrderBy(part => part.Key).ToList();
@@ -906,14 +1030,17 @@ public static class TokscaleGraphNormalizer
             }
 
             long attributed = 0;
-            foreach (var part in parts)
+            try
             {
-                attributed += part.Total;
-                if (attributed > TokscaleGraphContract.MaxSafeInteger)
+                foreach (var part in parts)
                 {
-                    omitted++;
-                    return null;
+                    attributed = checked(attributed + part.Total);
                 }
+            }
+            catch (OverflowException)
+            {
+                omitted++;
+                return null;
             }
 
             if (attributed != dayTotal)

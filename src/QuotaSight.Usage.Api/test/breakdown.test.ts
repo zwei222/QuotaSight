@@ -57,11 +57,23 @@ describe('GET /v1/usage/breakdown query', () => {
   it('rejects a missing or malformed range and unknown parameters', async () => {
     expect((await h.getBreakdown('?to=2026-11-30')).status).toBe(400);
     expect((await h.getBreakdown('?from=2026-11-30&to=2026-11-01')).status).toBe(400);
-    // 517 days: over the 366-day span the read accepts.
-    expect((await h.getBreakdown('?from=2026-01-01&to=2027-06-01')).status).toBe(400);
     expect((await h.getBreakdown('?from=2026-11-01&to=2026-11-30&extra=1')).status).toBe(400);
     expect((await h.getBreakdown('?from=2026-11-01&to=2026-11-30&collector=BAD')).status).toBe(400);
     expect((await h.getBreakdown('?from=2026-11-01&to=2026-11-30&collector=zzz')).status).toBe(404);
+  });
+
+  it('bounds the range at 92 days, the same way the daily read bounds its own', async () => {
+    // 92 days is the widest window the breakdown answers: two months plus the
+    // slack a month boundary needs. The reader asks for 7 or 30 days.
+    expect((await h.getBreakdown('?from=2026-01-01&to=2026-04-02')).status).toBe(200);
+    expect((await h.getBreakdown('?from=2026-01-01&to=2026-04-03')).status).toBe(400);
+
+    const rejected = await h.getBreakdown('?from=2026-01-01&to=2027-01-01');
+    expect(rejected.status).toBe(400);
+    const body = await json(rejected);
+    expect(body.error.code).toBe('invalid_query');
+    expect(body.error.details).toMatchObject({ field: 'from', reason: 'range_too_long' });
+    expect(body.error.message).toBe('The range must not exceed 92 days.');
   });
 });
 
@@ -267,9 +279,11 @@ describe('GET /v1/usage/breakdown bounds', () => {
   }, 120_000);
 
   it('refuses to truncate more than 5000 coverage rows', async () => {
-    // 14 collectors x 366 days is 5124 rows: over the bound, and still a range
-    // the API accepts, so the bound (not the range limit) is what rejects it.
-    const collectors = Array.from({ length: 14 }, (_, index) => ({
+    // 56 collectors x 92 days is 5152 rows: over the bound, inside the widest
+    // range the breakdown accepts (92 days) and inside the collector bound, so
+    // the row bound (not the range limit) is what rejects it.
+    const days = 92;
+    const collectors = Array.from({ length: 56 }, (_, index) => ({
       id: `col-${1000 + index}`,
       ownerId: FIXTURE.ownerA,
     }));
@@ -277,7 +291,7 @@ describe('GET /v1/usage/breakdown bounds', () => {
     const start = Date.UTC(2026, 0, 1);
     const seed = [];
     for (const collector of collectors) {
-      for (let index = 0; index < 366; index += 1) {
+      for (let index = 0; index < days; index += 1) {
         seed.push({
           collectorId: collector.id,
           date: new Date(start + index * 86_400_000).toISOString().slice(0, 10),
@@ -287,7 +301,7 @@ describe('GET /v1/usage/breakdown bounds', () => {
     }
     await seedUsage(h.db, seed);
 
-    const response = await h.getBreakdown('?from=2026-01-01&to=2026-12-31');
+    const response = await h.getBreakdown('?from=2026-01-01&to=2026-04-02');
     expect(response.status).toBe(413);
     expect((await json(response)).error.code).toBe('result_too_large');
   }, 120_000);

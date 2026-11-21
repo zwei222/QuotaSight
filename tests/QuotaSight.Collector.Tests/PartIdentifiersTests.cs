@@ -3,9 +3,9 @@ namespace QuotaSight.Collector.Tests;
 /// <summary>
 /// The identifier rules, as the API's own definition requires them.
 ///
-/// Each case states what a value means rather than only how it is spelled: a value
-/// that is not an identifier becomes the empty (unknown) identifier, and never a
-/// repaired one.
+/// Each case states what a value means rather than only how it is spelled: casing
+/// is folded for all three identifiers, a value that is not an identifier becomes
+/// the empty (unknown) identifier, and nothing is ever repaired or truncated.
 /// </summary>
 public sealed class PartIdentifiersTests
 {
@@ -14,22 +14,43 @@ public sealed class PartIdentifiersTests
     [InlineData("a", "a")]
     [InlineData("codex-cli", "codex-cli")]
     [InlineData("a.b_c-d1", "a.b_c-d1")]
+    [InlineData("Claude", "claude")]
+    [InlineData("CLAUDE", "claude")]
+    [InlineData("Codex-CLI", "codex-cli")]
     [InlineData("", "")]
     [InlineData(null, "")]
-    [InlineData("Claude", "")]
-    [InlineData("CLAUDE", "")]
     [InlineData("clau de", "")]
     [InlineData("-claude", "")]
     [InlineData(".claude", "")]
     [InlineData("claude/cli", "")]
     [InlineData("claude!", "")]
     [InlineData("claud\u00e9", "")]
-    public void ClientIsAcceptedOnlyAsALowercaseSlug(string? raw, string expected) =>
+    [InlineData("\u0130stanbul", "")]
+    public void ClientIsFoldedToAsciiLowerCaseAndAcceptedOnlyAsASlug(string? raw, string expected) =>
         Assert.Equal(expected, PartIdentifiers.NormalizeClient(raw));
 
     [Fact]
     public void ClientLongerThanTheWireBoundIsUnknown() =>
         Assert.Equal(string.Empty, PartIdentifiers.NormalizeClient(new string('a', 33)));
+
+    /// <summary>
+    /// The client length boundary, read from the same shared file the Worker's test
+    /// reads, so the two sides cannot disagree about it.
+    /// </summary>
+    [Fact]
+    public void ClientLengthBoundaryMatchesTheSharedRule()
+    {
+        var rules = IdentifierRules.Load();
+        foreach (var length in rules.ClientAcceptedLengths)
+        {
+            Assert.Equal(new string('a', length), PartIdentifiers.NormalizeClient(new string('a', length)));
+        }
+
+        foreach (var length in rules.ClientRejectedLengths)
+        {
+            Assert.Equal(string.Empty, PartIdentifiers.NormalizeClient(new string('a', length)));
+        }
+    }
 
     [Theory]
     [InlineData(null, "")]
@@ -80,6 +101,48 @@ public sealed class PartIdentifiersTests
     [InlineData("\\\\server\\share\\model")]
     public void PathShapedModelIsWithheld(string raw) =>
         Assert.Equal(string.Empty, PartIdentifiers.NormalizeModel(raw));
+
+    /// <summary>
+    /// The provider element boundary, from the shared rule file: an element may be
+    /// up to 64 characters, and the Worker's own test asserts the same numbers.
+    /// </summary>
+    [Fact]
+    public void ProviderElementBoundaryMatchesTheSharedRule()
+    {
+        var rules = IdentifierRules.Load();
+        foreach (var length in rules.ProviderElementAcceptedLengths)
+        {
+            Assert.Equal(
+                new string('p', length),
+                PartIdentifiers.NormalizeProvider(new string('p', length)));
+        }
+
+        foreach (var length in rules.ProviderElementRejectedLengths)
+        {
+            Assert.Equal(string.Empty, PartIdentifiers.NormalizeProvider(new string('p', length)));
+        }
+    }
+
+    /// <summary>
+    /// The local weight-file suffixes, from the same shared rule file the Worker's
+    /// test reads: a value ending in one is a file, not a model id.
+    /// </summary>
+    [Fact]
+    public void ModelFileSuffixesArePathsOnBothSides()
+    {
+        var rules = IdentifierRules.Load();
+        foreach (var suffix in rules.ModelFileSuffixes)
+        {
+            Assert.True(
+                PartIdentifiers.IsPathShapedModel("model" + suffix),
+                $"model{suffix} must be treated as a file");
+            Assert.Equal(string.Empty, PartIdentifiers.NormalizeModel("model" + suffix));
+        }
+
+        Assert.Equal(
+            rules.AcceptedModelForm,
+            PartIdentifiers.NormalizeModel(rules.AcceptedModelForm));
+    }
 
     [Fact]
     public void ModelLongerThanTheWireBoundIsUnknown() =>

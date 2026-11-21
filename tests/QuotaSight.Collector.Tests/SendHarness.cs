@@ -206,7 +206,7 @@ internal sealed class SendHarness : IDisposable
     /// <summary>The v2 bytes for the parts fixture, as the shared golden fixture holds them.</summary>
     public static byte[] ExpectedWireV2(long generation = 1)
     {
-        var candidate = TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts)).Candidate;
+        var candidate = TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts), WireSchema.V2).Candidate;
         Assert.NotNull(candidate);
         return SnapshotWire.Serialize(candidate!, generation, WireSchema.V2).Bytes;
     }

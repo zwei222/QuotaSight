@@ -3,10 +3,18 @@
  *
  * v2 is the same PUT route as v1 with a different body shape (`schemaVersion:
  * 2`), so these tests pin what "same route, second shape" means: the v1 keys
- * keep their names and order, the v2 keys are added after them, and the daily
- * total and the per-key breakdown are kept under their own monotonic rules.
+ * keep their names and order, and the v2 keys are added after them.
+ *
+ * The breakdown is stored as one *set of rows per day*, not as one maximum per
+ * row. A day's rows are replaced as a whole — deleted, then re-inserted — and
+ * only when the incoming snapshot attributes more tokens to that day than are
+ * stored. A day whose total is equal or smaller changes nothing at all, so the
+ * keys a day carries can never be mixed between two snapshots.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createHarness,
   FIXTURE,
@@ -19,6 +27,13 @@ import {
   usageRows,
   type Harness,
 } from './harness';
+
+/** The identifier boundaries both sides of the wire test against. */
+const identifierRulesPath = join(
+  resolve(dirname(fileURLToPath(import.meta.url))),
+  'fixtures',
+  'identifier-rules.json',
+);
 
 let h: Harness;
 
@@ -171,8 +186,8 @@ describe('PUT with schemaVersion 2', () => {
   });
 });
 
-describe('v2 monotonic rules', () => {
-  it('ignores a per-key reduction and reports it, keeping the accepted components', async () => {
+describe('v2 day totals and day breakdown sets', () => {
+  it('ignores a smaller day total and reports it, keeping the accepted day', async () => {
     await h.putSnapshot({
       revision: 1,
       body: snapshotBodyV2({
@@ -199,61 +214,115 @@ describe('v2 monotonic rules', () => {
     expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([100]);
   });
 
-  it('replaces all five components when the key total grows', async () => {
+  /**
+   * The reproduction an independent review measured: a re-scan that keeps the
+   * day total but moves tokens from one model to another. Per-row maxima added
+   * the two explanations together (100 + 60 = 160 attributed against a day total
+   * of 100). A day total that does not grow is not a new explanation, so the
+   * accepted set is left exactly as it was.
+   */
+  it('keeps the accepted set when the day total is unchanged and only its components moved', async () => {
     await h.putSnapshot({
       revision: 1,
       body: snapshotBodyV2({
-        days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 60, 10, 10, 5, 15]] }],
+        keys: [['codex', 'openai', 'gpt-5.1']],
+        days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 100, 0, 0, 0, 0]] }],
       }),
     });
-    const before = (await partRows(h.db))[0]!;
 
     const response = await h.putSnapshot({
       revision: 2,
       body: snapshotBodyV2({
+        keys: [
+          ['codex', 'openai', 'gpt-5.1'],
+          ['codex', 'openai', 'gpt-5.1-mini'],
+        ],
         days: [
           {
             date: '2026-11-18',
-            // 90 + 20 + 0 + 0 + 10 = 120 > 100, and every component is different:
-            // the whole row is replaced, not merged per column.
-            totalTokens: 120,
-            parts: [[0, 90, 20, 0, 0, 10]],
+            totalTokens: 100,
+            parts: [
+              [0, 40, 0, 0, 0, 0],
+              [1, 60, 0, 0, 0, 0],
+            ],
           },
         ],
       }),
     });
 
     expect(response.status).toBe(200);
-    expect(await json(response)).toMatchObject({ changedParts: 1, ignoredPartReductions: 0 });
-    const after = (await partRows(h.db))[0]!;
-    expect([after.input_tokens, after.output_tokens, after.cache_read_tokens, after.cache_write_tokens, after.reasoning_tokens])
-      .toEqual([90, 20, 0, 0, 10]);
-    expect(after.total_tokens).toBe(120);
-    expect(after.updated_at >= before.updated_at).toBe(true);
-  });
-
-  it('does nothing at all for an unchanged key', async () => {
-    const body = snapshotBodyV2({
-      days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 60, 10, 10, 5, 15]] }],
-    });
-    await h.putSnapshot({ revision: 1, body });
-    const before = (await partRows(h.db))[0]!;
-
-    const response = await h.putSnapshot({ revision: 2, body });
-
-    expect(response.status).toBe(200);
     expect(await json(response)).toMatchObject({
       changedDays: [],
       changedParts: 0,
       ignoredReductions: 0,
+      // An equal total is not a reduction, so it is not counted either.
       ignoredPartReductions: 0,
     });
-    const after = (await partRows(h.db))[0]!;
-    expect(after).toEqual(before);
+
+    const rows = await partRows(h.db);
+    expect(rows.map((row) => [row.model, row.total_tokens])).toEqual([['gpt-5.1', 100]]);
+    expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([100]);
+
+    const breakdown = await json(await h.getBreakdown('?from=2026-11-01&to=2026-11-30'));
+    expect(breakdown.parts.map((part: { model: string; total: number }) => [part.model, part.total])).toEqual([
+      ['gpt-5.1', 100],
+    ]);
+    expect(breakdown.coverage).toEqual([
+      { date: '2026-11-18', collectorId: FIXTURE.collectorA1, totalTokens: 100, attributedTokens: 100 },
+    ]);
   });
 
-  it('keeps the day total and the breakdown sum under separate maxima', async () => {
-    // Day total already accepted at 300 with one key at 200.
+  it('replaces the whole set of a day whose total grew', async () => {
+    await h.putSnapshot({
+      revision: 1,
+      body: snapshotBodyV2({
+        keys: [['codex', 'openai', 'gpt-5.1']],
+        days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 90, 10, 0, 0, 0]] }],
+      }),
+    });
+
+    const response = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBodyV2({
+        keys: [
+          ['codex', 'openai', 'gpt-5.1'],
+          ['codex', 'openai', 'gpt-5.1-mini'],
+        ],
+        days: [
+          {
+            // 60 + 100 = 160 > 100: the day is explained again, by a set that no
+            // longer contains what the first snapshot claimed for gpt-5.1 alone.
+            date: '2026-11-18',
+            totalTokens: 160,
+            parts: [
+              [0, 50, 10, 0, 0, 0],
+              [1, 90, 10, 0, 0, 0],
+            ],
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      changedDays: ['2026-11-18'],
+      changedParts: 2,
+      ignoredReductions: 0,
+      ignoredPartReductions: 0,
+    });
+
+    // The old row is gone, not merged: the day carries exactly two rows whose
+    // components are the ones this snapshot sent.
+    expect(
+      (await partRows(h.db)).map((row) => [row.model, row.input_tokens, row.output_tokens, row.total_tokens]),
+    ).toEqual([
+      ['gpt-5.1', 50, 10, 60],
+      ['gpt-5.1-mini', 90, 10, 100],
+    ]);
+    expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([160]);
+  });
+
+  it('ignores a smaller day breakdown as a whole, without adding its new keys', async () => {
     await h.putSnapshot({
       revision: 1,
       body: snapshotBodyV2({
@@ -274,24 +343,22 @@ describe('v2 monotonic rules', () => {
       }),
     });
 
-    // The second key grows while the first shrinks, so the incoming day total is
-    // still 300 and the day itself does not move. The stored rows do not add up
-    // to 300 afterwards, because each row is kept at its own accepted maximum:
-    // that divergence is what the read API reports as coverage.
     const response = await h.putSnapshot({
       revision: 2,
       body: snapshotBodyV2({
         keys: [
           ['codex', 'openai', 'gpt-5.1'],
           ['gemini', 'anthropic', 'claude-sonnet-4-5'],
+          ['mistral', '', 'mistral-large'],
         ],
         days: [
           {
             date: '2026-11-18',
-            totalTokens: 300,
+            totalTokens: 200,
             parts: [
-              [0, 100, 10, 5, 0, 5],
-              [1, 120, 40, 10, 5, 5],
+              [0, 10, 0, 0, 0, 0],
+              [1, 10, 0, 0, 0, 0],
+              [2, 180, 0, 0, 0, 0],
             ],
           },
         ],
@@ -301,14 +368,103 @@ describe('v2 monotonic rules', () => {
     expect(response.status).toBe(200);
     expect(await json(response)).toMatchObject({
       changedDays: [],
-      changedParts: 1,
+      changedParts: 0,
+      // The day total of 300 is kept, so the day is a reduction for both counts.
+      ignoredReductions: 1,
       ignoredPartReductions: 1,
     });
+    // Not even the key the day did not carry before is added: a day's set is
+    // accepted or ignored as a whole.
     expect((await partRows(h.db)).map((row) => [row.model, row.total_tokens])).toEqual([
       ['gpt-5.1', 200],
-      ['claude-sonnet-4-5', 180],
+      ['claude-sonnet-4-5', 100],
     ]);
     expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([300]);
+  });
+
+  it('does nothing at all for an identical day', async () => {
+    const body = snapshotBodyV2({
+      days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 60, 10, 10, 5, 15]] }],
+    });
+    await h.putSnapshot({ revision: 1, body });
+    const before = (await partRows(h.db))[0]!;
+
+    const response = await h.putSnapshot({ revision: 2, body });
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      changedDays: [],
+      changedParts: 0,
+      ignoredReductions: 0,
+      ignoredPartReductions: 0,
+    });
+    const after = (await partRows(h.db))[0]!;
+    expect(after).toEqual(before);
+  });
+
+  it('decides each day of a snapshot on its own', async () => {
+    await h.putSnapshot({
+      revision: 1,
+      body: snapshotBodyV2({
+        days: [
+          { date: '2026-11-17', totalTokens: 100, parts: [[0, 100, 0, 0, 0, 0]] },
+          { date: '2026-11-18', totalTokens: 400, parts: [[0, 400, 0, 0, 0, 0]] },
+        ],
+      }),
+    });
+
+    const response = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBodyV2({
+        days: [
+          // Grew: replaced.
+          { date: '2026-11-17', totalTokens: 120, parts: [[0, 120, 0, 0, 0, 0]] },
+          // Shrank: ignored, and counted once for this day.
+          { date: '2026-11-18', totalTokens: 300, parts: [[0, 300, 0, 0, 0, 0]] },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      changedDays: ['2026-11-17'],
+      changedParts: 1,
+      ignoredReductions: 1,
+      ignoredPartReductions: 1,
+    });
+    expect((await partRows(h.db)).map((row) => [row.bucket_date, row.total_tokens])).toEqual([
+      ['2026-11-17', 120],
+      ['2026-11-18', 400],
+    ]);
+  });
+
+  it('keeps a day total that grew while the day carried no breakdown', async () => {
+    await h.putSnapshot({
+      revision: 1,
+      body: snapshotBodyV2({
+        days: [{ date: '2026-11-18', totalTokens: 100, parts: [[0, 100, 0, 0, 0, 0]] }],
+      }),
+    });
+
+    // No parts array: this says nothing about the breakdown, so the stored set
+    // stays and is not counted as a reduction either.
+    const response = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBodyV2({
+        keys: [],
+        days: [{ date: '2026-11-18', totalTokens: 250 }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({
+      changedDays: ['2026-11-18'],
+      changedParts: 0,
+      ignoredReductions: 0,
+      ignoredPartReductions: 0,
+    });
+    expect((await partRows(h.db)).map((row) => row.total_tokens)).toEqual([100]);
+    expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([250]);
   });
 
   it('rolls back the breakdown rows of a stale revision', async () => {
@@ -331,12 +487,33 @@ describe('v2 monotonic rules', () => {
 
     expect(stale.status).toBe(409);
     expect((await json(stale)).error.code).toBe('stale_revision');
-    // Neither the day rows nor the breakdown rows of the rejected snapshot exist.
+    // Neither the day rows nor the breakdown rows of the rejected snapshot exist,
+    // and the replacement the rejected snapshot asked for did not happen: the
+    // delete and the insert are part of the same transaction as the receipt.
     expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([100]);
     expect((await partRows(h.db)).map((row) => [row.bucket_date, row.total_tokens])).toEqual([
       ['2026-11-18', 100],
     ]);
     expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(1);
+  });
+
+  it('stores no row for a day whose parts are all zero', async () => {
+    // A zero-token breakdown adds up to a zero day total, so there is nothing to
+    // attribute: no row is stored and nothing is counted as a reduction.
+    const body = snapshotBodyV2({
+      keys: [['codex', 'openai', 'gpt-5.1']],
+      days: [{ date: '2026-11-18', totalTokens: 0, parts: [[0, 0, 0, 0, 0, 0]] }],
+    });
+
+    const first = await h.putSnapshot({ revision: 1, body });
+    expect(first.status).toBe(200);
+    expect(await json(first)).toMatchObject({ changedParts: 0, ignoredPartReductions: 0 });
+
+    const second = await h.putSnapshot({ revision: 2, body });
+    expect(second.status).toBe(200);
+    expect(await json(second)).toMatchObject({ changedParts: 0, ignoredPartReductions: 0 });
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM usage_part')).toBe(0);
+    expect((await usageRows(h.db)).map((row) => row.total_tokens)).toEqual([0]);
   });
 
   it('refuses a generation that is not active', async () => {
@@ -566,5 +743,56 @@ describe('wire v2 body validation', () => {
       status: 400,
       field: '$',
     });
+  });
+
+  /**
+   * The provider element bound is shared with the collector, which accepts an
+   * element of up to 64 characters. The boundary cases come from
+   * `fixtures/identifier-rules.json`, which the collector's own tests read as
+   * well, so the two sides cannot drift to different lengths.
+   */
+  it('accepts the provider element lengths the shared rule accepts and rejects the rest', async () => {
+    const rules = JSON.parse(await readFile(identifierRulesPath, 'utf8'));
+    const accepted: number[] = rules.providerElementLengths.accepted;
+    const rejected: number[] = rules.providerElementLengths.rejected;
+    let revision = 0;
+
+    for (const length of accepted) {
+      revision += 1;
+      const response = await h.putSnapshot({
+        revision,
+        body: snapshotBodyV2({ keys: [['codex', 'p'.repeat(length), 'gpt-5.1']] }),
+      });
+      expect(response.status, `provider element of ${length} characters`).toBe(200);
+    }
+
+    for (const length of rejected) {
+      revision += 1;
+      const response = await h.putSnapshot({
+        revision,
+        body: snapshotBodyV2({ keys: [['codex', 'p'.repeat(length), 'gpt-5.1']] }),
+      });
+      expect(response.status, `provider element of ${length} characters`).toBe(400);
+      expect((await json(response)).error.details?.field).toBe('keys[0][1]');
+    }
+  });
+
+  it('rejects a local weight file as a model but keeps the org/model form', async () => {
+    const rules = JSON.parse(await readFile(identifierRulesPath, 'utf8'));
+
+    for (const suffix of rules.modelFileSuffixes as string[]) {
+      const response = await h.putSnapshot({
+        revision: 1,
+        body: snapshotBodyV2({ keys: [['codex', 'openai', `model${suffix}`]] }),
+      });
+      expect(response.status, `model${suffix}`).toBe(400);
+      expect((await json(response)).error.details?.field).toBe('keys[0][2]');
+    }
+
+    const scoped = await h.putSnapshot({
+      revision: 1,
+      body: snapshotBodyV2({ keys: [['codex', 'openai', rules.acceptedModelForm as string]] }),
+    });
+    expect(scoped.status).toBe(200);
   });
 });

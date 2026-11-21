@@ -41,7 +41,19 @@ export interface DailyRow {
 const SELECT_OWNED_COLLECTOR =
   'SELECT id, owner_id, active_generation FROM collectors WHERE id = ? AND owner_id = ?';
 
+/**
+ * Receipt lookup for a v1 write.
+ *
+ * It reads only the columns `0003` added, because a v1 collector may talk to a
+ * Worker that is newer than the schema: `0004` is applied to D1 after the code
+ * that can use it is live, so between the two the table has no
+ * `ignored_part_reductions` column and selecting it would fail every v1 write.
+ */
 const SELECT_RECEIPT =
+  'SELECT body_digest, received_at, ignored_reductions FROM snapshot_receipts WHERE collector_id = ? AND generation = ? AND revision = ?';
+
+/** Receipt lookup for a v2 write, which needs the breakdown columns of 0004. */
+const SELECT_RECEIPT_V2 =
   'SELECT body_digest, received_at, ignored_reductions, ignored_part_reductions FROM snapshot_receipts WHERE collector_id = ? AND generation = ? AND revision = ?';
 
 /**
@@ -103,6 +115,9 @@ interface ReceiptFields {
   body_digest: string;
   received_at: string;
   ignored_reductions: number;
+}
+
+interface ReceiptFieldsV2 extends ReceiptFields {
   ignored_part_reductions: number;
 }
 
@@ -140,6 +155,15 @@ async function findReceipt(
   revision: number,
 ): Promise<ReceiptFields | null> {
   return db.prepare(SELECT_RECEIPT).bind(collectorId, generation, revision).first<ReceiptFields>();
+}
+
+async function findReceiptV2(
+  db: D1Database,
+  collectorId: string,
+  generation: number,
+  revision: number,
+): Promise<ReceiptFieldsV2 | null> {
+  return db.prepare(SELECT_RECEIPT_V2).bind(collectorId, generation, revision).first<ReceiptFieldsV2>();
 }
 
 function messageOf(error: unknown): string {
@@ -434,20 +458,30 @@ export async function readCollectorFreshness(
 /**
  * v2 write path.
  *
- * A v2 snapshot is three statements, always, whatever its size: the day totals,
- * the per-key breakdown and the receipt. The alternative — one statement per
- * row — would put the statement count (and therefore the Worker CPU) at the
- * mercy of the payload, which is exactly what the free-plan CPU budget cannot
- * absorb. Both upserts are set based (`json_each`) and both keep the larger
- * value they already hold, so a shorter upstream re-scan can never lower a
- * stored number.
+ * A v2 snapshot is four statements, always, whatever its size: the day totals,
+ * the removal of the days whose breakdown this snapshot replaces, the breakdown
+ * itself and the receipt. The alternative — one statement per row — would put
+ * the statement count (and therefore the Worker CPU) at the mercy of the
+ * payload, which is exactly what the free-plan CPU budget cannot absorb.
  *
- * The day total and the breakdown are kept under *separate* maxima. A day whose
- * total grew while one of its keys shrank therefore ends up with rows that do
- * not add up to the day total; that is a real property of monotonic storage (the
- * alternative is to reject the whole snapshot), and it is why the read API
- * reports the attributed total next to the day total instead of pretending they
- * match.
+ * The breakdown is stored as one *set of rows per day*, not as one maximum per
+ * row. The incoming snapshot explains a day by exactly one set of rows (the API
+ * requires the five components of every part to add up to that day's total), so
+ * the stored set for a day is replaced as a whole — deleted, then inserted —
+ * when the incoming snapshot attributes *more* tokens to that day than are
+ * stored. A day whose set adds up to the same or less changes nothing at all and
+ * is not merged row by row: keeping per-row maxima would let two snapshots add up
+ * their explanations (100 stored for one model, 40 + 60 for two, `attributed`
+ * 160 against a day total of 100), which is data the collector never observed.
+ *
+ * The consequence worth stating: an equal total is not a new explanation. A
+ * re-scan that moves tokens from one model to another while the day total stays
+ * the same is ignored, and the day keeps the set that first reached that total.
+ * That is why `ignored_part_reductions` counts *days*.
+ *
+ * Because the day total only ever moves up and a day's set is only accepted up
+ * to that total, `SUM(total_tokens)` of a day's rows can never exceed the stored
+ * day total.
  */
 export interface SnapshotReceiptV2 {
   readonly status: 'applied' | 'replayed';
@@ -457,9 +491,9 @@ export interface SnapshotReceiptV2 {
   readonly receivedAt: string;
   readonly changedDays: readonly string[];
   readonly ignoredReductions: number;
-  /** Breakdown rows whose five components were replaced by this write. */
+  /** Breakdown rows this write inserted (a replaced day's whole set). */
   readonly changedParts: number;
-  /** Breakdown rows the write left at a higher accepted total. */
+  /** Days whose stored breakdown adds up to more than this snapshot sent. */
   readonly ignoredPartReductions: number;
 }
 
@@ -487,15 +521,58 @@ export const UPSERT_DAYS_SQL = `
 `;
 
 /**
- * Breakdown upsert for a whole v2 snapshot.
+ * Removes the stored breakdown of every day this snapshot replaces.
  *
- * A row is replaced as a whole (all five components) only when its total grows;
- * an equal or smaller total leaves the row — and its `updated_at` — untouched,
- * which is what makes "a re-scan that only moves one component" a non-event.
- * The `WHERE true` is required by SQLite: without it the parser reads the
- * `ON` of the conflict clause as a join constraint.
+ * A day is replaced when the incoming total for it is greater than the sum its
+ * stored rows add up to; a day with no rows at all counts as a sum of zero, which
+ * is why the first v2 write of a day inserts rather than deletes. The incoming
+ * totals are passed as `{d, t}` JSON so the decision is one statement, inside the
+ * same transaction as the deletes it causes.
+ *
+ * `MATERIALIZED` matters: SQLite may otherwise re-evaluate the CTE per deleted
+ * row, and the subquery reads the very table being deleted from.
+ *
+ * Bind order: partDays JSON, collectorId, generation, collectorId, generation.
  */
-export const UPSERT_PARTS_SQL = `
+export const DELETE_REPLACED_PARTS_SQL = `
+  WITH replaced (bucket_date) AS MATERIALIZED (
+    SELECT json_extract(incoming.value, '$.d')
+    FROM json_each(?) AS incoming
+    WHERE json_extract(incoming.value, '$.t') > COALESCE(
+      (
+        SELECT SUM(stored.total_tokens)
+        FROM usage_part AS stored
+        WHERE stored.collector_id = ?
+          AND stored.generation = ?
+          AND stored.bucket_date = json_extract(incoming.value, '$.d')
+      ), 0)
+  )
+  DELETE FROM usage_part
+  WHERE collector_id = ?
+    AND generation = ?
+    AND bucket_date IN (SELECT bucket_date FROM replaced)
+`;
+
+/**
+ * Inserts the breakdown of the days that were just emptied.
+ *
+ * The `WHERE` clause is what keeps an ignored day untouched: for a day that was
+ * not deleted, its stored rows still add up to at least the incoming total, so no
+ * row of it is inserted. For a replaced day the rows are inserted one by one and
+ * the running sum stays below the incoming total, because the parts of a day add
+ * up to exactly that total and no component is negative. The one case this skips
+ * is a zero-token row that comes after the day is already fully accounted — a row
+ * that contributes nothing to any sum and would only be stored as a key with no
+ * usage.
+ *
+ * `ON CONFLICT` cannot fire for a replaced day (its rows are gone and a day
+ * carries each key at most once), so it is only a guard: a same-key write during
+ * the same statement would otherwise abort the whole transaction.
+ *
+ * Bind order: collectorId, generation, updatedAt, parts JSON, collectorId,
+ * generation.
+ */
+export const INSERT_PARTS_SQL = `
   INSERT INTO usage_part (
     collector_id, generation, bucket_date, client, provider, model,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -506,7 +583,14 @@ export const UPSERT_PARTS_SQL = `
          json_extract(p.value, '$.cr'), json_extract(p.value, '$.cw'),
          json_extract(p.value, '$.r'), json_extract(p.value, '$.t'), ?
   FROM json_each(?) AS p
-  WHERE true
+  WHERE json_extract(p.value, '$.t') > COALESCE(
+    (
+      SELECT SUM(stored.total_tokens)
+      FROM usage_part AS stored
+      WHERE stored.collector_id = ?
+        AND stored.generation = ?
+        AND stored.bucket_date = json_extract(p.value, '$.d')
+    ), 0)
   ON CONFLICT (collector_id, generation, bucket_date, client, provider, model) DO UPDATE
     SET input_tokens = excluded.input_tokens,
         output_tokens = excluded.output_tokens,
@@ -522,13 +606,20 @@ export const UPSERT_PARTS_SQL = `
 /**
  * Receipt insert, with both reduction counts derived inside the same transaction.
  *
- * The counts are written as `EXISTS` subqueries rather than as joins: with the
- * table on the inside of a join, SQLite can only use the two leading primary-key
- * columns as constraints (the remaining key columns come from `json_extract`
- * expressions), so it degenerates into scanning the whole table once per incoming
- * row — 1024 rows turned into 877 ms in the local measurement. With `EXISTS` the
- * planner uses all six key columns as a primary-key seek per incoming row, and the
- * same statement measures 18 ms.
+ * `ignored_reductions` counts days whose stored total is higher than the incoming
+ * one; `ignored_part_reductions` counts days whose stored breakdown adds up to
+ * more than the incoming total — a day count, not a row count, because a day's
+ * breakdown is accepted or replaced as a whole. An equal total is neither, since
+ * nothing was left behind. Because the receipt runs after the deletes and
+ * inserts, it reads the state this transaction just produced: a replaced day now
+ * adds up to exactly the incoming total and is not counted.
+ *
+ * The counts are written as `EXISTS`/scalar subqueries rather than as joins: with
+ * the table on the inside of a join, SQLite can only use the two leading
+ * primary-key columns as constraints (the remaining key columns come from
+ * `json_extract` expressions), so it degenerates into scanning the whole table
+ * once per incoming row. With a keyed subquery the planner uses the primary key
+ * as a seek per incoming day.
  */
 const INSERT_RECEIPT_V2_SQL = `
   INSERT INTO snapshot_receipts
@@ -550,17 +641,14 @@ const INSERT_RECEIPT_V2_SQL = `
     (
       SELECT COUNT(*)
       FROM json_each(?) AS incoming
-      WHERE EXISTS (
-        SELECT 1
-        FROM usage_part AS p
-        WHERE p.collector_id = ?
-          AND p.generation = ?
-          AND p.bucket_date = json_extract(incoming.value, '$.d')
-          AND p.client = json_extract(incoming.value, '$.c')
-          AND p.provider = json_extract(incoming.value, '$.p')
-          AND p.model = json_extract(incoming.value, '$.m')
-          AND p.total_tokens > json_extract(incoming.value, '$.t')
-      )
+      WHERE COALESCE(
+        (
+          SELECT SUM(p.total_tokens)
+          FROM usage_part AS p
+          WHERE p.collector_id = ?
+            AND p.generation = ?
+            AND p.bucket_date = json_extract(incoming.value, '$.d')
+        ), 0) > json_extract(incoming.value, '$.t')
     )
   RETURNING ignored_reductions, ignored_part_reductions
 `;
@@ -571,8 +659,9 @@ const INSERT_RECEIPT_V2_SQL = `
  * `changedDays` and `changedParts` are what this write actually moved;
  * `ignoredReductions` and `ignoredPartReductions` are what it left at a higher
  * accepted value. Both counts are derived inside the same transaction as the
- * writes (the receipt statement reads the state the two upserts just left), so a
- * replay answers with the numbers of the first write and nothing is recomputed.
+ * writes (the receipt statement reads the state the other three statements just
+ * left), so a replay answers with the numbers of the first write and nothing is
+ * recomputed.
  */
 export async function applySnapshotV2(
   db: D1Database,
@@ -584,7 +673,7 @@ export async function applySnapshotV2(
 ): Promise<SnapshotReceiptV2> {
   const generation = snapshot.generation;
 
-  const existing = await findReceipt(db, collector.id, generation, revision);
+  const existing = await findReceiptV2(db, collector.id, generation, revision);
   if (existing !== null) {
     if (existing.body_digest !== digest) {
       throw new ApiError(
@@ -598,6 +687,11 @@ export async function applySnapshotV2(
   }
 
   const days = snapshot.days.map((day) => ({ d: day.date, t: day.totalTokens }));
+  // Only a day that carries parts says anything about a breakdown; a day without
+  // them must not make its stored set look like a reduction.
+  const partDays = snapshot.days
+    .filter((day) => day.parts !== undefined)
+    .map((day) => ({ d: day.date, t: day.totalTokens }));
   const parts = snapshot.days.flatMap((day) =>
     (day.parts ?? []).map((part) => {
       const key = snapshot.keys[part.keyIndex] as SnapshotV2['keys'][number];
@@ -616,19 +710,26 @@ export async function applySnapshotV2(
     }),
   );
 
-  // Three statements at most, whatever the payload size: one for the day totals,
-  // one for every breakdown row, one for the receipt. The breakdown statement is
-  // skipped only when the snapshot carries no breakdown at all, so the count is
-  // bound by the shape of the body, not by how many rows it holds.
+  // Serialized once and reused: the receipt compares against exactly the rows
+  // the other statements wrote, not against a second serialization that could
+  // describe them differently.
+  const daysJson = JSON.stringify(days);
+  const partDaysJson = JSON.stringify(partDays);
+  const partsJson = JSON.stringify(parts);
+
+  // Four statements, always, whatever the payload size: the day totals, the
+  // removal of the days whose breakdown is replaced, the breakdown itself and the
+  // receipt. The delete and the insert are always present — an empty day list
+  // makes them no-ops — so the count is bound by the shape of the body, not by
+  // how many rows it holds.
   const statements: D1PreparedStatement[] = [
-    db.prepare(UPSERT_DAYS_SQL).bind(collector.id, generation, receivedAt, JSON.stringify(days)),
-  ];
-  if (parts.length > 0) {
-    statements.push(
-      db.prepare(UPSERT_PARTS_SQL).bind(collector.id, generation, receivedAt, JSON.stringify(parts)),
-    );
-  }
-  statements.push(
+    db.prepare(UPSERT_DAYS_SQL).bind(collector.id, generation, receivedAt, daysJson),
+    db
+      .prepare(DELETE_REPLACED_PARTS_SQL)
+      .bind(partDaysJson, collector.id, generation, collector.id, generation),
+    db
+      .prepare(INSERT_PARTS_SQL)
+      .bind(collector.id, generation, receivedAt, partsJson, collector.id, generation),
     db
       .prepare(INSERT_RECEIPT_V2_SQL)
       .bind(
@@ -637,21 +738,21 @@ export async function applySnapshotV2(
         revision,
         digest,
         receivedAt,
-        JSON.stringify(days),
+        daysJson,
         collector.id,
         generation,
-        JSON.stringify(parts),
+        partDaysJson,
         collector.id,
         generation,
       ),
-  );
+  ];
 
   let results: D1Result<Record<string, unknown>>[];
   try {
     results = await db.batch<Record<string, unknown>>(statements);
   } catch (error) {
     if (DUPLICATE_RECEIPT.test(messageOf(error))) {
-      const winner = await findReceipt(db, collector.id, generation, revision);
+      const winner = await findReceiptV2(db, collector.id, generation, revision);
       if (winner !== null) {
         if (winner.body_digest !== digest) {
           throw new ApiError(
@@ -673,8 +774,10 @@ export async function applySnapshotV2(
     .map((row) => String(row['bucket_date']))
     .sort();
 
-  const partsResult = parts.length > 0 ? (results[1]?.results ?? []) : [];
-  const receiptRow = (results[results.length - 1]?.results ?? [])[0] ?? {};
+  // The insert statement returns one row per written breakdown row, so its row
+  // count is the number of rows this write created.
+  const changedParts = (results[2]?.results ?? []).length;
+  const receiptRow = (results[3]?.results ?? [])[0] ?? {};
 
   return {
     status: 'applied',
@@ -684,13 +787,13 @@ export async function applySnapshotV2(
     receivedAt,
     changedDays,
     ignoredReductions: Number(receiptRow['ignored_reductions'] ?? 0),
-    changedParts: partsResult.length,
+    changedParts,
     ignoredPartReductions: Number(receiptRow['ignored_part_reductions'] ?? 0),
   };
 }
 
 function replayOf(
-  receipt: ReceiptFields,
+  receipt: ReceiptFieldsV2,
   collectorId: string,
   generation: number,
   revision: number,

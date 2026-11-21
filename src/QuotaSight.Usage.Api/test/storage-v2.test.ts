@@ -1,12 +1,15 @@
 /**
  * Storage-level contract for the v2 breakdown table.
  *
- * The write path keeps each key at its own maximum, and the schema is what makes
- * that safe rather than merely likely: the sum rule and the per-row decrease
- * guard are enforced by the table and its triggers, so a direct statement that
- * bypasses `store.ts` still cannot store an inconsistent breakdown. The query
- * plans are asserted against the exact statements production runs, because the
- * read cost has to stay bounded by the caller's own collectors.
+ * The breakdown is kept as one set of rows per day (see `store.ts`): the write
+ * path deletes a day's rows and re-inserts them when that day's total grows, so
+ * a row is never edited downwards in place. The schema is what makes that safe
+ * rather than merely likely: the sum rule, the identifier bounds and the
+ * active-generation guard are enforced by the table and its triggers, so a
+ * direct statement that bypasses `store.ts` still cannot store an inconsistent
+ * breakdown. The query plans are asserted against the exact statements
+ * production runs, because the read cost has to stay bounded by the caller's own
+ * collectors.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../src/errors';
@@ -105,11 +108,13 @@ describe('usage_part schema guards', () => {
     );
   });
 
-  it('refuses a direct decrease of an accepted breakdown row', async () => {
+  it('refuses a direct in-place decrease of an accepted breakdown row', async () => {
     await seedParts(h.db, [
       { collectorId: FIXTURE.collectorA1, date: '2026-11-18', client: 'codex', model: 'm', input: 100, output: 0 },
     ]);
 
+    // The write path replaces a day's rows instead of editing one, so an UPDATE
+    // that lowers a stored total is never part of a write and is refused.
     await expect(
       h.db
         .prepare(
@@ -138,12 +143,20 @@ describe('usage_part schema guards', () => {
   });
 
   it('bounds the ignored breakdown reduction count of a receipt', async () => {
+    // The count is a number of days now, so its bound is the snapshot day bound.
+    await h.db
+      .prepare(
+        'INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at, ignored_part_reductions) VALUES (?, 1, 1, ?, ?, 62)',
+      )
+      .bind(FIXTURE.collectorA1, 'a'.repeat(64), '2026-11-20T00:00:00Z')
+      .run();
+
     await expect(
       h.db
         .prepare(
-          'INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at, ignored_part_reductions) VALUES (?, 1, 1, ?, ?, 1025)',
+          'INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at, ignored_part_reductions) VALUES (?, 1, 2, ?, ?, 63)',
         )
-        .bind(FIXTURE.collectorA1, 'a'.repeat(64), '2026-11-20T00:00:00Z')
+        .bind(FIXTURE.collectorA1, 'b'.repeat(64), '2026-11-20T00:00:00Z')
         .run(),
     ).rejects.toThrow(/CHECK constraint failed/);
   });

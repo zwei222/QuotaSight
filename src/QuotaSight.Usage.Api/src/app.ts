@@ -14,6 +14,7 @@ import { hasScope, type Authenticator, type Principal } from './auth';
 import { readBoundedBodyText } from './body';
 import { ApiError, errorBody } from './errors';
 import {
+  MAX_BREAKDOWN_QUERY_SPAN_DAYS,
   canonicalSnapshotJson,
   isJsonMediaType,
   parseCollectorId,
@@ -197,7 +198,9 @@ export function createApp(options: AppOptions) {
       );
     }
 
-    const query = parseDailyQuery(new URL(c.req.url));
+    // The breakdown is the expensive read: it aggregates every key of every day
+    // in the range, so it accepts a narrower window than the daily read.
+    const query = parseDailyQuery(new URL(c.req.url), MAX_BREAKDOWN_QUERY_SPAN_DAYS);
     if (query.collectorId !== null) {
       const collector = await loadOwnedCollector(c.env.DB, query.collectorId, principal.ownerId);
       if (collector === null) {

@@ -109,6 +109,57 @@ public sealed class CollectorWireV2Tests
         Assert.Contains("--state-show", run.Stderr, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ABudgetSmallerThanTheDefaultKeepsFewerBreakdownDays()
+    {
+        var run = Run([.. PreviewV2Args, "--parts-budget-bytes", "4096"], FixtureFiles.Bytes(FixtureFiles.Parts));
+
+        Assert.Equal(CollectorExitCodes.Candidate, run.ExitCode);
+        // The snapshot is small enough to fit, so the budget alone must not change it.
+        Assert.Equal(Encoding.UTF8.GetString(FixtureFiles.SharedWireV2Golden()), run.Stdout);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("4095")]
+    [InlineData("32769")]
+    [InlineData("-1")]
+    [InlineData("4k")]
+    [InlineData("")]
+    public void ABudgetOutsideTheAcceptedRangeIsAUsageError(string value)
+    {
+        var run = Run([.. PreviewV2Args, "--parts-budget-bytes", value], FixtureFiles.Bytes(FixtureFiles.Parts));
+
+        Assert.Equal(CollectorExitCodes.Usage, run.ExitCode);
+        Assert.Empty(run.Stdout);
+        Assert.Contains("--parts-budget-bytes", run.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheBudgetIsAcceptedInlineAndRejectedForWireV1()
+    {
+        var inline = Run([.. PreviewV2Args, "--parts-budget-bytes=8192"], FixtureFiles.Bytes(FixtureFiles.Parts));
+        Assert.Equal(CollectorExitCodes.Candidate, inline.ExitCode);
+
+        var v1 = Run(
+            [.. PreviewV2Args.Where(argument => argument != "--wire-schema" && argument != "2"), "--parts-budget-bytes", "8192"],
+            FixtureFiles.Bytes(FixtureFiles.Parts));
+        Assert.Equal(CollectorExitCodes.Usage, v1.ExitCode);
+        Assert.Empty(v1.Stdout);
+        // Wire v1 carries no breakdown, so the option is refused instead of ignored.
+        Assert.StartsWith("{\"schemaVersion\":", inline.Stdout, StringComparison.Ordinal);
+        Assert.Contains("--wire-schema 2", v1.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheBudgetIsRejectedForStateModes()
+    {
+        var run = Run(["--state-advance", "--wire-schema", "2", "--parts-budget-bytes", "8192"], []);
+
+        Assert.Equal(CollectorExitCodes.Usage, run.ExitCode);
+        Assert.Contains("--state-advance", run.Stderr, StringComparison.Ordinal);
+    }
+
     [LinuxFact]
     public void SendWithTheFlagTransmitsWireV2AndAcceptsAV2Receipt()
     {

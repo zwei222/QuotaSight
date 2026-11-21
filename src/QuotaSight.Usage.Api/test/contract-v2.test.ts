@@ -117,8 +117,8 @@ describe('wire v2 golden fixture', () => {
   it('covers the normalization decisions the collector makes', () => {
     const body = JSON.parse(golden) as { keys: string[][] };
 
-    // An unnormalized client becomes the empty identifier rather than a guess.
-    expect(body.keys).toContainEqual(['', 'anthropic,openai', 'claude-sonnet-5-5[1m]']);
+    // A mixed-case client is folded to lower case, exactly like provider and model.
+    expect(body.keys).toContainEqual(['conduit', 'anthropic,openai', 'claude-sonnet-5-5[1m]']);
     // A path-shaped model is withheld, and its provider was not supplied.
     expect(body.keys).toContainEqual(['codex', '', '']);
     expect(body.keys).toContainEqual(['codex', 'openai', 'gpt-5.1']);

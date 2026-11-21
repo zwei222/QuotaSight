@@ -53,8 +53,13 @@ public sealed record SnapshotPart(
     long CacheWrite,
     long Reasoning)
 {
-    /// <summary>Sum of the five components; never stored separately upstream.</summary>
-    public long Total => Input + Output + CacheRead + CacheWrite + Reasoning;
+    /// <summary>
+    /// Sum of the five components; never stored separately upstream.
+    ///
+    /// Checked, so a combination of components that cannot be represented throws
+    /// instead of wrapping into a smaller number that would look like real usage.
+    /// </summary>
+    public long Total => checked(Input + Output + CacheRead + CacheWrite + Reasoning);
 }
 
 /// <summary>One observed calendar day with its observed token total and breakdown.</summary>

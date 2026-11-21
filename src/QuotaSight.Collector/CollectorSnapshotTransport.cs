@@ -19,9 +19,9 @@ namespace QuotaSight.Collector;
 /// higher. Always <c>0</c> unless a receipt was verified.
 /// </param>
 /// <param name="IgnoredPartReductions">
-/// Breakdown rows the API accepted but did not write because their accepted total
-/// was higher. Only a v2 receipt carries this, and it is always <c>0</c> unless a
-/// receipt was verified.
+/// Days whose stored breakdown adds up to more than the snapshot sent, so the
+/// accepted set was kept. Only a v2 receipt carries this, and it is always
+/// <c>0</c> unless a receipt was verified.
 /// </param>
 public sealed record SendOutcome(
     int ExitCode,
@@ -322,7 +322,9 @@ public static class CollectorSnapshotTransport
                             return false;
                         }
 
-                        ignoredParts = parts is >= 0 and <= TokscaleGraphContract.MaxPartsPerSnapshot;
+                        // A day count: the breakdown is accepted or replaced one day
+                        // at a time, so its bound is the snapshot's day bound.
+                        ignoredParts = parts is >= 0 and <= TokscaleGraphContract.MaxDays;
                         if (ignoredParts)
                         {
                             ignoredPartReductions = parts;
