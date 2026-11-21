@@ -1,0 +1,6 @@
+# Placeholder only. Copy to .dev.vars for local wrangler. Do not put real values here.
+ACCESS_TEAM_DOMAIN=https://example.cloudflareaccess.com
+ACCESS_AUD=<aud-tag>
+ACCESS_PRINCIPALS=[{"id":"<client-id>.access","ownerId":"owner-a","collectorId":"col-a1","scopes":["usage:write"]}]
+# Optional. Integer seconds from 1 to 604800. Defaults to 86400 when omitted.
+# ACCESS_MAX_TOKEN_AGE_SECONDS=86400

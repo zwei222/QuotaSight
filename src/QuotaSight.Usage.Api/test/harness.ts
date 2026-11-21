@@ -100,6 +100,8 @@ export interface PutSnapshotInput {
   collectorId?: string;
   token?: string | null;
   contentType?: string | null;
+  /** Extra request headers. `authorization` is still set from `token` when that is not null. */
+  headers?: Record<string, string>;
   /** Raw text body (overrides `body`). */
   raw?: string;
   /** Raw byte body (overrides `body` and `raw`). */
@@ -125,11 +127,21 @@ export interface Harness {
    * byte-counting read itself rather than the header pre-check.
    */
   putStream(input: PutStreamInput): Promise<Response>;
-  getDaily(search: string, token?: string | null): Promise<Response>;
+  getDaily(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
   dispose(): Promise<void>;
 }
 
-export async function createHarness(entry = 'test/worker.ts'): Promise<Harness> {
+export interface HarnessOptions {
+  /** Extra Worker bindings. Does not replace the local D1 `DB` binding. */
+  readonly bindings?: Record<string, string>;
+  /**
+   * Handles every outbound `fetch` from the Worker. When set, nothing leaves
+   * the process: callers must answer or fail each request themselves.
+   */
+  readonly outbound?: (request: Request) => Response | Promise<Response>;
+}
+
+export async function createHarness(entry = 'test/worker.ts', options: HarnessOptions = {}): Promise<Harness> {
   const script = await bundleWorker(entry);
   const mf = new Miniflare({
     modules: true,
@@ -137,6 +149,8 @@ export async function createHarness(entry = 'test/worker.ts'): Promise<Harness> 
     compatibilityDate: '2026-07-30',
     d1Databases: { DB: 'quotasight-usage-test' },
     cache: false,
+    ...(options.bindings === undefined ? {} : { bindings: options.bindings }),
+    ...(options.outbound === undefined ? {} : { outboundService: options.outbound as never }),
   });
   const db = (await mf.getD1Database('DB')) as unknown as D1Database;
 
@@ -156,7 +170,7 @@ export async function createHarness(entry = 'test/worker.ts'): Promise<Harness> 
     db,
     request,
     async putSnapshot(input) {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { ...(input.headers ?? {}) };
       if (input.token !== null) headers.authorization = `Bearer ${input.token ?? 'write-a1'}`;
       const contentType = input.contentType === undefined ? 'application/json' : input.contentType;
       if (contentType !== null) headers['content-type'] = contentType;
@@ -183,8 +197,8 @@ export async function createHarness(entry = 'test/worker.ts'): Promise<Harness> 
         { method: 'PUT', headers, body: stream, duplex: 'half' } as never,
       );
     },
-    async getDaily(search, token = 'read-a1') {
-      const headers: Record<string, string> = {};
+    async getDaily(search, token = 'read-a1', extra) {
+      const headers: Record<string, string> = { ...(extra ?? {}) };
       if (token !== null) headers.authorization = `Bearer ${token}`;
       return request(`/v1/usage/daily${search}`, { headers });
     },

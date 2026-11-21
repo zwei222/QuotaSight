@@ -5,8 +5,9 @@ daily token snapshots and serves owner-scoped daily totals. This package is the
 first vertical slice of the remote usage design; it is not the full design.
 
 Everything here runs **locally**: Miniflare/`wrangler dev` and a local D1
-database. There is no deployment configuration, no account id, no remote
-binding, no real credential and no login flow in this package.
+database. There is no account id, no remote binding and no credential in this
+repository. Authentication is Cloudflare Access service-token JWT verification,
+configured per deployment and fail-closed when that configuration is absent.
 
 ## Endpoints
 
@@ -115,16 +116,93 @@ Enforced strictly (unknown keys are rejected, never ignored):
 
 ## Authentication
 
-`createApp({ authenticator })` takes an injected `Authenticator`. The runtime
-entry point (`src/index.ts`) wires `UnconfiguredAuthenticator`, which denies
-every request: there is no environment-variable token, hardcoded secret or
-fallback identity. Tests inject fixture identities. The collector id in the path
-or query is only a lookup key: the credential's own binding is checked before the
-lookup, and ownership plus the active generation are checked in the database
-through owner-filtered statements.
+The Worker verifies Cloudflare Access **service token** JWTs. It does not issue,
+rotate or revoke credentials; those stay in Access. There is no bearer token in
+an environment variable, no hardcoded secret and no fallback identity.
+
+`src/index.ts` reads configuration from the Worker environment once per isolate
+and keeps the JWKS cache for that isolate. If any required value is missing or
+invalid, it installs `UnconfiguredAuthenticator` and every request is denied.
+It does not fetch a key set in that case. A valid configuration installs
+`AccessJwtAuthenticator`, which:
+
+1. Reads the JWT only from the `Cf-Access-Jwt-Assertion` header. `Authorization`,
+   cookies (including `CF_Authorization`) and `Cf-Access-Authenticated-User-Email`
+   are ignored. A missing, empty or oversized (over 8 KiB) header is denied.
+2. Verifies the token as RS256 against the team's Access JWKS
+   (`https://<name>.cloudflareaccess.com/cdn-cgi/access/certs`). The URL is built
+   from the configured team domain, never from a token `iss` or `jku`. Issuer and
+   audience must match exactly (a string or an array; a prefix is not a match).
+   `exp` and `iat` are required. Clock tolerance is 60 seconds. Maximum token age
+   defaults to 24 hours.
+3. Takes the client id from the `common_name` claim and looks it up in the
+   server-side principal map. Claims inside the JWT, including any scope claim,
+   never grant permissions.
+
+### Configuration
+
+Set these as Worker secrets or a local `.dev.vars` (see `.dev.vars.example`).
+Do not put them in `wrangler.toml` `[vars]`.
+
+| Key | Meaning |
+| --- | --- |
+| `ACCESS_TEAM_DOMAIN` | Team domain origin, `https://<name>.cloudflareaccess.com` |
+| `ACCESS_AUD` | Access application AUD tag, or several separated by commas |
+| `ACCESS_PRINCIPALS` | JSON array of principals (see below) |
+| `ACCESS_MAX_TOKEN_AGE_SECONDS` | Optional. Integer seconds from 1 to 604800. Default 86400 |
+
+Placeholder shape (not a real deployment):
+
+```text
+ACCESS_TEAM_DOMAIN=https://example.cloudflareaccess.com
+ACCESS_AUD=<aud-tag>
+ACCESS_PRINCIPALS=[{"id":"<client-id>.access","ownerId":"owner-a","collectorId":"col-a1","scopes":["usage:write"]}]
+```
+
+Each principal is exactly `{ id, ownerId, collectorId, scopes }`:
+
+- A writer is bound to one collector: `collectorId` is that collector's id and
+  `scopes` is `["usage:write"]`.
+- A reader is not collector-bound: `collectorId` is `null` and `scopes` is
+  `["usage:read"]`.
+- A principal must not hold both scopes. Duplicate ids, unknown keys, unknown
+  scopes and an empty list are rejected. `ownerId` and `collectorId` use the same
+  slug rules as the rest of this API. `id` is the Access service token client id
+  (the JWT `common_name`).
+
+If any value is invalid, the whole configuration is discarded and every request
+is denied. That is fail-closed: a partial or mistyped map never becomes a
+broader permission.
+
+### 401 and 503
+
+- **401 `unauthorized`** — the request is not authenticated: no usable assertion,
+  bad signature, expired or wrong claims, or a client id that is not in the map.
+  The body is always `{ "error": { "code": "unauthorized", "message": "Credentials are required." } }`.
+  It does not say which check failed.
+- **503 `auth_unavailable`** — the Access JWKS could not be used (fetch failure,
+  timeout, malformed set, no matching key). Nothing is written. The body has no
+  reason, token or client id.
+
+Unexpected verifier failures are returned as 401 or 503, never as a 500 that
+might echo internal details. Responses and logs do not include the JWT, header
+values, client ids or key material.
+
+### Access must front every path
+
+JWT verification is not a substitute for putting Access in front of every path
+that can reach the Worker:
+
+- `workers_dev = false` and `preview_urls = false` stay set, so deploy does not
+  publish a hostname outside the Access application.
+- The Access application must cover every public route to this Worker.
+- Do not expose the Worker through a Service Binding. A binding invokes the
+  Worker directly, so Access never authenticates the caller.
+
+Tests inject fixture identities or synthetic keys. They do not call Cloudflare.
 
 Errors are JSON: `{ "error": { "code": "...", "message": "...", "details"?: {...} } }`
-with codes `unauthorized`, `forbidden_scope`, `forbidden_collector`,
+with codes `unauthorized`, `auth_unavailable`, `forbidden_scope`, `forbidden_collector`,
 `collector_not_found`, `invalid_snapshot`, `invalid_revision`, `invalid_query`,
 `invalid_request`, `invalid_json`, `unsupported_media_type`, `payload_too_large`,
 `result_too_large`, `revision_conflict`, `stale_revision`,
@@ -191,11 +269,12 @@ here; nothing in this slice pretends to cover them:
 Also out of scope for this slice:
 
 - Source / model / provider breakdown and `client` filtering.
-- Real authentication and credential issuance/rotation/revocation, management
-  and delete operations, `GET /v1/collectors`.
+- Credential issuance, rotation and revocation, management and delete operations,
+  `GET /v1/collectors`. Access service-token verification is implemented; Access
+  remains the authority that issues those tokens.
 - Source coverage and per-source last-observation status, `sourceStates`,
   `schemaVersion` migration.
-- Verified reductions (explicit re-collection or reset), multi-owner accounts,
-  deployment configuration and any remote D1 access.
-- No production hardcoded secret, no fallback auth: wiring real authentication is
-  a prerequisite for any deployment.
+- Verified reductions (explicit re-collection or reset), multi-owner accounts
+  and any remote D1 access.
+- No production hardcoded secret and no fallback identity. A deployment without
+  a valid Access configuration denies every request.

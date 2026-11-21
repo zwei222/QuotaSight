@@ -2,10 +2,10 @@
  * Authenticated principals are resolved server-side from the request; the
  * collector id in the URL is never trusted on its own.
  *
- * The runtime entry point wires `UnconfiguredAuthenticator` only: without an
- * explicitly configured deployment authentication mechanism every request is
- * rejected. There is no environment-variable token, no hardcoded secret and no
- * fallback identity in this package.
+ * The runtime entry point installs Access service-token verification when the
+ * Worker environment contains a valid configuration, and `UnconfiguredAuthenticator`
+ * otherwise. There is no environment-variable bearer token, no hardcoded secret
+ * and no fallback identity in this package.
  */
 
 export type Scope = 'usage:write' | 'usage:read';

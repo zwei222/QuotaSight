@@ -31,7 +31,13 @@ export interface AppOptions {
 }
 
 export type AppEnv = {
-  Bindings: { DB: D1Database };
+  Bindings: {
+    DB: D1Database;
+    ACCESS_TEAM_DOMAIN?: string;
+    ACCESS_AUD?: string;
+    ACCESS_PRINCIPALS?: string;
+    ACCESS_MAX_TOKEN_AGE_SECONDS?: string;
+  };
   Variables: { principal: Principal };
 };
 

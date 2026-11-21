@@ -5,9 +5,8 @@
 # Miniflare instance. The database_id below is a local placeholder and must not
 # be used for a real deployment.
 #
-# Publishing is switched off explicitly: `workers.dev` and preview URLs are the
-# two ways `wrangler deploy` would otherwise expose this Worker on the public
-# internet without any authentication wiring.
+# Publishing is switched off explicitly: `workers.dev` and preview URLs would
+# expose this Worker on a hostname that is not fronted by Cloudflare Access.
 name = "quotasight-usage-api"
 main = "src/index.ts"
 compatibility_date = "2026-07-30"
