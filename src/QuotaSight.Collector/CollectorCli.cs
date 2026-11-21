@@ -100,6 +100,14 @@ public static class CollectorCli
     /// <summary>Declares that upstream reported partial, unpriced or stale-priced usage.</summary>
     public const string UpstreamPartialFlag = "--upstream-partial";
 
+    /// <summary>
+    /// Selects the API wire contract: <c>1</c> (default, daily totals only) or
+    /// <c>2</c> (daily totals plus the client/provider/model breakdown). Opt-in on
+    /// purpose: an operator upgrades the API before the collector starts sending a
+    /// shape it may not accept yet.
+    /// </summary>
+    public const string WireSchemaOption = "--wire-schema";
+
     /// <summary>Initialises the state document with an explicit revision floor.</summary>
     public const string StateInitFlag = "--state-init";
 
@@ -162,6 +170,7 @@ public static class CollectorCli
         var stateInit = false;
         var stateAdvance = false;
         var stateShow = false;
+        var wireSchema = WireSchema.V1;
         long? generation = null;
         long? firstRevision = null;
         string? bucketTimeZone = null;
@@ -243,6 +252,18 @@ public static class CollectorCli
 
                     bucketTimeZone = zoneValue;
                     break;
+                case WireSchemaOption:
+                    if (!TryTakeValue(args, ref index, out var schemaValue, stderr, WireSchemaOption))
+                    {
+                        return CollectorExitCodes.Usage;
+                    }
+
+                    if (!TryParseWireSchema(schemaValue, out wireSchema))
+                    {
+                        return Usage(stderr, "--wire-schema must be 1 (daily totals) or 2 (with the client/provider/model breakdown).");
+                    }
+
+                    break;
                 default:
                     if (TrySplitOption(argument, RemovedRevisionOption, out _))
                     {
@@ -289,6 +310,16 @@ public static class CollectorCli
                         break;
                     }
 
+                    if (TrySplitOption(argument, WireSchemaOption, out var inlineSchema))
+                    {
+                        if (!TryParseWireSchema(inlineSchema, out wireSchema))
+                        {
+                            return Usage(stderr, "--wire-schema must be 1 (daily totals) or 2 (with the client/provider/model breakdown).");
+                        }
+
+                        break;
+                    }
+
                     return Usage(stderr, "unknown argument.");
             }
         }
@@ -315,7 +346,8 @@ public static class CollectorCli
         if (stateShow || stateAdvance)
         {
             if (endpoint is not null || collectorId is not null || generation is not null
-                || bucketTimeZone is not null || firstRevision is not null || upstreamPartial)
+                || bucketTimeZone is not null || firstRevision is not null || upstreamPartial
+                || wireSchema != WireSchema.V1)
             {
                 return Usage(stderr, "state_usage: --state-show and --state-advance take no other option.");
             }
@@ -327,7 +359,8 @@ public static class CollectorCli
 
         if (stateInit)
         {
-            if (endpoint is not null || bucketTimeZone is not null || upstreamPartial)
+            if (endpoint is not null || bucketTimeZone is not null || upstreamPartial
+                || wireSchema != WireSchema.V1)
             {
                 return Usage(stderr, "state_usage: --state-init takes --collector-id, --generation and --first-revision only.");
             }
@@ -411,15 +444,16 @@ public static class CollectorCli
 
         if (sendRequested)
         {
-            return Send(send, sendEndpoint!, collectorId!, generation.Value, stdin, stderr);
+            return Send(send, sendEndpoint!, collectorId!, generation.Value, wireSchema, stdin, stderr);
         }
 
-        return Preview(generation.Value, upstreamPartial, stdin, stdout, stderr);
+        return Preview(generation.Value, upstreamPartial, wireSchema, stdin, stdout, stderr);
     }
 
     private static int Preview(
         long generation,
         bool upstreamPartial,
+        WireSchema wireSchema,
         Stream stdin,
         Stream stdout,
         TextWriter stderr)
@@ -429,8 +463,9 @@ public static class CollectorCli
             return exitCode;
         }
 
-        var wire = SnapshotWire.Serialize(candidate!, generation);
-        stdout.Write(wire, 0, wire.Length);
+        var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema);
+        ReportOmittedPartDays(stderr, wire.OmittedPartDays);
+        stdout.Write(wire.Bytes, 0, wire.Bytes.Length);
         stdout.Flush();
 
         if (upstreamPartial)
@@ -451,6 +486,7 @@ public static class CollectorCli
         Uri endpoint,
         string collectorId,
         long generation,
+        WireSchema wireSchema,
         Stream stdin,
         TextWriter stderr)
     {
@@ -514,7 +550,8 @@ public static class CollectorCli
                         return normalizeExit;
                     }
 
-                    var wire = SnapshotWire.Serialize(candidate!, generation);
+                    var wire = SnapshotWire.Serialize(candidate!, generation, wireSchema);
+                    ReportOmittedPartDays(stderr, wire.OmittedPartDays);
 
                     var credentials = send?.Credentials ?? new SystemdLoadCredentialSource();
                     var read = credentials.Read();
@@ -548,10 +585,11 @@ public static class CollectorCli
                         collectorId,
                         generation,
                         allocated!.LastRevision,
-                        wire,
+                        wire.Bytes,
                         read.Credential,
                         send?.Delay ?? DefaultDelay,
-                        send?.NextJitterUnit ?? DefaultJitter);
+                        send?.NextJitterUnit ?? DefaultJitter,
+                        partsReceipt: wireSchema == WireSchema.V2);
 
                     if (!store.Write(allocated.Record(outcome.Outcome, outcome.ConflictReason), out var recordFailure))
                     {
@@ -585,6 +623,29 @@ public static class CollectorCli
         {
             stderr.WriteLine(
                 "reductions_ignored: " + outcome.IgnoredReductions.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (outcome.IgnoredPartReductions > 0)
+        {
+            stderr.WriteLine(
+                "part_reductions_ignored: " + outcome.IgnoredPartReductions.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    /// <summary>
+    /// Reports how many days were sent with their total only, as a count.
+    ///
+    /// Which days lost their breakdown is deliberately not printed: the operator
+    /// needs to know the breakdown is incomplete, and the days themselves are day
+    /// partitions of their own usage, not diagnostics.
+    /// </summary>
+    private static void ReportOmittedPartDays(TextWriter stderr, int omittedPartDays)
+    {
+        if (omittedPartDays > 0)
+        {
+            stderr.WriteLine(
+                "parts_omitted: " + omittedPartDays.ToString(CultureInfo.InvariantCulture)
+                + " days were sent without a breakdown");
         }
     }
 
@@ -828,6 +889,22 @@ public static class CollectorCli
 
         endpoint = uri;
         return true;
+    }
+
+    private static bool TryParseWireSchema(string raw, out WireSchema schema)
+    {
+        switch (raw)
+        {
+            case "1":
+                schema = WireSchema.V1;
+                return true;
+            case "2":
+                schema = WireSchema.V2;
+                return true;
+            default:
+                schema = WireSchema.V1;
+                return false;
+        }
     }
 
     private static bool TryParsePositiveInteger(string raw, out long value)

@@ -5,6 +5,7 @@ namespace QuotaSight.Collector.Tests;
 internal static class FixtureFiles
 {
     internal const string Positive = "graph-4.23.0-positive.json";
+    internal const string Parts = "graph-4.23.0-parts.json";
     internal const string Empty = "graph-4.23.0-empty.json";
     internal const string Malformed = "graph-4.23.0-malformed.json";
     internal const string Partial = "graph-4.23.0-partial.json";
@@ -23,6 +24,33 @@ internal static class FixtureFiles
     internal const string UnknownRootKey = "graph-4.23.0-unknown-root-key.json";
     internal const string UnknownMetaKey = "graph-4.23.0-unknown-meta-key.json";
     internal const string TrailingGarbage = "graph-4.23.0-trailing-garbage.json";
+
+    /// <summary>
+    /// The wire-v2 body both lanes test against: <c>src/QuotaSight.Usage.Api/test/fixtures</c>.
+    ///
+    /// It lives on the API side because the API test is the one that stores it, and
+    /// this side asserts that its serializer produces exactly these bytes. Locating
+    /// the repository by walking up to the solution file keeps the test independent
+    /// of the working directory and of build output layout.
+    /// </summary>
+    internal static byte[] SharedWireV2Golden() =>
+        File.ReadAllBytes(RepositoryFile("src", "QuotaSight.Usage.Api", "test", "fixtures", "wire-v2-golden.json"));
+
+    internal static string RepositoryFile(params string[] parts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "QuotaSight.slnx")))
+            {
+                return Path.Combine([directory.FullName, .. parts]);
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException("The repository root could not be located from the test output directory.");
+    }
 
     internal static byte[] Bytes(string name)
     {

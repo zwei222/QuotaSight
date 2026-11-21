@@ -9,9 +9,15 @@ namespace QuotaSight.Collector;
 ///
 /// Rules, all deliberate:
 /// <list type="bullet">
-/// <item>Only <c>meta.version</c>, <c>meta.generatedAt</c>, <c>contributions[].date</c>
-/// and <c>contributions[].totals.tokens</c> are consumed; every other value is
-/// skipped and never echoed.</item>
+/// <item>Only <c>meta.version</c>, <c>meta.generatedAt</c>, <c>contributions[].date</c>,
+/// <c>contributions[].totals.tokens</c> and <c>contributions[].clients[]</c> are
+/// consumed; every other value is skipped and never echoed.</item>
+/// <item>Client rows are reduced to the five token components and a normalized
+/// (client, provider, model) key. Costs, message counts and anything else upstream
+/// carries are never mapped.</item>
+/// <item>A day's breakdown is kept only when it explains the day's total exactly
+/// and fits one day's row bound; otherwise that day is sent with its total only and
+/// the withheld day is counted.</item>
 /// <item>Unknown or repeated keys at the consumed levels are rejected instead of ignored.</item>
 /// <item>Days the document does not date are never invented: an absent day has no row,
 /// while an explicitly observed <c>0</c> on a dated row is kept.</item>
@@ -27,6 +33,18 @@ public static class TokscaleGraphNormalizer
     private static readonly string[] MetaKeys = ["generatedAt", "version", "dateRange"];
     private static readonly string[] ContributionKeys = ["date", "totals", "intensity", "tokenBreakdown", "clients"];
     private static readonly string[] TotalsKeys = ["tokens", "cost", "messages", "costProvenance"];
+    private static readonly string[] ClientKeys = ["client", "modelId", "providerId", "tokens", "cost", "messages"];
+    private static readonly string[] ClientTokenKeys = ["input", "output", "cacheRead", "cacheWrite", "reasoning"];
+
+    /// <summary>
+    /// Upper bound on upstream client rows read for one day, before normalization.
+    ///
+    /// Several raw rows may collapse into one key, so this is deliberately larger
+    /// than <see cref="TokscaleGraphContract.MaxPartsPerDay"/>; it exists so a
+    /// pathological document is rejected as a bounded read instead of exhausting
+    /// memory.
+    /// </summary>
+    private const int MaxClientRowsPerDay = 512;
 
     /// <summary>Normalizes one bounded upstream document.</summary>
     /// <param name="utf8">UTF-8 bytes of the whole document; no more than the input bound.</param>
@@ -281,6 +299,7 @@ public static class TokscaleGraphNormalizer
         var seen = new HashSet<string>(StringComparer.Ordinal);
         string? date = null;
         long tokens = 0;
+        List<SnapshotPart>? clients = null;
         var sawDate = false;
         var sawTotals = false;
 
@@ -325,8 +344,13 @@ public static class TokscaleGraphNormalizer
                     tokens = ReadTotals(ref reader, $"{field}.totals");
                     sawTotals = true;
                     break;
+                case "clients":
+                    clients = ReadClients(ref reader, $"{field}.clients");
+                    break;
                 default:
-                    // intensity, tokenBreakdown and clients are upstream detail; they are discarded.
+                    // intensity and tokenBreakdown are upstream detail; they are discarded.
+                    // The day's tokenBreakdown always equals totals.tokens, so it adds
+                    // nothing the client rows do not already say.
                     SkipValue(ref reader);
                     break;
             }
@@ -342,7 +366,162 @@ public static class TokscaleGraphNormalizer
             throw Reject($"{field}.totals", "missing_field", $"{field}.totals is required.");
         }
 
-        builder.AddDay(date!, tokens);
+        builder.AddDay(date!, tokens, clients ?? []);
+    }
+
+    /// <summary>
+    /// Reads <c>contributions[].clients</c>: one row per (client, model, provider)
+    /// tuple as upstream saw it. Every row must name its token components; a row
+    /// that does not is rejected rather than treated as zeroes, because a zero would
+    /// be indistinguishable from an observed zero.
+    /// </summary>
+    private static List<SnapshotPart> ReadClients(ref Utf8JsonReader reader, string field)
+    {
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            throw Reject(field, "invalid_type", $"{field} must be an array.");
+        }
+
+        var rows = new List<SnapshotPart>();
+        while (true)
+        {
+            reader.Read();
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                return rows;
+            }
+
+            rows.Add(ReadClient(ref reader, $"{field}[{rows.Count}]"));
+            if (rows.Count > MaxClientRowsPerDay)
+            {
+                throw Reject(
+                    field,
+                    "too_many_clients",
+                    $"{field} may contain at most {MaxClientRowsPerDay} rows.");
+            }
+        }
+    }
+
+    private static SnapshotPart ReadClient(ref Utf8JsonReader reader, string field)
+    {
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw Reject(field, "invalid_type", $"{field} must be an object.");
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string? client = null;
+        string? modelId = null;
+        string? providerId = null;
+        var components = new long[ClientTokenKeys.Length];
+        var sawTokens = false;
+
+        while (true)
+        {
+            reader.Read();
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                break;
+            }
+
+            var name = PropertyName(ref reader);
+            if (Array.IndexOf(ClientKeys, name) < 0)
+            {
+                throw Reject($"{field}.{name}", "unexpected_field", $"{field}.{name} is not part of the pinned graph document.");
+            }
+
+            if (!seen.Add(name))
+            {
+                throw Reject($"{field}.{name}", "duplicate_key", $"{field}.{name} is repeated.");
+            }
+
+            reader.Read();
+            switch (name)
+            {
+                case "client":
+                    client = ReadIdentifierString(ref reader, $"{field}.client");
+                    break;
+                case "modelId":
+                    modelId = ReadIdentifierString(ref reader, $"{field}.modelId");
+                    break;
+                case "providerId":
+                    providerId = ReadIdentifierString(ref reader, $"{field}.providerId");
+                    break;
+                case "tokens":
+                    ReadClientTokens(ref reader, $"{field}.tokens", components);
+                    sawTokens = true;
+                    break;
+                default:
+                    // cost and messages are never mapped: this collector emits tokens only.
+                    SkipValue(ref reader);
+                    break;
+            }
+        }
+
+        if (!sawTokens)
+        {
+            throw Reject($"{field}.tokens", "missing_field", $"{field}.tokens is required.");
+        }
+
+        // A missing identifier is normalized exactly like a value that failed the
+        // pattern: unknown, never guessed from neighbouring rows.
+        var key = new SnapshotPartKey(
+            PartIdentifiers.NormalizeClient(client),
+            PartIdentifiers.NormalizeProvider(providerId),
+            PartIdentifiers.NormalizeModel(modelId));
+
+        return new SnapshotPart(key, components[0], components[1], components[2], components[3], components[4]);
+    }
+
+    private static string ReadIdentifierString(ref Utf8JsonReader reader, string field)
+    {
+        if (reader.TokenType != JsonTokenType.String)
+        {
+            throw Reject(field, "invalid_type", $"{field} must be a string.");
+        }
+
+        return reader.GetString() ?? string.Empty;
+    }
+
+    private static void ReadClientTokens(ref Utf8JsonReader reader, string field, long[] components)
+    {
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw Reject(field, "invalid_type", $"{field} must be an object.");
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (true)
+        {
+            reader.Read();
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                break;
+            }
+
+            var name = PropertyName(ref reader);
+            var slot = Array.IndexOf(ClientTokenKeys, name);
+            if (slot < 0)
+            {
+                throw Reject($"{field}.{name}", "unexpected_field", $"{field}.{name} is not part of the pinned graph document.");
+            }
+
+            if (!seen.Add(name))
+            {
+                throw Reject($"{field}.{name}", "duplicate_key", $"{field}.{name} is repeated.");
+            }
+
+            reader.Read();
+            components[slot] = ReadTokenCount(ref reader, $"{field}.{name}");
+        }
+
+        foreach (var name in ClientTokenKeys)
+        {
+            if (!seen.Contains(name))
+            {
+                throw Reject($"{field}.{name}", "missing_field", $"{field}.{name} is required.");
+            }
+        }
     }
 
     private static long ReadTotals(ref Utf8JsonReader reader, string field)
@@ -611,13 +790,14 @@ public static class TokscaleGraphNormalizer
 
     private sealed class GraphBuilder
     {
-        private readonly List<(string Date, long Tokens)> _days = [];
+        private readonly List<(string Date, long Tokens, List<SnapshotPart> Clients)> _days = [];
 
         internal string? UpstreamVersion { get; set; }
 
         internal string? CollectedAt { get; set; }
 
-        internal void AddDay(string date, long tokens) => _days.Add((date, tokens));
+        internal void AddDay(string date, long tokens, List<SnapshotPart> clients) =>
+            _days.Add((date, tokens, clients));
 
         internal NormalizationResult Build()
         {
@@ -658,7 +838,11 @@ public static class TokscaleGraphNormalizer
                     $"The covered range must not exceed {TokscaleGraphContract.MaxDays} days.");
             }
 
-            var days = ordered.Select(day => new SnapshotDay(day.Date, day.Tokens)).ToArray();
+            var omitted = 0;
+            var days = ordered
+                .Select(day => new SnapshotDay(day.Date, day.Tokens, BuildParts(day.Tokens, day.Clients, ref omitted)))
+                .ToArray();
+
             return NormalizationResult.FromCandidate(new SnapshotCandidate(
                 TokscaleGraphContract.SchemaVersion,
                 TokscaleGraphContract.PinnedAdapterVersion,
@@ -666,7 +850,79 @@ public static class TokscaleGraphNormalizer
                 TokscaleGraphContract.SupportedBucketTimeZone,
                 from,
                 to,
-                days));
+                days,
+                omitted));
+        }
+
+        /// <summary>
+        /// Builds one day's breakdown, or <c>null</c> when the day must be sent with
+        /// its total only.
+        ///
+        /// Three rules, all of them "withhold rather than guess":
+        /// <list type="bullet">
+        /// <item>Upstream reported no client rows for the day — nothing to attribute.</item>
+        /// <item>The client rows do not add up to the day total. The API requires the
+        /// parts to explain the whole day, and adjusting a component to close the gap
+        /// would be inventing a number; the day is therefore sent without parts.</item>
+        /// <item>More distinct keys than one day may carry — a truncated list would
+        /// silently drop real usage.</item>
+        /// </list>
+        /// Rows that normalize to the same key (the same client/model/provider under
+        /// two spellings, or several rows for one key) are summed component by
+        /// component, which is the only addition the document itself supports.
+        /// </summary>
+        private static List<SnapshotPart>? BuildParts(long dayTotal, List<SnapshotPart> clients, ref int omitted)
+        {
+            if (clients.Count == 0)
+            {
+                return null;
+            }
+
+            var sums = new Dictionary<SnapshotPartKey, SnapshotPart>();
+            foreach (var client in clients)
+            {
+                if (sums.TryGetValue(client.Key, out var existing))
+                {
+                    sums[client.Key] = existing with
+                    {
+                        Input = existing.Input + client.Input,
+                        Output = existing.Output + client.Output,
+                        CacheRead = existing.CacheRead + client.CacheRead,
+                        CacheWrite = existing.CacheWrite + client.CacheWrite,
+                        Reasoning = existing.Reasoning + client.Reasoning,
+                    };
+                }
+                else
+                {
+                    sums[client.Key] = client;
+                }
+            }
+
+            var parts = sums.Values.OrderBy(part => part.Key).ToList();
+            if (parts.Count > TokscaleGraphContract.MaxPartsPerDay)
+            {
+                omitted++;
+                return null;
+            }
+
+            long attributed = 0;
+            foreach (var part in parts)
+            {
+                attributed += part.Total;
+                if (attributed > TokscaleGraphContract.MaxSafeInteger)
+                {
+                    omitted++;
+                    return null;
+                }
+            }
+
+            if (attributed != dayTotal)
+            {
+                omitted++;
+                return null;
+            }
+
+            return parts;
         }
 
         private static int DayNumber(string date) =>

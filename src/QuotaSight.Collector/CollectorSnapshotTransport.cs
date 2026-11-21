@@ -18,12 +18,18 @@ namespace QuotaSight.Collector;
 /// Days the API accepted but did not write because their accepted total was
 /// higher. Always <c>0</c> unless a receipt was verified.
 /// </param>
+/// <param name="IgnoredPartReductions">
+/// Breakdown rows the API accepted but did not write because their accepted total
+/// was higher. Only a v2 receipt carries this, and it is always <c>0</c> unless a
+/// receipt was verified.
+/// </param>
 public sealed record SendOutcome(
     int ExitCode,
     string Message,
     CollectorSendOutcome Outcome,
     string? ConflictReason,
-    int IgnoredReductions = 0);
+    int IgnoredReductions = 0,
+    int IgnoredPartReductions = 0);
 
 /// <summary>
 /// HTTPS transport for one explicit snapshot send. Redirects and cookies are
@@ -57,6 +63,13 @@ public static class CollectorSnapshotTransport
         "receivedAt",
         "changedDays",
         "ignoredReductions",
+    ];
+
+    /// <summary>The two fields a wire-v2 receipt adds after the v1 seven.</summary>
+    private static readonly string[] ReceiptPartKeys =
+    [
+        "changedParts",
+        "ignoredPartReductions",
     ];
 
     /// <summary>Creates the production handler. Does not open a socket.</summary>
@@ -133,7 +146,8 @@ public static class CollectorSnapshotTransport
         byte[] body,
         CollectorAccessCredential credential,
         Action<TimeSpan> delay,
-        Func<double> nextJitterUnit)
+        Func<double> nextJitterUnit,
+        bool partsReceipt = false)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -147,7 +161,7 @@ public static class CollectorSnapshotTransport
         var last = Unavailable();
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            last = Once(client, uri, body, credential, collectorId, generation, revision);
+            last = Once(client, uri, body, credential, collectorId, generation, revision, partsReceipt);
             if (!IsRetryable(last) || attempt == MaxAttempts)
             {
                 break;
@@ -173,8 +187,35 @@ public static class CollectorSnapshotTransport
         long revision,
         out int ignoredReductions)
     {
+        ignoredReductions = 0;
+        return IsExpectedReceipt(body, collectorId, generation, revision, partsReceipt: false, out ignoredReductions, out _);
+    }
+
+    /// <summary>
+    /// True when <paramref name="body"/> is the receipt the API documents for this
+    /// write. A wire-v2 write answers with two extra fields, so the expected key set
+    /// depends on what was sent: a v1 receipt is checked exactly as before, and a v2
+    /// receipt must carry both additional fields.
+    /// </summary>
+    /// <param name="body">Response body.</param>
+    /// <param name="collectorId">Collector id of this send.</param>
+    /// <param name="generation">Generation of this send.</param>
+    /// <param name="revision">Revision of this send.</param>
+    /// <param name="partsReceipt">True when the request was wire v2.</param>
+    /// <param name="ignoredReductions">Day rows the API kept at a higher total.</param>
+    /// <param name="ignoredPartReductions">Breakdown rows the API kept at a higher total.</param>
+    public static bool IsExpectedReceipt(
+        ReadOnlySpan<byte> body,
+        string collectorId,
+        long generation,
+        long revision,
+        bool partsReceipt,
+        out int ignoredReductions,
+        out int ignoredPartReductions)
+    {
         ArgumentNullException.ThrowIfNull(collectorId);
         ignoredReductions = 0;
+        ignoredPartReductions = 0;
         if (body.IsEmpty || body.Length > MaxResponseBytes)
         {
             return false;
@@ -202,12 +243,21 @@ public static class CollectorSnapshotTransport
             var instant = false;
             var days = false;
             var ignored = false;
+            var changedParts = false;
+            var ignoredParts = false;
+            var expectedKeys = partsReceipt ? ReceiptKeys.Length + ReceiptPartKeys.Length : ReceiptKeys.Length;
             while (reader.Read())
             {
                 if (reader.TokenType == JsonTokenType.EndObject)
                 {
-                    return !reader.Read() && status && collector && generationMatches
-                        && revisionMatches && instant && days && ignored && seen.Count == ReceiptKeys.Length;
+                    var complete = status && collector && generationMatches && revisionMatches
+                        && instant && days && ignored && seen.Count == expectedKeys;
+                    if (partsReceipt)
+                    {
+                        complete = complete && changedParts && ignoredParts;
+                    }
+
+                    return !reader.Read() && complete;
                 }
 
                 if (reader.TokenType != JsonTokenType.PropertyName)
@@ -255,6 +305,27 @@ public static class CollectorSnapshotTransport
                             {
                                 ignoredReductions = count;
                             }
+                        }
+
+                        break;
+                    case "changedParts":
+                        if (reader.TokenType != JsonTokenType.Number || !reader.TryGetInt32(out var changed))
+                        {
+                            return false;
+                        }
+
+                        changedParts = changed is >= 0 and <= TokscaleGraphContract.MaxPartsPerSnapshot;
+                        break;
+                    case "ignoredPartReductions":
+                        if (reader.TokenType != JsonTokenType.Number || !reader.TryGetInt32(out var parts))
+                        {
+                            return false;
+                        }
+
+                        ignoredParts = parts is >= 0 and <= TokscaleGraphContract.MaxPartsPerSnapshot;
+                        if (ignoredParts)
+                        {
+                            ignoredPartReductions = parts;
                         }
 
                         break;
@@ -378,7 +449,8 @@ public static class CollectorSnapshotTransport
         CollectorAccessCredential credential,
         string collectorId,
         long generation,
-        long revision)
+        long revision,
+        bool partsReceipt)
     {
         using var request = new HttpRequestMessage(HttpMethod.Put, uri);
         var content = new ByteArrayContent(body);
@@ -469,7 +541,14 @@ public static class CollectorSnapshotTransport
                 }
 
                 if (read != BodyRead.Ok
-                    || !IsExpectedReceipt(receipt, collectorId, generation, revision, out var ignoredReductions))
+                    || !IsExpectedReceipt(
+                        receipt,
+                        collectorId,
+                        generation,
+                        revision,
+                        partsReceipt,
+                        out var ignoredReductions,
+                        out var ignoredPartReductions))
                 {
                     return Unverified(CollectorExitCodes.SendReceiptUnverified, "send_receipt_unverified: receipt not verified");
                 }
@@ -479,7 +558,8 @@ public static class CollectorSnapshotTransport
                     "sent: accepted",
                     CollectorSendOutcome.Accepted,
                     null,
-                    ignoredReductions);
+                    ignoredReductions,
+                    ignoredPartReductions);
             }
 
             return Rejected(CollectorExitCodes.SendRejected, "send_rejected: request rejected");

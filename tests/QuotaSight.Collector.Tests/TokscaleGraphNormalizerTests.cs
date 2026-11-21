@@ -16,12 +16,14 @@ public sealed class TokscaleGraphNormalizerTests
         Assert.Equal(TokscaleGraphContract.PinnedAdapterVersion, candidate.AdapterVersion);
         Assert.Equal("2026-11-17", candidate.CoveredFrom);
         Assert.Equal("2026-11-19", candidate.CoveredTo);
+        // The pinned fixture carries client rows for these days, so the dates and
+        // totals are asserted here and the breakdown in the parts tests below.
         Assert.Equal(new[]
         {
-            new SnapshotDay("2026-11-17", 400),
-            new SnapshotDay("2026-11-18", 1200),
-            new SnapshotDay("2026-11-19", 1440),
-        }, candidate.Days);
+            ("2026-11-17", 400L),
+            ("2026-11-18", 1200L),
+            ("2026-11-19", 1440L),
+        }, candidate.Days.Select(day => (day.Date, day.TotalTokens)));
     }
 
     [Fact]
@@ -69,9 +71,9 @@ public sealed class TokscaleGraphNormalizerTests
         var candidate = Assert.IsType<SnapshotCandidate>(result.Candidate);
         Assert.Equal(new[]
         {
-            new SnapshotDay("2026-11-17", 0),
-            new SnapshotDay("2026-11-19", 500),
-        }, candidate.Days);
+            ("2026-11-17", 0L),
+            ("2026-11-19", 500L),
+        }, candidate.Days.Select(day => (day.Date, day.TotalTokens)));
         Assert.DoesNotContain(candidate.Days, day => day.Date == "2026-11-18");
         Assert.Equal("2026-11-17", candidate.CoveredFrom);
         Assert.Equal("2026-11-19", candidate.CoveredTo);

@@ -179,6 +179,7 @@ export interface Harness {
    */
   putStream(input: PutStreamInput): Promise<Response>;
   getDaily(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
+  getBreakdown(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
   dispose(): Promise<void>;
 }
 
@@ -253,6 +254,11 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
       if (token !== null) headers.authorization = `Bearer ${token}`;
       return request(`/v1/usage/daily${search}`, { headers });
     },
+    async getBreakdown(search, token = 'read-a1', extra) {
+      const headers: Record<string, string> = { ...(extra ?? {}) };
+      if (token !== null) headers.authorization = `Bearer ${token}`;
+      return request(`/v1/usage/breakdown${search}`, { headers });
+    },
     async dispose() {
       await mf.dispose();
     },
@@ -261,6 +267,7 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
 
 export async function resetData(db: D1Database): Promise<void> {
   await db.batch([
+    db.prepare('DELETE FROM usage_part'),
     db.prepare('DELETE FROM usage_day'),
     db.prepare('DELETE FROM snapshot_receipts'),
     db.prepare('DELETE FROM collectors'),
@@ -368,4 +375,104 @@ export async function usageRows(
     .prepare('SELECT bucket_date, total_tokens, updated_at FROM usage_day ORDER BY bucket_date')
     .all<{ bucket_date: string; total_tokens: number; updated_at: string }>();
   return result.results ?? [];
+}
+
+/**
+ * Builds a valid wire-v2 snapshot body.
+ *
+ * The default is one day whose single part adds up to its `totalTokens`: the
+ * contract's `sum(parts) === totalTokens` rule is what makes a v2 body
+ * well formed, so the fixture has to obey it rather than being repaired later.
+ */
+export function snapshotBodyV2(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const days =
+    (overrides.days as Array<{ date: string; totalTokens: number; parts?: unknown }> | undefined) ?? [
+      { date: '2026-11-18', totalTokens: 100, parts: [[0, 60, 10, 10, 5, 15]] },
+    ];
+  const keys = (overrides.keys as unknown[] | undefined) ?? [['codex', 'openai', 'gpt-5.1']];
+  const first = days[0]?.date ?? '2026-11-18';
+  const last = days[days.length - 1]?.date ?? first;
+  return {
+    schemaVersion: 2,
+    adapterVersion: 'tokscale-4.23.0',
+    generation: 1,
+    collectedAt: '2026-11-20T03:00:00Z',
+    bucketTimeZone: 'Asia/Tokyo',
+    coveredRange: { from: first, to: last },
+    keys,
+    days,
+    ...overrides,
+  };
+}
+
+export interface PartRow {
+  readonly bucket_date: string;
+  readonly client: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_read_tokens: number;
+  readonly cache_write_tokens: number;
+  readonly reasoning_tokens: number;
+  readonly total_tokens: number;
+  readonly updated_at: string;
+}
+
+export async function partRows(db: D1Database): Promise<PartRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT bucket_date, client, provider, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_write_tokens, reasoning_tokens, total_tokens, updated_at
+       FROM usage_part
+       ORDER BY bucket_date, client, provider, model`,
+    )
+    .all<PartRow>();
+  return result.results ?? [];
+}
+
+/** Seeds accepted breakdown rows directly, in bounded batches, for read-path bounds. */
+export async function seedParts(db: D1Database, entries: readonly PartSeed[]): Promise<void> {
+  let pending: D1PreparedStatement[] = [];
+  const flush = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    await db.batch(pending);
+    pending = [];
+  };
+  for (const entry of entries) {
+    const total = entry.input + entry.output;
+    pending.push(
+      db
+        .prepare(
+          `INSERT INTO usage_part (collector_id, generation, bucket_date, client, provider, model,
+             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+             total_tokens, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, '2026-11-20T00:00:00Z')`,
+        )
+        .bind(
+          entry.collectorId,
+          entry.generation ?? 1,
+          entry.date,
+          entry.client,
+          entry.provider ?? '',
+          entry.model,
+          entry.input,
+          entry.output,
+          total,
+        ),
+    );
+    if (pending.length === INSERT_BATCH) await flush();
+  }
+  await flush();
+}
+
+export interface PartSeed {
+  readonly collectorId: string;
+  readonly date: string;
+  readonly client: string;
+  readonly provider?: string;
+  readonly model: string;
+  readonly input: number;
+  readonly output: number;
+  readonly generation?: number;
 }
