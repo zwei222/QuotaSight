@@ -416,8 +416,21 @@ public sealed class UsageStatusSurfaceTests
         }
     }
 
-    [AvaloniaFact]
-    public async Task Banner_icons_align_with_the_first_text_line_not_the_paragraph_middle()
+    public static IEnumerable<object?[]> BannerFonts()
+    {
+        // English copy on purpose: Japanese glyphs fall back to a CJK font whose tall
+        // metrics would mask the font under test. The three cases are the theme default
+        // (what CI resolves to a DejaVu-class sans), a deliberately wide serif, and the
+        // exact CI repro: DejaVu Sans, whose first line measures only 16.3px at 14px.
+        yield return new object?[] { null, "theme default" };
+        yield return new object?[] { "DejaVu Serif", "deliberately wide metrics" };
+        yield return new object?[] { "DejaVu Sans", "the CI font whose first line is 16.3px" };
+    }
+
+    [AvaloniaTheory]
+    [MemberData(nameof(BannerFonts))]
+    public async Task Banner_icons_align_with_the_first_text_line_not_the_paragraph_middle(
+        string? fontFamily, string why)
     {
         var port = new ScriptedUsageReadPort(
             () => Usage(17, Reported(Now.AddHours(-13))),
@@ -425,11 +438,12 @@ public sealed class UsageStatusSurfaceTests
         var window = await CreateStateAsync(SurfaceState.StaleAndDelayed, port, loadSecondRead: true);
         try
         {
-            window.ViewModel.Language = UiLanguage.Japanese;
+            window.FindControl<Border>("UsageDailyCard")!.SetValue(TextElement.FontFamilyProperty,
+                fontFamily is null ? FontFamily.Default : new FontFamily(fontFamily));
             window.UpdateLayout();
 
-            AssertFirstLineAligned(window, "UsageFailurePanel", "UsageFailureStaleIcon", "UsageFailureTextBlock");
-            AssertFirstLineAligned(window, "UsageDelayedBanner", "UsageDelayedIcon", "UsageDelayedTextBlock");
+            AssertFirstLineAligned(window, "UsageFailurePanel", "UsageFailureStaleIcon", "UsageFailureTextBlock", fontFamily, why);
+            AssertFirstLineAligned(window, "UsageDelayedBanner", "UsageDelayedIcon", "UsageDelayedTextBlock", fontFamily, why);
             AssertEveryTextStaysInsideTheDailyCard(window);
         }
         finally
@@ -439,7 +453,8 @@ public sealed class UsageStatusSurfaceTests
         }
     }
 
-    private static void AssertFirstLineAligned(MainWindow window, string bannerName, string iconName, string textName)
+    private static void AssertFirstLineAligned(
+        MainWindow window, string bannerName, string iconName, string textName, string? fontFamily, string why)
     {
         var banner = window.FindControl<Border>(bannerName)!;
         var icon = window.FindControl<PathIcon>(iconName)!;
@@ -447,10 +462,17 @@ public sealed class UsageStatusSurfaceTests
         var iconTop = icon.TranslatePoint(default, banner)!.Value.Y;
         var textTop = text.TranslatePoint(default, banner)!.Value.Y;
         var firstLineHeight = text.TextLayout.TextLines[0].Height;
-        Assert.True(iconTop >= textTop - 1,
-            $"The '{iconName}' icon floats above the first text line by {textTop - iconTop:0.#}px.");
-        Assert.True(iconTop + icon.Bounds.Height <= textTop + firstLineHeight + 1,
-            $"The '{iconName}' icon ends at {iconTop + icon.Bounds.Height - textTop:0.#}px into the text, beyond the first line ({firstLineHeight:0.#}px): it drifts toward the paragraph middle.");
+        // No slack: a margin of a few pixels flips with font metrics (DejaVu Sans renders
+        // a 16.3px first line, others render 17-19px). The icon must sit inside the first
+        // line's box and be centered on it, whatever font lays the text out ({why}).
+        Assert.True(iconTop >= textTop,
+            $"[{fontFamily ?? "default"}] The '{iconName}' icon floats above the first text line by {textTop - iconTop:0.#}px.");
+        Assert.True(iconTop + icon.Bounds.Height <= textTop + firstLineHeight,
+            $"[{fontFamily ?? "default"}] The '{iconName}' icon ends at {iconTop + icon.Bounds.Height - textTop:0.#}px into the text, beyond the first line ({firstLineHeight:0.#}px): it drifts toward the paragraph middle.");
+        var iconCenter = iconTop + icon.Bounds.Height / 2;
+        var lineCenter = textTop + firstLineHeight / 2;
+        Assert.True(Math.Abs(iconCenter - lineCenter) <= 3,
+            $"[{fontFamily ?? "default"}] The '{iconName}' icon center sits {iconCenter - lineCenter:+0.#;-0.#}px off the first line's center ({lineCenter - textTop:0.#}px).");
     }
 
     [AvaloniaFact]

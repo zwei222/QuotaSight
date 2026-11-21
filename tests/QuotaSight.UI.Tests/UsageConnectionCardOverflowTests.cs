@@ -113,6 +113,7 @@ public sealed class UsageConnectionCardOverflowTests
         window.UpdateLayout();
         Assert.True(status.TextLayout.TextLines.Count > 1,
             $"The store-unavailable banner must wrap at {WindowWidth:0}px with a wide font; it stayed on {status.TextLayout.TextLines.Count} line(s).");
+        AssertStatusIconOnTheFirstLine(window, status);
         AssertEveryTextStaysInsideTheCard(window);
 
         AssertPillsWrapWhenTheLineRunsOut(window);
@@ -192,6 +193,24 @@ public sealed class UsageConnectionCardOverflowTests
     {
         var panel = window.FindControl<Border>("UsageConnectionStatusPanel")!;
         Assert.Contains(expectedClass, panel.Classes);
+    }
+
+    // Same first-line standard as the usage page banners: the icon sits inside the first
+    // text line's box and centered on it, without depending on a few pixels of slack that
+    // flip with font metrics (DejaVu Sans renders a 16.3px first line at 14px).
+    private static void AssertStatusIconOnTheFirstLine(MainWindow window, TextBlock status)
+    {
+        var banner = window.FindControl<Grid>("UsageStatusBannerGrid")!;
+        var icon = banner.GetVisualDescendants().OfType<PathIcon>().First(child => child.IsVisible);
+        var iconTop = icon.TranslatePoint(default, banner)!.Value.Y;
+        var textTop = status.TranslatePoint(default, banner)!.Value.Y;
+        var firstLineHeight = status.TextLayout.TextLines[0].Height;
+        Assert.True(iconTop >= textTop,
+            $"The status icon floats above the first text line by {textTop - iconTop:0.#}px.");
+        Assert.True(iconTop + icon.Bounds.Height <= textTop + firstLineHeight,
+            $"The status icon ends {iconTop + icon.Bounds.Height - textTop:0.#}px into the text, beyond the first line ({firstLineHeight:0.#}px).");
+        Assert.True(Math.Abs(iconTop + icon.Bounds.Height / 2 - (textTop + firstLineHeight / 2)) <= 3,
+            "The status icon is not centered on the first text line.");
     }
 
     private static void AssertEveryTextStaysInsideTheCard(MainWindow window)
