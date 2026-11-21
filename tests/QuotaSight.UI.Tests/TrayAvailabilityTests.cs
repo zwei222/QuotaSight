@@ -14,6 +14,27 @@ public sealed class TrayAvailabilityTests
     }
 
     [Fact]
+    public void Brand_icon_has_required_raster_sizes_and_windows_multi_size_ico()
+    {
+        var assets = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/QuotaSight.UI/Assets"));
+        foreach (var size in new[] { 32, 256, 512 })
+        {
+            using var stream = File.OpenRead(Path.Combine(assets, $"quotasight-{size}.png"));
+            var header = new byte[24];
+            stream.ReadExactly(header);
+            Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, header[..8].ToArray());
+            Assert.Equal(size, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header[16..20]));
+            Assert.Equal(size, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header[20..24]));
+        }
+        using var ico = File.OpenRead(Path.Combine(assets, "quotasight.ico"));
+        Span<byte> icoHeader = stackalloc byte[6];
+        ico.ReadExactly(icoHeader);
+        Assert.Equal((ushort)0, System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(icoHeader[..2]));
+        Assert.Equal((ushort)1, System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(icoHeader[2..4]));
+        Assert.Equal(7, System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(icoHeader[4..6]));
+    }
+
+    [Fact]
     public void Tray_icon_asset_is_a_32_pixel_png()
     {
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/QuotaSight.UI/Assets/quotasight-tray.png"));

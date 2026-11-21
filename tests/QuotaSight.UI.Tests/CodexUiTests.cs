@@ -291,7 +291,7 @@ public sealed class CodexUiTests
         clock.Advance(TimeSpan.FromMinutes(2));
         await vm.RefreshAsync();
         var staleRow = Assert.Single(Assert.Single(vm.Cards).Windows);
-        Assert.Equal("45% used · 55% remaining", staleRow.PercentText);
+        Assert.Equal("Last observed: 45% used · 55% remaining", staleRow.PercentText);
         Assert.True(staleRow.IsStale);
         Assert.True(vm.IsError);
 
@@ -406,7 +406,7 @@ public sealed class CodexUiTests
 
         var codexCard = Assert.Single(vm.Cards, card => card.Provider == ProviderKind.ChatGpt);
         var codexRow = Assert.Single(codexCard.Windows);
-        Assert.Equal("45% used · 55% remaining", codexRow.PercentText);
+        Assert.Equal("Last observed: 45% used · 55% remaining", codexRow.PercentText);
         Assert.Equal(initialTime, codexRow.FetchedAt);
         Assert.True(codexRow.IsStale);
         Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.Ordinal);
@@ -467,7 +467,7 @@ public sealed class CodexUiTests
         var card = Assert.Single(vm.Cards, item => item.Account == "codex-account");
         var rows = card.Windows.Where(row => row.Metric == "Codex").ToList();
         Assert.Equal(2, rows.Count);
-        Assert.Equal("71% used · 29% remaining", Assert.Single(rows, row => row.WindowName == "Rolling").PercentText);
+        Assert.Equal("Last observed: 71% used · 29% remaining", Assert.Single(rows, row => row.WindowName == "Rolling").PercentText);
         Assert.True(Assert.Single(rows, row => row.WindowName == "Weekly").IsStale);
         Assert.True(vm.IsError);
         Assert.True(vm.IsNotificationVisible);

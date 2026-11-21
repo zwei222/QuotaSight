@@ -72,7 +72,7 @@ Windows Native AOTはWindows runner、Linux Native AOTはLinux runnerでpublish�
 - Claude Proは、対応する公開契約が存在するまで、利用率/resetの手動入力と公式Usageページへのリンクを使用します。
 - OpenAI Codexのaccess/refresh/id tokenはOS資格情報ストアだけへ永続化し、利用不能時はsession-memoryに限定します。refresh token rotationは排他し、logout時に専用資格情報を削除してください。`used_percent`、`reset_at`、`limit_window_seconds`だけを写像し、`used`/`limit`を推測せず、primary/secondary windowと100%超の値を保持してください。
 - OpenCode Goは明示的に入力されたAPI keyとusage endpoint adapterを使用します。OpenCode内部の認証ファイルを読み取ってはいけません。
-- GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight用GitHub AppのDevice Flowを使用できます。認証成功は利用枠の参照可否を保証しません。組織利用枠を取得できない場合は手動入力へfallbackします。
+- GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight用GitHub AppのDevice Flowを使用できます。権限を持つ組織管理者はBilling Usage APIからユーザー別AI Credits使用量を取得できますが、認証成功は参照権限を保証しません。1席あたり月1,900 AI Creditsは請求主体単位の共有プールであり、個人残量として計算してはいけません。取得できない場合は手動入力へfallbackします。
 - GitHub App Client IDは実行時設定です。App IDと混同せず、デスクトップアプリにclient secretやprivate keyを要求または埋め込んではいけません。
 - その他のプランはcapability detectionに基づくbest effort対応です。上限を推測せず、非対応状態を表示してください。
 
@@ -108,7 +108,7 @@ UIコピーは簡潔で自然な表現にし、プロバイダー対応範囲や
 
 履歴はschema versionとevent IDを持つUTC日別JSONLで、30日間保持します。writerは1つに制限し、切り詰められた末尾行だけを回復対象とし、それ以前の破損行は報告してください。期限切れファイルと境界日の期限切れentryをpruneします。settingsとhistoryは実行ファイルの隣ではなく、OSのユーザー別データディレクトリに保存してください。
 
-settingsにはtheme、language、refresh interval、notification preference、threshold、GitHub OAuth Client IDを保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。
+settingsにはtheme、language、refresh interval、notification preference、threshold、GitHub OAuth Client ID、GitHub Organization slugを保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。
 
 ## Gitと配布
 

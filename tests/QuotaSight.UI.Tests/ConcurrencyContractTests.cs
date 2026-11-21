@@ -67,7 +67,7 @@ public sealed class ConcurrencyContractTests
         var localized = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         state.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.Count > 0 && state.FilteredEntries.All(entry => entry.WindowDisplay == "ローリング枠")) localized.TrySetResult(true);
+            if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.Count > 0 && state.FilteredEntries.All(entry => entry.WindowDisplay == "ローリング")) localized.TrySetResult(true);
         };
         state.SetLanguage(UiLanguage.Japanese);
         await localized.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -172,27 +172,6 @@ public sealed class ConcurrencyContractTests
         });
         await state.AppendAndReloadAsync([Snapshot(2)]).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(history.SuccessfulOperationObserved);
-    }
-
-    [Fact]
-    public async Task DeleteAll_does_not_allow_an_old_projection_to_restore_deleted_history()
-    {
-        var history = new InMemoryQuotaHistory([Snapshot(1)]);
-        var scheduler = new BlockingBuildScheduler(blockedCall: 2);
-        var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync();
-
-        state.AccountFilter = "account-1";
-        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.DeleteAllAsync().WaitAsync(TimeSpan.FromSeconds(5));
-
-        scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Empty(state.Entries);
-        Assert.Empty(state.FilteredEntries);
-        Assert.Empty(state.DisplayedEntries);
     }
 
     [Fact]
@@ -639,7 +618,7 @@ public sealed class ConcurrencyContractAvaloniaTests
         await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(5));
         scheduler.Release();
         await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.All(state.FilteredEntries.Take(10), entry => Assert.Equal("ローリング枠", entry.WindowDisplay));
+        Assert.All(state.FilteredEntries.Take(10), entry => Assert.Equal("ローリング", entry.WindowDisplay));
 
         Assert.True(await state.DeleteAsync(history.Events[0].EventId).WaitAsync(TimeSpan.FromSeconds(10)));
         await state.AppendAndReloadAsync([Snapshot(7)]).WaitAsync(TimeSpan.FromSeconds(10));

@@ -236,7 +236,7 @@ public sealed class ResidentModeTests
         public ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string key, CancellationToken token) => ValueTask.FromResult(new ProviderConnectionResult(false, "not used"));
         public ValueTask<string> ProbeGitHubCliAsync(CancellationToken token) => ValueTask.FromResult(string.Empty);
         public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken token) => ValueTask.FromResult(new FetchResult<DeviceAuthorizationStart>(FetchStatus.Unsupported));
-        public ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new FetchResult<string>(FetchStatus.Unsupported));
+        public ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new GitHubDeviceFlowResult(false, FetchStatus.Unsupported));
         public ValueTask<CodexUiResult> StartCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(true, CodexAuthorizationState.AwaitingAuthorization, "started", new("CODE", new Uri("https://example.test"), DateTimeOffset.UtcNow.AddMinutes(5))));
         public async ValueTask<CodexUiResult> PollCodexAsync(CancellationToken token)
         {
@@ -254,7 +254,7 @@ public sealed class ResidentModeTests
         public ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string key, CancellationToken token) => ValueTask.FromResult(new ProviderConnectionResult(false, "not used"));
         public ValueTask<string> ProbeGitHubCliAsync(CancellationToken token) => ValueTask.FromResult(string.Empty);
         public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken token) => ValueTask.FromResult(new FetchResult<DeviceAuthorizationStart>(FetchStatus.Unsupported));
-        public ValueTask<FetchResult<string>> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new FetchResult<string>(FetchStatus.Unsupported));
+        public ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new GitHubDeviceFlowResult(false, FetchStatus.Unsupported));
         public ValueTask<CodexUiResult> StartCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(false, CodexAuthorizationState.Disconnected, "not used"));
         public ValueTask<CodexUiResult> PollCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(false, CodexAuthorizationState.Disconnected, "not used"));
         public async ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken token)

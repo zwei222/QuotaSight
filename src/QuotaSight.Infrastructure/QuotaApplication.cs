@@ -11,12 +11,14 @@ public sealed class QuotaApplication(IEnumerable<IQuotaAdapter> adapters, IQuota
         await history.PruneAsync(DateOnly.FromDateTime(now.UtcDateTime).AddDays(-30), cancellationToken);
         var all = new List<QuotaSnapshot>();
         var failures = new List<ProviderFailure>();
+        var noDataProviders = new HashSet<ProviderKind>();
         foreach (var adapter in adapters)
         {
             try
             {
                 var result = await adapter.FetchAsync(adapter.Provider.ToString(), cancellationToken);
                 if (result.IsSuccess && result.Value is not null) all.AddRange(result.Value);
+                else if (result.Status == FetchStatus.NoData) noDataProviders.Add(adapter.Provider);
                 else if (!result.IsSuccess) failures.Add(new(adapter.Provider, result.Status, result.RetryAfter));
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -29,7 +31,7 @@ public sealed class QuotaApplication(IEnumerable<IQuotaAdapter> adapters, IQuota
             }
         }
         if (all.Count > 0) await history.AppendAsync(all, cancellationToken);
-        return new(all, failures);
+        return new(all, failures, noDataProviders);
     }
 
     public void Dispose() => (history as IDisposable)?.Dispose();

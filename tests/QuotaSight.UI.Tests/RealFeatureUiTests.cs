@@ -58,11 +58,15 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
-    public async Task Refresh_failure_keeps_last_known_cards_and_marks_error()
+    public async Task New_alert_replaces_refresh_failure_banner()
     {
-        var snapshot = Snapshot(40); var vm = new MainViewModel(new FixedDashboardSource(snapshot), quotaApplication: new StubApplication([]));
+        var vm = new MainViewModel(new FixedDashboardSource(Snapshot(40)), quotaApplication: new StubApplication([]));
         await vm.RefreshAsync();
-        Assert.Contains(vm.Cards, card => card.Account == "acct"); Assert.True(vm.IsError);
+
+        Assert.Contains("Temporary fetch failure", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Notify("History", "Export failed.");
+
+        Assert.Equal("History: Export failed.", vm.NotificationBannerText);
     }
 
     [Fact]
@@ -78,7 +82,9 @@ public sealed class RealFeatureTests
         clock.Advance(TimeSpan.FromHours(2));
         await vm.RefreshAsync();
 
-        var row = Assert.Single(Assert.Single(vm.Cards).Windows);
+        var card = Assert.Single(vm.Cards);
+        Assert.Equal("acct", card.Account);
+        var row = Assert.Single(card.Windows);
         Assert.True(row.IsStale);
         Assert.Contains("Stale", row.FreshnessText, StringComparison.Ordinal);
         Assert.True(vm.IsError);
@@ -144,7 +150,39 @@ public sealed class RealFeatureTests
 
         var rows = Assert.Single(DashboardAggregation.ToCards(snapshots, now)).Windows;
 
-        Assert.Equal(["Custom metric", "Rolling metric", "Daily metric", "Monthly metric"], rows.Select(row => row.Metric));
+        Assert.Equal(["Daily metric", "Rolling metric", "Monthly metric", "Custom metric"], rows.Select(row => row.Metric));
+    }
+
+    [Fact]
+    public async Task OpenCode_weekly_precedes_monthly_when_valid_durations_differ_and_survives_refresh_and_language_switch()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var monthly = Snapshot(10) with { Provider = ProviderKind.OpenCode, Account = "go", Metric = "usage", Used = 10, Window = new(QuotaWindowKind.Monthly, now.AddDays(-2), now.AddDays(2)), DisplayName = "OpenCode Go" };
+        var weekly = monthly with { Used = 90, Window = new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(6)) };
+
+        var aggregate = Assert.Single(DashboardAggregation.ToCards([monthly, weekly], now));
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], aggregate.Windows.Select(row => row.WindowKind));
+
+        var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedTimeProvider(now));
+        await vm.ApplyProviderSnapshotsAsync([monthly, weekly]);
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
+    }
+
+    [Fact]
+    public void Window_ordering_uses_semantic_fallback_for_equal_or_invalid_durations()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
+        var snapshots = Enum.GetValues<QuotaWindowKind>().Select(kind => Snapshot(10) with
+        {
+            Metric = kind.ToString(),
+            Window = kind == QuotaWindowKind.Custom
+                ? new(kind, now.AddDays(2), now.AddDays(1))
+                : new(kind, now.AddDays(-1), now)
+        });
+
+        Assert.Equal([QuotaWindowKind.Daily, QuotaWindowKind.Rolling, QuotaWindowKind.Weekly, QuotaWindowKind.Monthly, QuotaWindowKind.Custom], QuotaWindowOrdering.OrderSnapshots(snapshots).Select(snapshot => snapshot.Window.Kind));
     }
 
     [Fact]
@@ -221,7 +259,7 @@ public sealed class RealFeatureTests
     }
 
     [Fact]
-    public async Task Japanese_history_corruption_notification_is_localized_and_safe()
+    public async Task Initially_English_history_corruption_notification_relocalizes_to_Japanese()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var now = DateTimeOffset.UtcNow;
@@ -231,14 +269,54 @@ public sealed class RealFeatureTests
             var today = DateOnly.FromDateTime(now.UtcDateTime);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
             var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
-            vm.Language = UiLanguage.Japanese;
-
             await vm.InitializeAsync();
+
+            Assert.Equal("History: History data is damaged; showing available entries.", vm.NotificationBannerText);
+            vm.Language = UiLanguage.Japanese;
 
             Assert.Equal("履歴: 履歴データが破損しています。読み込める項目を表示しています。", vm.NotificationBannerText);
             Assert.DoesNotContain("InvalidDataException", vm.NotificationBannerText, StringComparison.Ordinal);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Ui_owned_alert_factory_relocalizes_but_opaque_public_notify_does_not()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryExportFailure));
+        Assert.Equal("History: Unable to export history.", vm.NotificationBannerText);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal("履歴: 履歴をエクスポートできませんでした。", vm.NotificationBannerText);
+
+        vm.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
+        vm.Language = UiLanguage.English;
+        Assert.Equal("Tray unavailable: Tray unavailable. Use the app window instead.", vm.NotificationBannerText);
+        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteFailure));
+        vm.Language = UiLanguage.Japanese;
+        Assert.Equal("履歴: この履歴を削除できませんでした。", vm.NotificationBannerText);
+
+        vm.Notify("Caller title", "Caller text");
+        vm.Language = UiLanguage.English;
+        Assert.Equal("Caller title: Caller text", vm.NotificationBannerText);
+    }
+
+    [Fact]
+    public void Refresh_missing_provider_and_no_data_previous_value_factories_relocalize_through_view_model()
+    {
+        using var vm = new MainViewModel(new EmptyDashboardSource());
+        var providers = new[] { ProviderKind.ChatGpt };
+        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(providers)));
+        Assert.Contains("data could not be retrieved", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("今回はCodexのデータを取得できませんでした", vm.NotificationBannerText, StringComparison.Ordinal);
+
+        var previous = new HashSet<ProviderKind> { ProviderKind.ChatGpt };
+        vm.Language = UiLanguage.English;
+        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(providers, previous)));
+        Assert.Contains("Showing the last successful value", vm.NotificationBannerText, StringComparison.Ordinal);
+        vm.Language = UiLanguage.Japanese;
+        Assert.Contains("前回正常に取得した値", vm.NotificationBannerText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -250,7 +328,7 @@ public sealed class RealFeatureTests
 
         await service.NotifyAsync(snapshot, CancellationToken.None);
 
-        Assert.Equal("ChatGPTの利用枠のしきい値: 使用率 90%", service.BannerText);
+        Assert.Equal("ChatGPTの利用率がしきい値に達しました: 使用率 90%", service.BannerText);
         Assert.DoesNotContain("Token", service.BannerText, StringComparison.OrdinalIgnoreCase);
     }
 
