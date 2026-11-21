@@ -14,16 +14,24 @@ import { hasScope, type Authenticator, type Principal } from './auth';
 import { readBoundedBodyText } from './body';
 import { ApiError, errorBody } from './errors';
 import {
+  MAX_BREAKDOWN_QUERY_SPAN_DAYS,
   canonicalSnapshotJson,
   isJsonMediaType,
   parseCollectorId,
   parseDailyQuery,
   parseRevision,
-  parseSnapshot,
+  parseSnapshotBody,
   sha256Hex,
   sumTokensSafely,
 } from './schema';
-import { applySnapshot, loadOwnedCollector, readCollectorFreshness, readDaily } from './store';
+import {
+  applySnapshot,
+  applySnapshotV2,
+  loadOwnedCollector,
+  readBreakdown,
+  readCollectorFreshness,
+  readDaily,
+} from './store';
 
 export interface AppOptions {
   authenticator: Authenticator;
@@ -83,7 +91,11 @@ export function createApp(options: AppOptions) {
     } catch {
       throw new ApiError(400, 'invalid_json', 'The request body must be valid JSON.');
     }
-    const snapshot = parseSnapshot(raw);
+
+    // `schemaVersion` picks the wire contract. Both versions go through the same
+    // checks in the same order; only the write and the response shape differ, so
+    // a v1 collector sees exactly the bytes it saw before v2 existed.
+    const snapshot = parseSnapshotBody(raw);
 
     const collector = await loadOwnedCollector(c.env.DB, collectorId, principal.ownerId);
     if (collector === null) {
@@ -99,6 +111,30 @@ export function createApp(options: AppOptions) {
     }
 
     const digest = await sha256Hex(canonicalSnapshotJson(snapshot));
+
+    if (snapshot.schemaVersion === 2) {
+      const receipt = await applySnapshotV2(
+        c.env.DB,
+        collector,
+        snapshot,
+        revision,
+        digest,
+        now().toISOString(),
+      );
+
+      return c.json({
+        status: receipt.status,
+        collectorId: receipt.collectorId,
+        generation: receipt.generation,
+        revision: receipt.revision,
+        receivedAt: receipt.receivedAt,
+        changedDays: receipt.changedDays,
+        ignoredReductions: receipt.ignoredReductions,
+        changedParts: receipt.changedParts,
+        ignoredPartReductions: receipt.ignoredPartReductions,
+      });
+    }
+
     const receipt = await applySnapshot(c.env.DB, collector, snapshot, revision, digest, now().toISOString());
 
     return c.json({
@@ -145,6 +181,45 @@ export function createApp(options: AppOptions) {
     const collectors = await readCollectorFreshness(c.env.DB, principal.ownerId, query);
 
     return c.json({ from: query.from, to: query.to, days, totalTokens, collectors });
+  });
+
+  app.get('/v1/usage/breakdown', async (c) => {
+    const principal = c.get('principal');
+    if (!hasScope(principal, 'usage:read')) {
+      throw new ApiError(403, 'forbidden_scope', 'This credential cannot read usage.');
+    }
+    // Same rule as the daily read: `usage:read` is an owner-wide scope, so a
+    // credential bound to one collector cannot exercise it at all.
+    if (principal.collectorId !== null) {
+      throw new ApiError(
+        403,
+        'forbidden_scope',
+        'A collector-bound credential cannot read owner-wide usage.',
+      );
+    }
+
+    // The breakdown is the expensive read: it aggregates every key of every day
+    // in the range, so it accepts a narrower window than the daily read.
+    const query = parseDailyQuery(new URL(c.req.url), MAX_BREAKDOWN_QUERY_SPAN_DAYS);
+    if (query.collectorId !== null) {
+      const collector = await loadOwnedCollector(c.env.DB, query.collectorId, principal.ownerId);
+      if (collector === null) {
+        throw new ApiError(404, 'collector_not_found', 'No such collector.');
+      }
+    }
+
+    const breakdown = await readBreakdown(c.env.DB, principal.ownerId, query);
+    // Freshness is reported for the same reason as on the daily read: a
+    // breakdown with no age next to it would look authoritative.
+    const collectors = await readCollectorFreshness(c.env.DB, principal.ownerId, query);
+
+    return c.json({
+      from: query.from,
+      to: query.to,
+      parts: breakdown.parts,
+      coverage: breakdown.coverage,
+      collectors,
+    });
   });
 
   app.notFound((c) => c.json({ error: { code: 'not_found', message: 'No such route.' } }, 404));

@@ -54,9 +54,15 @@ async function migrationFiles(): Promise<string[]> {
 /**
  * D1's `exec()` is line oriented, so the harness splits the migration itself
  * while keeping trigger bodies (`BEGIN ... END;`) together.
+ *
+ * `--` comments are dropped first: a comment may contain an apostrophe or a
+ * semicolon ("a day's rows; the set"), and a splitter that reads those as SQL
+ * would cut or quote a statement that is fine.
  */
 function splitStatements(sql: string): string[] {
   const statements: string[] = [];
+  const lines = sql.split('\n').filter((line) => !line.trimStart().startsWith('--'));
+  sql = lines.join('\n');
   let current = '';
   let depth = 0;
   let inString = false;
@@ -179,6 +185,7 @@ export interface Harness {
    */
   putStream(input: PutStreamInput): Promise<Response>;
   getDaily(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
+  getBreakdown(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
   dispose(): Promise<void>;
 }
 
@@ -190,6 +197,14 @@ export interface HarnessOptions {
    * the process: callers must answer or fail each request themselves.
    */
   readonly outbound?: (request: Request) => Response | Promise<Response>;
+  /**
+   * Migration file names to apply, in the order given. Defaults to every
+   * migration in the package.
+   *
+   * A deployment can be running the Worker before the newest migration has been
+   * applied, so the harness has to be able to describe that database too.
+   */
+  readonly migrations?: readonly string[];
 }
 
 export async function createHarness(entry = 'test/worker.ts', options: HarnessOptions = {}): Promise<Harness> {
@@ -205,7 +220,17 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
   });
   const db = (await mf.getD1Database('DB')) as unknown as D1Database;
 
-  for (const file of await migrationFiles()) {
+  const files = await migrationFiles();
+  const selected =
+    options.migrations === undefined
+      ? files
+      : options.migrations.map((name) => {
+          const path = files.find((file) => file.endsWith(name));
+          if (path === undefined) throw new Error(`no migration named ${name}`);
+          return path;
+        });
+
+  for (const file of selected) {
     for (const statement of splitStatements(await readFile(file, 'utf8'))) {
       await db.prepare(statement).run();
     }
@@ -253,18 +278,35 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
       if (token !== null) headers.authorization = `Bearer ${token}`;
       return request(`/v1/usage/daily${search}`, { headers });
     },
+    async getBreakdown(search, token = 'read-a1', extra) {
+      const headers: Record<string, string> = { ...(extra ?? {}) };
+      if (token !== null) headers.authorization = `Bearer ${token}`;
+      return request(`/v1/usage/breakdown${search}`, { headers });
+    },
     async dispose() {
       await mf.dispose();
     },
   };
 }
 
-export async function resetData(db: D1Database): Promise<void> {
-  await db.batch([
+export interface ResetOptions {
+  /**
+   * Whether the v2 breakdown table exists in this database. A database that has
+   * only 0001-0003 applied (a deployment where the Worker is newer than the
+   * schema) has no `usage_part`, and resetting must still work there.
+   */
+  readonly withParts?: boolean;
+}
+
+export async function resetData(db: D1Database, options: ResetOptions = {}): Promise<void> {
+  const statements: D1PreparedStatement[] = [];
+  if (options.withParts !== false) statements.push(db.prepare('DELETE FROM usage_part'));
+  statements.push(
     db.prepare('DELETE FROM usage_day'),
     db.prepare('DELETE FROM snapshot_receipts'),
     db.prepare('DELETE FROM collectors'),
-  ]);
+  );
+  await db.batch(statements);
   const insert = db.prepare(
     'INSERT INTO collectors (id, owner_id, active_generation, created_at) VALUES (?, ?, ?, ?)',
   );
@@ -368,4 +410,104 @@ export async function usageRows(
     .prepare('SELECT bucket_date, total_tokens, updated_at FROM usage_day ORDER BY bucket_date')
     .all<{ bucket_date: string; total_tokens: number; updated_at: string }>();
   return result.results ?? [];
+}
+
+/**
+ * Builds a valid wire-v2 snapshot body.
+ *
+ * The default is one day whose single part adds up to its `totalTokens`: the
+ * contract's `sum(parts) === totalTokens` rule is what makes a v2 body
+ * well formed, so the fixture has to obey it rather than being repaired later.
+ */
+export function snapshotBodyV2(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const days =
+    (overrides.days as Array<{ date: string; totalTokens: number; parts?: unknown }> | undefined) ?? [
+      { date: '2026-11-18', totalTokens: 100, parts: [[0, 60, 10, 10, 5, 15]] },
+    ];
+  const keys = (overrides.keys as unknown[] | undefined) ?? [['codex', 'openai', 'gpt-5.1']];
+  const first = days[0]?.date ?? '2026-11-18';
+  const last = days[days.length - 1]?.date ?? first;
+  return {
+    schemaVersion: 2,
+    adapterVersion: 'tokscale-4.23.0',
+    generation: 1,
+    collectedAt: '2026-11-20T03:00:00Z',
+    bucketTimeZone: 'Asia/Tokyo',
+    coveredRange: { from: first, to: last },
+    keys,
+    days,
+    ...overrides,
+  };
+}
+
+export interface PartRow {
+  readonly bucket_date: string;
+  readonly client: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_read_tokens: number;
+  readonly cache_write_tokens: number;
+  readonly reasoning_tokens: number;
+  readonly total_tokens: number;
+  readonly updated_at: string;
+}
+
+export async function partRows(db: D1Database): Promise<PartRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT bucket_date, client, provider, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_write_tokens, reasoning_tokens, total_tokens, updated_at
+       FROM usage_part
+       ORDER BY bucket_date, client, provider, model`,
+    )
+    .all<PartRow>();
+  return result.results ?? [];
+}
+
+/** Seeds accepted breakdown rows directly, in bounded batches, for read-path bounds. */
+export async function seedParts(db: D1Database, entries: readonly PartSeed[]): Promise<void> {
+  let pending: D1PreparedStatement[] = [];
+  const flush = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    await db.batch(pending);
+    pending = [];
+  };
+  for (const entry of entries) {
+    const total = entry.input + entry.output;
+    pending.push(
+      db
+        .prepare(
+          `INSERT INTO usage_part (collector_id, generation, bucket_date, client, provider, model,
+             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+             total_tokens, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, '2026-11-20T00:00:00Z')`,
+        )
+        .bind(
+          entry.collectorId,
+          entry.generation ?? 1,
+          entry.date,
+          entry.client,
+          entry.provider ?? '',
+          entry.model,
+          entry.input,
+          entry.output,
+          total,
+        ),
+    );
+    if (pending.length === INSERT_BATCH) await flush();
+  }
+  await flush();
+}
+
+export interface PartSeed {
+  readonly collectorId: string;
+  readonly date: string;
+  readonly client: string;
+  readonly provider?: string;
+  readonly model: string;
+  readonly input: number;
+  readonly output: number;
+  readonly generation?: number;
 }

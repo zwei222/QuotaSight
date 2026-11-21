@@ -44,7 +44,7 @@ describe('snapshot body validation', () => {
   const cases: Array<{ name: string; body: unknown; field?: string }> = [
     {
       name: 'rejects an unsupported schemaVersion',
-      body: snapshotBody({ schemaVersion: 2 }),
+      body: snapshotBody({ schemaVersion: 3 }),
       field: 'schemaVersion',
     },
     {

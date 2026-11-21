@@ -1,0 +1,59 @@
+{
+  "meta": {
+    "generatedAt": "2026-11-19T18:49:08.875485588+00:00",
+    "version": "4.23.0",
+    "dateRange": { "start": "2026-11-17", "end": "2026-11-18" }
+  },
+  "summary": {
+    "totalTokens": 440,
+    "totalCost": 0.0,
+    "totalDays": 2,
+    "activeDays": 2,
+    "clients": ["claude", "codex"],
+    "models": ["claude-sonnet-5-5[1m]", "gpt-5.1"],
+    "costProvenance": { "kind": "unknown" }
+  },
+  "years": [],
+  "contributions": [
+    {
+      "date": "2026-11-17",
+      "totals": { "tokens": 340, "cost": 0.0, "messages": 3, "costProvenance": { "kind": "unknown" } },
+      "intensity": 3,
+      "tokenBreakdown": { "input": 290, "output": 30, "cacheRead": 15, "cacheWrite": 0, "reasoning": 5 },
+      "clients": [
+        {
+          "client": "Conduit",
+          "modelId": "Claude-Sonnet-5-5[1m]",
+          "providerId": "Anthropic, openai",
+          "tokens": { "input": 100, "output": 20, "cacheRead": 10, "cacheWrite": 0, "reasoning": 5 },
+          "cost": 0.0,
+          "messages": 1
+        },
+        {
+          "client": "codex",
+          "modelId": "/models/llama-3-8b.gguf",
+          "tokens": { "input": 190, "output": 10, "cacheRead": 5, "cacheWrite": 0, "reasoning": 0 },
+          "cost": 0.0,
+          "messages": 2
+        }
+      ]
+    },
+    {
+      "date": "2026-11-18",
+      "totals": { "tokens": 100, "cost": 0.0, "messages": 1, "costProvenance": { "kind": "unknown" } },
+      "intensity": 1,
+      "tokenBreakdown": { "input": 60, "output": 10, "cacheRead": 10, "cacheWrite": 5, "reasoning": 15 },
+      "clients": [
+        {
+          "client": "codex",
+          "providerId": "openai",
+          "modelId": "gpt-5.1",
+          "tokens": { "input": 60, "output": 10, "cacheRead": 10, "cacheWrite": 5, "reasoning": 15 },
+          "cost": 0.0,
+          "messages": 1
+        }
+      ]
+    }
+  ],
+  "timeMetrics": { "sessionCount": 2 }
+}

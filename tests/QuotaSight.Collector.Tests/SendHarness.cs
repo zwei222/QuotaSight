@@ -180,11 +180,35 @@ internal sealed class SendHarness : IDisposable
         + "\",\"changedDays\":" + changedDays
         + ",\"ignoredReductions\":" + ignoredReductions + "}";
 
+    /// <summary>The wire-v2 receipt <c>src/QuotaSight.Usage.Api</c> returns for a v2 write.</summary>
+    internal static string ReceiptV2(
+        long revision,
+        string status = "applied",
+        string collectorId = CollectorId,
+        long generation = Generation,
+        string receivedAt = "2026-11-21T00:00:00.000Z",
+        string changedDays = "[\"2026-11-17\"]",
+        string ignoredReductions = "0",
+        string changedParts = "1",
+        string ignoredPartReductions = "0") =>
+        Receipt(revision, status, collectorId, generation, receivedAt, changedDays, ignoredReductions)
+            .TrimEnd('}')
+        + ",\"changedParts\":" + changedParts
+        + ",\"ignoredPartReductions\":" + ignoredPartReductions + "}";
+
     public static byte[] ExpectedWire()
     {
         var candidate = TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Positive)).Candidate;
         Assert.NotNull(candidate);
         return SnapshotWire.Serialize(candidate!, Generation);
+    }
+
+    /// <summary>The v2 bytes for the parts fixture, as the shared golden fixture holds them.</summary>
+    public static byte[] ExpectedWireV2(long generation = 1)
+    {
+        var candidate = TokscaleGraphNormalizer.Normalize(FixtureFiles.Bytes(FixtureFiles.Parts), WireSchema.V2).Candidate;
+        Assert.NotNull(candidate);
+        return SnapshotWire.Serialize(candidate!, generation, WireSchema.V2).Bytes;
     }
 
     public static string Header(CapturedRequest captured, string name)
