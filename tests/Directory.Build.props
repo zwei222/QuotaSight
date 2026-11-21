@@ -21,5 +21,11 @@
       start the app, so nothing else about them changes.
     -->
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!--
+      A self-contained Windows App SDK project has to name its native architecture, and Base
+      reads it from the runtime identifier when the platform is AnyCPU. The UI project sets the
+      same default.
+    -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
   </PropertyGroup>
 </Project>

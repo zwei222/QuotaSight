@@ -287,6 +287,14 @@ public sealed class WorkflowContractTests
         Assert.Equal("true", selfContained.Value);
         Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)selfContained.Parent?.Attribute("Condition"));
 
+        // A self-contained Windows App SDK project must name its native architecture, which Base
+        // reads from the runtime identifier under AnyCPU; without it the Windows build fails with
+        // "WindowsAppSDKSelfContained requires a supported Windows architecture".
+        var runtimeIdentifier = Assert.Single(
+            XDocument.Parse(props).Descendants("RuntimeIdentifier"));
+        Assert.Equal("win-x64", runtimeIdentifier.Value);
+        Assert.Same(selfContained.Parent, runtimeIdentifier.Parent);
+
         // Directory.Build.props discovery stops at the nearest file, so the test-only settings
         // must import the repository-wide defaults explicitly.
         Assert.Contains("GetPathOfFileAbove('Directory.Build.props'", props);
