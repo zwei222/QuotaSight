@@ -6,7 +6,7 @@ This is a manual acceptance check for the Windows notification registration and 
 
 - Use a real Windows 11 x64 desktop in an interactive user session.
 - Run QuotaSight as the signed-in standard/non-elevated user. Do not use “Run as administrator”; confirm the process is not elevated.
-- Obtain a self-contained Windows x64 Native AOT ZIP built from the exact commit being evaluated. Extract it to a clean directory. Do not use a framework-dependent build or a build from another commit.
+- Obtain a self-contained Windows x64 Native AOT ZIP built from the exact commit being evaluated. Extract it to a clean directory. The archive contains a single top-level `QuotaSight-<version>-win-x64/` folder; the executable and its assets are inside it. Do not use a framework-dependent build or a build from another commit.
 - Record the commit SHA and the SHA-256 of the ZIP before testing. On Windows PowerShell, calculate the ZIP digest with `Get-FileHash -Algorithm SHA256 <path-to-zip>`.
 - Keep notification settings and OS state visible/recordable. Record whether Windows notifications are allowed for QuotaSight and whether Focus assist/Do not disturb (集中モード) is enabled. Do not record account, organization, device, or other identifying names.
 
@@ -15,11 +15,13 @@ This is a manual acceptance check for the Windows notification registration and 
 From the extracted ZIP directory, launch the actual packaged executable from a non-elevated terminal:
 
 ```powershell
-.\QuotaSight.UI.exe --notification-probe
-$LASTEXITCODE
+$probe = Start-Process -FilePath .\QuotaSight.UI.exe -ArgumentList '--notification-probe' -Wait -PassThru
+$probe.ExitCode
 ```
 
-Record the exact exit code and any fixed failure message printed by the probe. Exit code `0` is the programmatic evidence that the support check, event subscription, registration, unregistration, unregister-all, and event unsubscription all completed successfully. Successful runs normally print no message; do not expect or transcribe success-result strings. A nonzero exit code and its fixed failure message (if present) indicate a failed step. This probe is not a popup test: exit code `0` does not prove that Windows displayed a notification.
+The released `QuotaSight.UI.exe` is a Windows GUI-subsystem binary, so it owns no console of its own and double-clicking it shows no terminal. The probe still reports to the console of the process that launched it, but only for `--smoke-test` and `--notification-probe`, and only when such a console exists. Start it from `cmd.exe` or PowerShell — not from Explorer — to see diagnostic text. A GUI-subsystem process also returns control to the shell immediately, so a direct `.\QuotaSight.UI.exe --notification-probe` call does not wait and does not set `$LASTEXITCODE`; `Start-Process -Wait -PassThru` is what waits for the process and gives you its real exit code.
+
+Record the exact exit code and any fixed failure message printed by the probe. Exit code `0` is the programmatic evidence that the support check, event subscription, registration, unregistration, unregister-all, and event unsubscription all completed successfully. Successful runs normally print no message; do not expect or transcribe success-result strings. A nonzero exit code and its fixed failure message (if present) indicate a failed step. This probe is not a popup test: exit code `0` does not prove that Windows displayed a notification. The GUI-subsystem switch itself is only evidenced by CI reading the published PE header (`Subsystem == 2`, `WINDOWS_GUI`) and by the smoke test exit code; it has not been re-verified by double-clicking the executable on a physical desktop.
 
 ## Visible threshold notification
 

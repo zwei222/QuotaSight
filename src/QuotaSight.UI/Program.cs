@@ -1,19 +1,31 @@
+#if WINDOWS
+using System.Runtime.InteropServices;
+#endif
 using Avalonia;
 using QuotaSight.Infrastructure;
 namespace QuotaSight.UI;
 
-public static class Program
+public static partial class Program
 {
+    private const int AttachParentProcess = -1;
+
     [STAThread]
     public static void Main(string[] args)
     {
-        if (args.Contains("--smoke-test", StringComparer.Ordinal))
+        var smokeTest = args.Contains("--smoke-test", StringComparer.Ordinal);
+        var notificationProbe = args.Contains("--notification-probe", StringComparer.Ordinal);
+
+        // A Windows GUI subsystem binary owns no console, so the diagnostic entry points borrow the
+        // launching terminal's console before they write to it. A normal launch never touches it.
+        if (smokeTest || notificationProbe) AttachParentConsole();
+
+        if (smokeTest)
         {
             Environment.ExitCode = SmokeTest.Run();
             return;
         }
 
-        if (args.Contains("--notification-probe", StringComparer.Ordinal))
+        if (notificationProbe)
         {
 #if WINDOWS
             Microsoft.Windows.AppNotifications.AppNotificationManager? manager = null;
@@ -52,7 +64,33 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// Attaches the process to the console of the process that launched it, so the smoke test and
+    /// the notification probe keep printing when the executable is built as a Windows GUI binary.
+    /// Attaching is best effort: a process that already has a console, or one launched without a
+    /// parent console, keeps running and only loses the diagnostic text.
+    /// </summary>
+    private static void AttachParentConsole()
+    {
 #if WINDOWS
+        try
+        {
+            _ = AttachConsole(AttachParentProcess);
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
+        catch (DllNotFoundException)
+        {
+        }
+#endif
+    }
+
+#if WINDOWS
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AttachConsole(int dwProcessId);
+
     private static void ProbeNotificationInvoked(
         Microsoft.Windows.AppNotifications.AppNotificationManager sender,
         Microsoft.Windows.AppNotifications.AppNotificationActivatedEventArgs args)
