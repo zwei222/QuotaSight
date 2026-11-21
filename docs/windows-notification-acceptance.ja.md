@@ -1,6 +1,12 @@
 # Windows通知の受け入れ確認手順
 
-この手動確認では、Windows通知の登録経路と、画面に通知が表示される経路を別々に確認します。CIでの確認とは別です。GitHub-hosted Windows runnerは、UACが無効の状態で昇格済み管理者tokenを使って実行されます。一方、Windows App SDK 2.5.1の`IsSupported()`は昇格プロセスでfalseを返します。そのため、CIで確認するのはNative AOTのpublishとsmoke testまでです。smoke testや通知API登録に成功しても、デスクトップ通知が表示された証拠にはなりません。
+この手動確認では、Windows通知の登録経路と、画面に通知が表示される経路を別々に確認します。CIでの確認とは別です。GitHub-hosted Windows runnerは、UACが無効の状態で昇格済み管理者tokenを使って実行されます。一方、Windows App SDK 2.xの`IsSupported()`は昇格プロセスでfalseを返します。そのため、CIで確認するのはNative AOTのpublishとsmoke testまでです。smoke testや通知API登録に成功しても、デスクトップ通知が表示された証拠にはなりません。
+
+## Windows App SDKの同梱内容（実機では未確認）
+
+Windows版は`Microsoft.WindowsAppSDK`メタパッケージを参照しなくなりました。QuotaSightが使うのはトースト通知（`Microsoft.Windows.AppNotifications`）だけで、これは`Microsoft.WindowsAppSDK.Foundation`に含まれます。そのため`src/QuotaSight.UI/QuotaSight.UI.csproj`は`Microsoft.WindowsAppSDK.Foundation` 2.3.12（メタパッケージ2.5.1が指していた版）を直接参照し、`Microsoft.WindowsAppSDK.InteractiveExperiences` 2.1.9を明示的に固定して、NU1603警告を出さずにrestoreが解決できるようにしています。メタパッケージはWinUI、onnxruntime、DirectMLなどQuotaSightが読み込まないpayloadも同梱していたため、Windows ZIPには約300ファイル・約80MiBの未使用内容が含まれていました。`WindowsAppSDKSelfContained`は`true`のままです。フレームワークを同梱し続けるので、利用者PCにWindows App SDK Runtimeを別途インストールする必要はなく、Bootstrapperも使いません。
+
+この構成はWindows以外のマシンでのrestoreと参照内容の確認までしか行っていません。Windows専用のコンパイル経路（`#if WINDOWS`）、Native AOTのpublish、生成されるファイル数はWindows CI runnerでのみ確認され、そのrunnerはトーストの実表示を観測できません。以下に示す手順は、この構成で作成したZIPを使って実Windowsデスクトップで改めて実行する必要があります。それまでは、Foundation単体構成でのトースト表示とトーストのクリックが**未検証**です。特に、通知登録probeが引き続きexit code `0`を返すこと、しきい値トーストが表示され、クリックでアプリが前面に来ることを確認してください。
 
 ## 環境と準備
 

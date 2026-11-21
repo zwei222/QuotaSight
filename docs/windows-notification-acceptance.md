@@ -1,6 +1,12 @@
 # Windows notification acceptance procedure
 
-This is a manual acceptance check for the Windows notification registration and visible delivery paths. It is separate from CI: GitHub-hosted Windows runners run with an elevated administrator token and UAC disabled, while Windows App SDK 2.5.1 `IsSupported()` returns false for an elevated process. CI therefore stops after Native AOT publish and smoke testing. Do not interpret a successful smoke test or notification API registration as proof that a desktop notification appeared.
+This is a manual acceptance check for the Windows notification registration and visible delivery paths. It is separate from CI: GitHub-hosted Windows runners run with an elevated administrator token and UAC disabled, while Windows App SDK 2.x `IsSupported()` returns false for an elevated process. CI therefore stops after Native AOT publish and smoke testing. Do not interpret a successful smoke test or notification API registration as proof that a desktop notification appeared.
+
+## Windows App SDK packaging (unverified on real hardware)
+
+The Windows build no longer references the `Microsoft.WindowsAppSDK` metapackage. QuotaSight only uses toast notifications (`Microsoft.Windows.AppNotifications`), which ships in `Microsoft.WindowsAppSDK.Foundation`, so `src/QuotaSight.UI/QuotaSight.UI.csproj` references `Microsoft.WindowsAppSDK.Foundation` 2.3.12 directly (the version the 2.5.1 metapackage pointed at) and pins `Microsoft.WindowsAppSDK.InteractiveExperiences` 2.1.9 so restore resolves without a NU1603 warning. The metapackage also pulled in WinUI, onnxruntime and DirectML payloads that QuotaSight never loads, which is why the Windows archive carried roughly 300 files / 80 MiB of unused content. `WindowsAppSDKSelfContained` stays `true`; the framework is still bundled so the app never needs a separately installed Windows App SDK runtime, and no bootstrapper is used.
+
+This composition has only been restored and inspected on a non-Windows machine: the Windows-only compile path (`#if WINDOWS`), Native AOT publish, and the resulting file count are verified only by the Windows CI runner, which cannot observe a visible toast. The steps below must be run again on a real Windows desktop against a ZIP built from this composition; until then, toast display and toast click-through for the Foundation-only build are **not verified**. In particular, confirm that the notification registration probe still exits `0` and that a threshold toast appears and activates the app when clicked.
 
 ## Test environment and preparation
 

@@ -1,3 +1,4 @@
+using System.Xml.Linq;
 using Xunit;
 
 namespace QuotaSight.Tests;
@@ -235,6 +236,66 @@ public sealed class WorkflowContractTests
     {
         Assert.Contains("Start-Process -FilePath .\\publish\\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru", Ci);
         Assert.Contains("$process.ExitCode -ne 0", Ci);
+    }
+
+    [Fact]
+    public void Ui_project_references_windows_app_sdk_foundation_instead_of_the_metapackage()
+    {
+        var references = XDocument.Parse(UiProject).Descendants("PackageReference").ToArray();
+
+        Assert.DoesNotContain(references, reference => (string?)reference.Attribute("Include") == "Microsoft.WindowsAppSDK");
+
+        var foundation = Assert.Single(
+            references,
+            reference => (string?)reference.Attribute("Include") == "Microsoft.WindowsAppSDK.Foundation");
+        Assert.Equal("2.3.12", (string?)foundation.Attribute("Version"));
+        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)foundation.Parent?.Attribute("Condition"));
+    }
+
+    [Fact]
+    public void Ui_project_pins_interactive_experiences_at_the_version_foundation_resolves_to()
+    {
+        var reference = Assert.Single(
+            XDocument.Parse(UiProject).Descendants("PackageReference"),
+            element => (string?)element.Attribute("Include") == "Microsoft.WindowsAppSDK.InteractiveExperiences");
+
+        Assert.Equal("2.1.9", (string?)reference.Attribute("Version"));
+        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)reference.Parent?.Attribute("Condition"));
+    }
+
+    [Fact]
+    public void Ui_project_keeps_windows_app_sdk_self_contained()
+    {
+        Assert.Contains("<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>", UiProject);
+        Assert.DoesNotContain("WindowsAppSDKSelfContained>false", UiProject);
+    }
+
+    [Fact]
+    public void Ui_project_keeps_windows_app_sdk_build_assets_private_to_referencing_projects()
+    {
+        // The test projects reference the UI project. If the Windows App SDK build assets flow into
+        // them, Base's targets run there too: its self-contained check fails the Windows build (a
+        // test project is still a library when Base decides its default, because
+        // Microsoft.NET.Test.Sdk switches OutputType to Exe later), and the generated
+        // auto-initializer source collides with the copy compiled into the UI assembly. The tests
+        // only use the UI project's types, so the build assets stay private to it.
+        var document = XDocument.Parse(UiProject);
+        var properties = document.Descendants("WindowsAppSdkPrivateAssets").Single();
+        var assets = properties.Value.Split(';');
+        Assert.Contains("build", assets);
+        Assert.Contains("buildtransitive", assets);
+        Assert.DoesNotContain("all", assets);
+        Assert.DoesNotContain("compile", assets);
+        Assert.DoesNotContain("runtime", assets);
+
+        foreach (var name in new[] { "Microsoft.WindowsAppSDK.Foundation", "Microsoft.WindowsAppSDK.InteractiveExperiences" })
+        {
+            var reference = document.Descendants("PackageReference").Single(r => (string?)r.Attribute("Include") == name);
+            Assert.Equal("$(WindowsAppSdkPrivateAssets)", (string?)reference.Attribute("PrivateAssets"));
+        }
+
+        Assert.False(File.Exists(Path.Combine(Root, "tests", "Directory.Build.props")),
+            "The test projects must not be turned into self-contained Windows App SDK apps.");
     }
 
     private static string FindRoot()
