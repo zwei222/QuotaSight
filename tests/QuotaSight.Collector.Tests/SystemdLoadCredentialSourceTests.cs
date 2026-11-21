@@ -303,7 +303,12 @@ public sealed class SystemdLoadCredentialSourceTests
 
             var result = new SystemdLoadCredentialSource().Read();
 
-            Assert.Equal(CollectorCredentialFailure.DirectoryUnset, result.Failure);
+            // The parameterless source only reads credentials on Linux; any other platform must refuse
+            // before looking at the environment, and neither path may leak the secret variable.
+            var expected = OperatingSystem.IsLinux()
+                ? CollectorCredentialFailure.DirectoryUnset
+                : CollectorCredentialFailure.UnsupportedPlatform;
+            Assert.Equal(expected, result.Failure);
             AssertNoLeak(result);
         }
         finally
