@@ -1,5 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 using QuotaSight.UI;
 using QuotaSight.UI.Tests.Support;
@@ -219,6 +221,76 @@ public sealed class QuotaRingsSettingsHostTests
             Assert.NotEqual(default, secret.PasswordChar);
         }
         finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("unconfigured", false)]
+    [InlineData("configured", false)]
+    [InlineData("session-only", false)]
+    [InlineData("store-unavailable", false)]
+    [InlineData("invalid-endpoint", false)]
+    [InlineData("saving", false)]
+    [InlineData("unconfigured", true)]
+    [InlineData("configured", true)]
+    [InlineData("session-only", true)]
+    [InlineData("store-unavailable", true)]
+    [InlineData("invalid-endpoint", true)]
+    [InlineData("saving", true)]
+    public async Task Scroll_usage_argument_fits_the_card_inside_the_viewport_without_keyboard_focus(string state, bool narrow)
+    {
+        var args = new List<string> { "--main", "--dark", "--settings", "--usage-state", state, "--scroll-usage" };
+        if (narrow)
+            args.Add("--narrow");
+        var host = QuotaRingsHost.CreateHost([.. args]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+            // The host scrolls from a Dispatcher post after the first layout pass, which is what
+            // an unattended capture needs: no Tab presses and no focus moves.
+            Dispatcher.UIThread.RunJobs();
+
+            var card = host.Window.FindControl<Border>("UsageConnectionCard")!;
+            var scroll = host.Window.FindControl<ScrollViewer>("ContentScroll")!;
+            var origin = card.TranslatePoint(new Point(0, 0), scroll);
+            Assert.True(origin.HasValue, "The card must be connected to the scroll viewer.");
+            var top = origin!.Value.Y;
+            var bottom = top + card.Bounds.Height;
+            Assert.True(scroll.Offset.Y > 0,
+                $"{state} (narrow={narrow}): the page was not scrolled at all, so the card is still below the fold.");
+
+            Assert.True(top >= -0.5, $"{state} (narrow={narrow}): the card top is at {top:0.#}px above the viewport.");
+            Assert.True(bottom <= scroll.Viewport.Height + 0.5,
+                $"{state} (narrow={narrow}): the card bottom is at {bottom:0.#}px but the viewport is {scroll.Viewport.Height:0.#}px.");
+
+            if (state is "saving" or "invalid-endpoint" or "store-unavailable")
+            {
+                // These states carry the error copy or the progress strip at the bottom of the
+                // card, so the capture must end with that edge visible.
+                Assert.True(bottom >= scroll.Viewport.Height - 40,
+                    $"{state}: expected the card bottom near the viewport bottom, got {bottom:0.#}px of {scroll.Viewport.Height:0.#}px.");
+            }
+
+            var focused = host.Window.FocusManager?.GetFocusedElement();
+            Assert.DoesNotContain(card.GetVisualDescendants().OfType<Control>(),
+                control => ReferenceEquals(control, focused));
+            await Task.Yield();
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Scroll_usage_argument_is_refused_without_the_settings_argument()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => QuotaRingsHost.CreateHost(["--main", "--dark", "--scroll-usage"]));
+        Assert.Contains("--scroll-usage", error.Message, StringComparison.Ordinal);
+    }
+
+    [AvaloniaFact]
+    public void Scroll_usage_argument_is_refused_for_the_widget_window()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => QuotaRingsHost.CreateHost(["--widget", "--light", "--scroll-usage"]));
+        Assert.Contains("--scroll-usage", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

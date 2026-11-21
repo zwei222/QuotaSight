@@ -1,5 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.UI;
@@ -35,6 +37,22 @@ public static class QuotaRingsHost
     /// <summary>Argument that selects the connection state shown on the settings page.</summary>
     public const string UsageStateArgument = "--usage-state";
 
+    /// <summary>
+    /// Argument that scrolls the settings page, once the window has been laid out, so the usage
+    /// connection card sits inside the viewport. It is only meaningful together with
+    /// <c>--settings</c>, because the card lives on that page.
+    /// </summary>
+    public const string ScrollUsageArgument = "--scroll-usage";
+
+    /// <summary>Gap kept above a top-aligned card, in device-independent pixels.</summary>
+    private const double UsageScrollTopGap = 12;
+
+    /// <summary>Gap kept below a bottom-aligned card, so its last row is not flush with the edge.</summary>
+    private const double UsageScrollBottomGap = 16;
+
+    /// <summary>States whose error copy or progress strip at the card bottom is what a capture needs.</summary>
+    private static readonly string[] UsageStatesThatPreferTheBottom = ["saving", "invalid-endpoint", "store-unavailable"];
+
     /// <summary>Connection states the host can build, in the order they are documented.</summary>
     public static readonly IReadOnlyList<string> UsageStates =
         ["unconfigured", "configured", "session-only", "store-unavailable", "invalid-endpoint", "saving"];
@@ -55,9 +73,13 @@ public static class QuotaRingsHost
         var light = args.Contains("--light", StringComparer.OrdinalIgnoreCase);
         var narrow = args.Contains("--narrow", StringComparer.OrdinalIgnoreCase);
         var settings = args.Contains("--settings", StringComparer.OrdinalIgnoreCase);
+        var scrollUsage = args.Contains(ScrollUsageArgument, StringComparer.OrdinalIgnoreCase);
         var usageState = ReadUsageState(args);
         if (settings && widget)
             throw new InvalidOperationException("--settings is only available on the main window; --widget has no settings page.");
+        if (scrollUsage && !settings)
+            throw new InvalidOperationException(
+                $"{ScrollUsageArgument} requires --settings: the usage connection card only exists on the settings page.");
 
         // Theme must be passed explicitly through settings: SetSettings applies dto.Theme and a
         // default "System" value would override the --dark variant on the host.
@@ -79,7 +101,55 @@ public static class QuotaRingsHost
             ApplyUsageState(window, usageState);
         if (settings)
             viewModel.Navigate(AppPage.Settings);
+        if (scrollUsage)
+        {
+            // Layout is only complete after the window has been shown, and the fixture may be
+            // launched unattended, so scroll from a Loaded-priority post instead of asking the
+            // capture harness to press Tab. The handler stays subscribed for re-shows.
+            window.Opened += (_, _) => Dispatcher.UIThread.Post(
+                () => ScrollUsageCardIntoView(window, usageState),
+                DispatcherPriority.Loaded);
+        }
         return new FixtureHost(window, viewModel, store, usageState);
+    }
+
+    /// <summary>
+    /// Scrolls the settings page so the usage connection card is fully inside the viewport of the
+    /// page's own scroll viewer. The card top is aligned near the viewport top; for the states
+    /// whose error copy or progress strip sits at the bottom of the card the bottom edge wins
+    /// instead, so those rows stay visible even when the card is taller than the viewport.
+    /// Nothing here moves focus, so it works without a single Tab press.
+    /// </summary>
+    public static void ScrollUsageCardIntoView(Window window, string? usageState = null)
+    {
+        if (window is not MainWindow main)
+            throw new InvalidOperationException("The usage connection card only exists on the main window.");
+
+        var card = main.FindControl<Border>("UsageConnectionCard")
+            ?? throw new InvalidOperationException("The main window has no UsageConnectionCard to reveal.");
+        var scroll = main.FindControl<ScrollViewer>("ContentScroll")
+            ?? throw new InvalidOperationException("The main window has no ContentScroll viewer to scroll.");
+
+        // Bounds are all zero until a layout pass has run, and a post can arrive before the first
+        // one on a slow launch; laying out here makes the measurement below meaningful.
+        main.UpdateLayout();
+        if (card.Bounds.Height <= 0 || scroll.Viewport.Height <= 0)
+            return;
+
+        if (card.TranslatePoint(new Point(0, 0), scroll) is not { } origin)
+            return;
+
+        var viewport = scroll.Viewport.Height;
+        var offset = scroll.Offset.Y;
+        if (UsageStatesThatPreferTheBottom.Contains(usageState, StringComparer.Ordinal))
+            offset += origin.Y + card.Bounds.Height - (viewport - UsageScrollBottomGap);
+        else
+            offset += origin.Y - UsageScrollTopGap;
+
+        var maximum = Math.Max(0, scroll.Extent.Height - viewport);
+        var clamped = Math.Clamp(offset, 0, maximum);
+        if (Math.Abs(clamped - scroll.Offset.Y) > 0.01)
+            scroll.Offset = new Vector(scroll.Offset.X, clamped);
     }
 
     private static void ApplyUsageState(Window window, string usageState)
