@@ -74,6 +74,18 @@ public enum UsageFailureKind
     /// <summary>The service reports that the requested resource does not exist (404).</summary>
     NotFound,
 
+    /// <summary>
+    /// The breakdown endpoint reported <c>not_found</c>: the server serves the daily
+    /// totals but not the breakdown yet. A distinct state, not a generic error.
+    /// </summary>
+    BreakdownUnsupported,
+
+    /// <summary>
+    /// The breakdown endpoint reported <c>collector_not_found</c>: the named collector
+    /// does not exist, so the request needs the user's attention.
+    /// </summary>
+    CollectorNotFound,
+
     /// <summary>The response violated the read contract, or the request was refused locally.</summary>
     InvalidResponse,
 
@@ -88,6 +100,43 @@ public enum UsageFailureKind
 }
 
 /// <summary>
+/// One (client, provider, model) slice of attributed token usage, aggregated over the
+/// whole requested range. An empty key component means "unknown"; it is data, not a
+/// defect, and is shown as such instead of being merged away.
+/// </summary>
+public sealed record UsagePart(
+    string Client,
+    string Provider,
+    string Model,
+    long Input,
+    long Output,
+    long CacheRead,
+    long CacheWrite,
+    long Reasoning,
+    long Total);
+
+/// <summary>
+/// One collector-day pair of the range: the day's received total and the part of it the
+/// server could attribute to a (client, provider, model) key. <c>TotalTokens</c> may
+/// exceed <see cref="AttributedTokens"/> (unclassified remainder) or, for a faulty
+/// upstream, fall below it (over-attribution); neither is corrected here.
+/// </summary>
+public sealed record UsageCoverage(DateOnly Date, string CollectorId, long TotalTokens, long AttributedTokens);
+
+/// <summary>
+/// One verified breakdown read: the attributed (client, provider, model) parts of the
+/// range, the per-day attribution coverage that bounds them, and the freshness surface
+/// of the collectors that reported. The parts must sum to the attributed coverage; the
+/// read port verifies that locally instead of trusting it.
+/// </summary>
+public sealed record UsageBreakdown(
+    DateOnly From,
+    DateOnly To,
+    IReadOnlyList<UsagePart> Parts,
+    IReadOnlyList<UsageCoverage> Coverage,
+    IReadOnlyList<UsageCollectorReceipt> Collectors);
+
+/// <summary>
 /// The daily read seam the usage page calls. The application wires
 /// <see cref="ReconfigurableUsageReadPort"/>, which installs an
 /// <see cref="HttpUsageReadPort"/> once an endpoint and a credential pair exist and
@@ -96,10 +145,20 @@ public enum UsageFailureKind
 public interface IUsageReadPort
 {
     Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads the attributed usage breakdown for a range. It is a distinct, optional
+    /// capability: a server that serves the daily totals may not serve the breakdown yet,
+    /// and the failure says which of the two the caller hit.
+    /// </summary>
+    Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken);
 }
 
 public sealed class UnconfiguredUsageReadPort : IUsageReadPort
 {
     public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
         Task.FromException<DailyUsage>(new InvalidOperationException("Usage API is not configured."));
+
+    public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+        Task.FromException<UsageBreakdown>(new InvalidOperationException("Usage API is not configured."));
 }

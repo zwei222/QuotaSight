@@ -1700,6 +1700,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string HeaderTitle => CurrentPage switch { AppPage.Usage => NavUsageText, AppPage.History => CopyText.History, AppPage.Settings => CopyText.Settings, _ => CopyText.Dashboard };
     public bool IsUsageVisible => CurrentPage == AppPage.Usage;
     public string UsageStateText => new UiCopy(Language).UsageState(usageState);
+    /// <summary>The daily read's raw state, for tests that pin the state machine itself.</summary>
+    public string UsageState => usageState;
     public string UsageStatusText => UsageStateText;
     public IReadOnlyList<UsageDay> UsageRows => usageRows;
     public string UsageTotalText => usageTotal;
@@ -1807,7 +1809,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return oldest;
     }
     public void NavigateToUsage() { CurrentPage = AppPage.Usage; OnPropertyChanged(nameof(NavUsageText)); }
-    public Task RefreshUsageAsync() { if (CurrentPage == AppPage.Usage) usageLoadTask = LoadUsageAsync(); return usageLoadTask; }
+    public Task RefreshUsageAsync() { if (CurrentPage == AppPage.Usage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } return usageLoadTask; }
     private async Task LoadUsageAsync()
     {
         var id = Interlocked.Increment(ref usageRequestId);
@@ -1930,6 +1932,427 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             or UsageReadFailure.AuthUnavailable or UsageReadFailure.Transient => UsageFailureKind.Transient,
         _ => UsageFailureKind.InvalidResponse,
     };
+
+    /// <summary>
+    /// Collapses a breakdown port failure. A generic 404 is not a generic error here: on
+    /// the breakdown endpoint it means the server does not serve the breakdown yet, and
+    /// it gets its own state instead of the retry language. `collector_not_found` keeps
+    /// its own kind so the settings detour can be offered.
+    /// </summary>
+    private static UsageFailureKind MapBreakdownFailure(UsageReadFailure failure) => failure switch
+    {
+        UsageReadFailure.NotFound => UsageFailureKind.BreakdownUnsupported,
+        UsageReadFailure.CollectorNotFound => UsageFailureKind.CollectorNotFound,
+        _ => MapUsageFailure(failure),
+    };
+
+    // ---------- Usage breakdown (TokScale attribution) ----------
+    //
+    // A second, independent read over the same connection. Its failure states are kept
+    // apart from the daily read's on purpose: the daily totals can keep working while the
+    // breakdown is unsupported or failing, and neither read may stale the other.
+
+    private string breakdownState = "Unconfigured";
+    private UsageFailureKind breakdownFailure = UsageFailureKind.None;
+    private bool isBreakdownStale;
+    private bool hasBreakdownValues;
+    private UsageBreakdown? breakdown;
+    private UsageBreakdownDimension breakdownDimension = UsageBreakdownDimension.Client;
+    private CancellationTokenSource? breakdownRequest;
+    private long breakdownRequestId;
+    private Task breakdownLoadTask = Task.CompletedTask;
+
+    public Task BreakdownLoadTask => breakdownLoadTask;
+
+    /// <summary>The breakdown surface's own state, separate from the daily read's state.</summary>
+    public string BreakdownState => breakdownState;
+
+    /// <summary>True while the surface holds anything at all (configured and past Unconfigured).</summary>
+    public bool IsBreakdownSurfaceConfigured => breakdownState != "Unconfigured";
+
+    public bool IsUsageBreakdownLoading => breakdownState == "Loading";
+
+    /// <summary>Switching the grouping key is suppressed while a read is in flight.</summary>
+    public bool CanSwitchBreakdownDimension => breakdownState != "Loading";
+
+    public string UsageBreakdownStateText => new UiCopy(Language).UsageBreakdownState(breakdownState);
+
+    public UsageFailureKind BreakdownFailure => breakdownFailure;
+
+    public string BreakdownFailureText => new UiCopy(Language).UsageFailure(breakdownFailure);
+
+    /// <summary>True when the breakdown values on screen come from an earlier successful read.</summary>
+    public bool IsBreakdownStale => isBreakdownStale;
+
+    /// <summary>Fixed TokScale observation disclaimer shown with any breakdown values.</summary>
+    public string BreakdownNoteText => CopyText.UsageBreakdownNote;
+
+    public bool IsBreakdownNoteVisible => breakdownState is not ("Unconfigured" or "Unsupported");
+
+    public UsageBreakdownDimension SelectedBreakdownDimension
+    {
+        get => breakdownDimension;
+        set
+        {
+            if (Set(ref breakdownDimension, value))
+            {
+                OnPropertyChanged(nameof(BreakdownRows));
+                OnPropertyChanged(nameof(IsBreakdownRowsVisible));
+            }
+        }
+    }
+
+    public IReadOnlyList<LocalizedChoice<UsageBreakdownDimension>> BreakdownDimensionChoices =>
+        Enum.GetValues<UsageBreakdownDimension>()
+            .Select(dimension => new LocalizedChoice<UsageBreakdownDimension>(dimension, CopyText.UsageBreakdownDimensionName(dimension)))
+            .ToList();
+
+    /// <summary>Groups of the loaded breakdown under the selected key, or an empty list before any read.</summary>
+    public IReadOnlyList<BreakdownGroup> BreakdownRows => hasBreakdownValues && breakdown is { } value
+        ? UsageBreakdownAggregation.GroupParts(value.Parts, breakdownDimension, Language)
+        : [];
+
+    public bool IsBreakdownRowsVisible => BreakdownRows.Count > 0;
+
+    /// <summary>Σ max(0, day total − attributed) over the loaded coverage, exactly.</summary>
+    public long BreakdownUnclassifiedTokens => hasBreakdownValues && breakdown is { } value
+        ? UsageBreakdownAggregation.UnclassifiedTokens(value.Coverage)
+        : 0;
+
+    public bool IsBreakdownUnclassifiedVisible => hasBreakdownValues && BreakdownUnclassifiedTokens > 0;
+
+    public string BreakdownUnclassifiedText => CopyText.UsageBreakdownUnclassified(BreakdownUnclassifiedTokens);
+
+    /// <summary>True when the range has both attributed days and usage days without any.</summary>
+    public bool IsBreakdownPartialVisible => hasBreakdownValues && breakdown is { } value
+        && UsageBreakdownAggregation.IsPartiallyAttributed(value.Coverage);
+
+    public string BreakdownPartialText => CopyText.UsageBreakdownPartial;
+
+    /// <summary>True when any coverage row attributes more than its day total received.</summary>
+    public bool IsBreakdownOverAttributedVisible => hasBreakdownValues
+        && breakdown is { } value
+        && UsageBreakdownAggregation.OverAttributedRows(value.Coverage).Count > 0;
+
+    /// <summary>
+    /// One exact, unrounded line per over-attributed coverage row. The raw numbers are
+    /// shown because a summary would hide a measurement defect.
+    /// </summary>
+    public string BreakdownOverAttributionText => hasBreakdownValues && breakdown is { } value
+        ? string.Join(Environment.NewLine, UsageBreakdownAggregation.OverAttributedRows(value.Coverage)
+            .Select(row => CopyText.UsageBreakdownOverAttributionRow(
+                row.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), row.AttributedTokens, row.TotalTokens)))
+        : string.Empty;
+
+    private async Task LoadBreakdownAsync()
+    {
+        var id = Interlocked.Increment(ref breakdownRequestId);
+        breakdownRequest?.Cancel(); breakdownRequest?.Dispose();
+        breakdownRequest = new CancellationTokenSource(); var token = breakdownRequest.Token;
+
+        if (!usageReadPort.IsConfigured)
+        {
+            // Nothing to read: drop the surface rather than leave values from a
+            // connection that no longer exists.
+            breakdown = null;
+            hasBreakdownValues = false;
+            breakdownFailure = UsageFailureKind.None;
+            isBreakdownStale = false;
+            breakdownState = "Unconfigured";
+            NotifyBreakdownSurface();
+            return;
+        }
+
+        // A load keeps the previous groups on screen, exactly like the daily read does;
+        // clearing them would make a failed refresh look like "no breakdown".
+        breakdownState = "Loading";
+        NotifyBreakdownSurface();
+        try
+        {
+            DateOnly from, to;
+            try
+            {
+                var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), timeZoneResolver("Asia/Tokyo")).DateTime);
+                from = today.AddDays(-29); to = today;
+            }
+            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                // No usable zone database (tzdata/ICU missing): stop in a fixed state.
+                ApplyBreakdownFailure(id, UsageFailureKind.Transient);
+                return;
+            }
+
+            var result = await usageReadPort.ReadBreakdownAsync(from, to, null, token);
+            if (token.IsCancellationRequested || id != Volatile.Read(ref breakdownRequestId) || CurrentPage != AppPage.Usage) return;
+            breakdown = result;
+            hasBreakdownValues = true;
+            breakdownFailure = UsageFailureKind.None;
+            isBreakdownStale = false;
+            breakdownState = result.Parts.Count == 0 ? "Empty" : "Ready";
+            NotifyBreakdownSurface();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (UsageReadException failure) { ApplyBreakdownFailure(id, MapBreakdownFailure(failure.Failure)); }
+        catch { ApplyBreakdownFailure(id, UsageFailureKind.Transient); }
+    }
+
+    private void ApplyBreakdownFailure(long id, UsageFailureKind kind)
+    {
+        if (id != Volatile.Read(ref breakdownRequestId) || CurrentPage != AppPage.Usage) return;
+        breakdownFailure = kind;
+        if (hasBreakdownValues)
+        {
+            isBreakdownStale = true;
+            breakdownState = "Stale";
+        }
+        else
+        {
+            isBreakdownStale = false;
+            breakdownState = kind == UsageFailureKind.BreakdownUnsupported ? "Unsupported" : "Error";
+        }
+
+        NotifyBreakdownSurface();
+    }
+
+    private void NotifyBreakdownSurface()
+    {
+        OnPropertyChanged(nameof(BreakdownState));
+        OnPropertyChanged(nameof(IsBreakdownSurfaceConfigured));
+        OnPropertyChanged(nameof(IsUsageBreakdownLoading));
+        OnPropertyChanged(nameof(CanSwitchBreakdownDimension));
+        OnPropertyChanged(nameof(UsageBreakdownStateText));
+        OnPropertyChanged(nameof(BreakdownFailure));
+        OnPropertyChanged(nameof(BreakdownFailureText));
+        OnPropertyChanged(nameof(IsBreakdownStale));
+        OnPropertyChanged(nameof(IsBreakdownNoteVisible));
+        OnPropertyChanged(nameof(BreakdownNoteText));
+        OnPropertyChanged(nameof(BreakdownRows));
+        OnPropertyChanged(nameof(IsBreakdownRowsVisible));
+        OnPropertyChanged(nameof(BreakdownUnclassifiedTokens));
+        OnPropertyChanged(nameof(IsBreakdownUnclassifiedVisible));
+        OnPropertyChanged(nameof(BreakdownUnclassifiedText));
+        OnPropertyChanged(nameof(IsBreakdownPartialVisible));
+        OnPropertyChanged(nameof(BreakdownPartialText));
+        OnPropertyChanged(nameof(IsBreakdownOverAttributedVisible));
+        OnPropertyChanged(nameof(BreakdownOverAttributionText));
+    }
+
+    // ---------- Dashboard: observed usage (TokScale) ----------
+    //
+    // A third read lane, deliberately the slowest: two breakdown reads (today, last seven
+    // days) per interval, never per page interaction. No ring, no gauge, no threshold —
+    // TokScale observes tokens, it knows nothing about a remaining quota.
+
+    private string tokScaleState = "Hidden";
+    private IReadOnlyList<TokScaleClientCard> tokScaleCards = [];
+    private bool hasTokScaleValues;
+    private UsageBreakdown? tokScaleTodayBreakdown;
+    private UsageBreakdown? tokScaleWeekBreakdown;
+    private IReadOnlyList<UsageCollectorReceipt> tokScaleCollectors = [];
+    private DateTimeOffset? tokScaleLoadedAt;
+    private UsageFailureKind tokScaleFailure = UsageFailureKind.None;
+    private bool isTokScaleStale;
+    private CancellationTokenSource? tokScaleRequest;
+    private long tokScaleRequestId;
+    private Task tokScaleLoadTask = Task.CompletedTask;
+
+    /// <summary>
+    /// Minimum age of a successful section load before navigation or a scheduled refresh
+    /// reads again. Named so the interval is testable instead of being a literal.
+    /// </summary>
+    public static TimeSpan TokScaleRefreshInterval => TimeSpan.FromMinutes(60);
+
+    public Task TokScaleLoadTask => tokScaleLoadTask;
+
+    public string TokScaleState => tokScaleState;
+
+    /// <summary>The section exists only while a usage API is configured and has been looked at.</summary>
+    public bool IsTokScaleSectionVisible => usageReadPort.IsConfigured && tokScaleState != "Hidden";
+
+    public bool IsTokScaleLoading => tokScaleState == "Loading";
+
+    public bool IsTokScaleStale => isTokScaleStale;
+
+    public string TokScaleStateText => new UiCopy(Language).TokScaleState(tokScaleState);
+
+    public string TokScaleFailureText => new UiCopy(Language).UsageFailure(tokScaleFailure);
+
+    public IReadOnlyList<TokScaleClientCard> TokScaleCards => tokScaleCards;
+
+    public bool IsTokScaleCardsVisible => tokScaleCards.Count > 0;
+
+    /// <summary>The state sentence shows whenever the section has no cards to show.</summary>
+    public bool IsTokScaleStatusVisible => !IsTokScaleCardsVisible;
+
+    public string TokScaleTitleText => CopyText.TokScaleSectionTitle;
+
+    public string TokScaleBadgeText => CopyText.TokScaleBadge;
+
+    public string TokScaleTodayLabel => CopyText.TokScaleToday;
+
+    public string TokScaleWeekLabel => CopyText.TokScaleWeek;
+
+    /// <summary>
+    /// Freshness of the section: the oldest reception time across the collectors the
+    /// last weekly read covered, formatted in the user's local zone. Empty before any read.
+    /// </summary>
+    public string TokScaleFreshnessText
+    {
+        get
+        {
+            if (!hasTokScaleValues || tokScaleCollectors.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var copy = new UiCopy(Language);
+            DateTimeOffset? oldest = null;
+            foreach (var entry in tokScaleCollectors)
+            {
+                if (entry.LastReceivedAt is { } receivedAt && (oldest is null || receivedAt < oldest))
+                {
+                    oldest = receivedAt;
+                }
+            }
+
+            if (oldest is not { } received)
+            {
+                return copy.UsageFreshnessNeverReceived;
+            }
+
+            var local = TimeZoneInfo.ConvertTime(received, localTimeZone);
+            return tokScaleCollectors.Any(entry => entry.LastReceivedAt is null)
+                ? copy.UsageFreshnessLastReceivedWithMissing(local)
+                : copy.UsageFreshnessLastReceived(local);
+        }
+    }
+
+    public bool IsTokScaleFreshnessVisible => TokScaleFreshnessText.Length > 0;
+
+    /// <summary>
+    /// Reads the section again when it is due. Navigation to the dashboard and the
+    /// scheduled refresh both come through here; the interval throttle keeps the read
+    /// volume far below the usage page's. Returns the in-flight or completed load.
+    /// </summary>
+    public Task RefreshTokScaleAsync(bool force = false)
+    {
+        if (!force && CurrentPage != AppPage.Dashboard)
+        {
+            return tokScaleLoadTask;
+        }
+
+        tokScaleLoadTask = LoadTokScaleAsync(force);
+        return tokScaleLoadTask;
+    }
+
+    private async Task LoadTokScaleAsync(bool force)
+    {
+        var id = Interlocked.Increment(ref tokScaleRequestId);
+        tokScaleRequest?.Cancel(); tokScaleRequest?.Dispose();
+        tokScaleRequest = new CancellationTokenSource(); var token = tokScaleRequest.Token;
+
+        if (!usageReadPort.IsConfigured)
+        {
+            // The connection is gone: drop the section entirely.
+            tokScaleState = "Hidden";
+            tokScaleCards = [];
+            tokScaleCollectors = [];
+            hasTokScaleValues = false;
+            tokScaleFailure = UsageFailureKind.None;
+            isTokScaleStale = false;
+            NotifyTokScaleSurface();
+            return;
+        }
+
+        if (!force && tokScaleLoadedAt is { } loaded && timeProvider.GetUtcNow() - loaded < TokScaleRefreshInterval)
+        {
+            return;
+        }
+
+        tokScaleState = "Loading";
+        NotifyTokScaleSurface();
+        try
+        {
+            DateOnly today;
+            try
+            {
+                today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), timeZoneResolver("Asia/Tokyo")).DateTime);
+            }
+            catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                ApplyTokScaleFailure(id, UsageFailureKind.Transient);
+                return;
+            }
+
+            // Two reads: parts are aggregated over a whole range, so today's per-client
+            // totals need today's read and the seven-day totals need the week's.
+            var todayRead = await usageReadPort.ReadBreakdownAsync(today, today, null, token);
+            if (token.IsCancellationRequested || id != Volatile.Read(ref tokScaleRequestId)) return;
+            var weekRead = await usageReadPort.ReadBreakdownAsync(today.AddDays(-6), today, null, token);
+            if (token.IsCancellationRequested || id != Volatile.Read(ref tokScaleRequestId)) return;
+
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(todayRead, weekRead, Language);
+            tokScaleTodayBreakdown = todayRead;
+            tokScaleWeekBreakdown = weekRead;
+            tokScaleCollectors = weekRead.Collectors;
+            hasTokScaleValues = true;
+            tokScaleLoadedAt = timeProvider.GetUtcNow();
+            tokScaleFailure = UsageFailureKind.None;
+            isTokScaleStale = false;
+            tokScaleState = tokScaleCards.Count == 0 ? "Empty" : "Ready";
+            NotifyTokScaleSurface();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (UsageReadException failure) { ApplyTokScaleFailure(id, MapBreakdownFailure(failure.Failure)); }
+        catch { ApplyTokScaleFailure(id, UsageFailureKind.Transient); }
+    }
+
+    private void ApplyTokScaleFailure(long id, UsageFailureKind kind)
+    {
+        if (id != Volatile.Read(ref tokScaleRequestId)) return;
+        tokScaleFailure = kind;
+        if (hasTokScaleValues)
+        {
+            isTokScaleStale = true;
+            tokScaleState = "Stale";
+        }
+        else
+        {
+            isTokScaleStale = false;
+            tokScaleState = "Error";
+        }
+
+        NotifyTokScaleSurface();
+    }
+
+    /// <summary>Rebuilds the stored cards in the current language: the numbers are the
+    /// observation, only their labels change with the switch.</summary>
+    private void RelocalizeTokScale()
+    {
+        if (hasTokScaleValues && tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
+        {
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(today, week, Language);
+        }
+    }
+
+    private void NotifyTokScaleSurface()
+    {
+        OnPropertyChanged(nameof(TokScaleState));
+        OnPropertyChanged(nameof(IsTokScaleSectionVisible));
+        OnPropertyChanged(nameof(IsTokScaleLoading));
+        OnPropertyChanged(nameof(IsTokScaleStale));
+        OnPropertyChanged(nameof(TokScaleStateText));
+        OnPropertyChanged(nameof(TokScaleFailureText));
+        OnPropertyChanged(nameof(TokScaleTitleText));
+        OnPropertyChanged(nameof(TokScaleBadgeText));
+        OnPropertyChanged(nameof(TokScaleTodayLabel));
+        OnPropertyChanged(nameof(TokScaleWeekLabel));
+        OnPropertyChanged(nameof(TokScaleCards));
+        OnPropertyChanged(nameof(IsTokScaleCardsVisible));
+        OnPropertyChanged(nameof(IsTokScaleStatusVisible));
+        OnPropertyChanged(nameof(TokScaleFreshnessText));
+        OnPropertyChanged(nameof(IsTokScaleFreshnessVisible));
+    }
     public string SubtitleText => CopyText.Subtitle;
     /// <summary>Stored usage API endpoint as an origin, or an empty string. Never a credential.</summary>
     public string UsageApiEndpointText => usageApiEndpoint;
@@ -2107,7 +2530,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             usageReadPort.Reset();
             usageConnectionState = removalFailed ? UsageConnectionState.StoreUnavailable : UsageConnectionState.Unconfigured;
             usageConnectionError = removalFailed ? UsageConnectionError.CredentialStoreUnavailable : UsageConnectionError.None;
+            // Both dependent surfaces drop their values with the connection: no cached
+            // breakdown or observed-usage card may outlive the credential it was read with.
+            breakdown = null;
+            hasBreakdownValues = false;
+            breakdownFailure = UsageFailureKind.None;
+            isBreakdownStale = false;
+            breakdownState = "Unconfigured";
+            tokScaleState = "Hidden";
+            tokScaleCards = [];
+            tokScaleCollectors = [];
+            hasTokScaleValues = false;
+            tokScaleFailure = UsageFailureKind.None;
+            isTokScaleStale = false;
             PublishUsageConnectionChanged();
+            NotifyBreakdownSurface();
+            NotifyTokScaleSurface();
         }
         finally { settingsTransactionGate.Release(); }
     }
@@ -2283,8 +2721,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible) }) OnPropertyChanged(name);
     }
-    public AppPage CurrentPage { get => currentPage; private set { if (currentPage == value) return; var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value) && value == AppPage.Usage && !wasUsage) usageLoadTask = LoadUsageAsync(); } }
-    public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); NotifyLocalizedProperties(); } } }
+    public AppPage CurrentPage { get => currentPage; private set { if (currentPage == value) return; var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value)) { if (value == AppPage.Usage && !wasUsage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } else if (value == AppPage.Dashboard && !wasUsage) { _ = RefreshTokScaleAsync(); } } } }
+    public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); RelocalizeTokScale(); NotifyLocalizedProperties(); NotifyBreakdownSurface(); NotifyTokScaleSurface(); } } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
     public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
@@ -2325,6 +2763,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (Interlocked.Exchange(ref disposedState, 1) != 0) return;
         usageRequest?.Cancel(); usageRequest?.Dispose(); usageRequest = null;
+        breakdownRequest?.Cancel(); breakdownRequest?.Dispose(); breakdownRequest = null;
+        tokScaleRequest?.Cancel(); tokScaleRequest?.Dispose(); tokScaleRequest = null;
         usageReadPort.Dispose();
         // RefreshAsync may still be waiting on or holding the gate; leave it undisposed to avoid a race.
         History.Dispose();
@@ -2366,7 +2806,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
             ReplaceCards(loaded.Cards ?? source.Load());
         }
-        finally { SetQuotaDataBusy(false); }
+        finally
+        {
+            SetQuotaDataBusy(false);
+            // The observed-usage section lives on the dashboard, which is the page startup
+            // lands on; its interval throttle decides whether a read actually happens.
+            // It runs even when startup ends early (no history store) so the section is
+            // not left hidden until the first navigation.
+            tokScaleLoadTask = RefreshTokScaleAsync(force: false);
+        }
     }
     public string NotificationBannerText => string.IsNullOrWhiteSpace(notificationService.BannerText) && IsError ? CopyText.RefreshError : notificationService.BannerText;
     public bool IsNotificationVisible => !string.IsNullOrWhiteSpace(notificationService.BannerText) || IsError;
@@ -2483,6 +2931,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public Task RefreshAsync(CancellationToken cancellationToken = default) => RefreshAsync(RefreshOrigin.Manual, cancellationToken);
     public async Task RefreshAsync(RefreshOrigin origin, CancellationToken cancellationToken = default)
     {
+        // The dashboard's observed-usage section follows along, throttled by its own
+        // (much longer) interval so a 5-minute scheduled refresh does not re-read it.
+        _ = RefreshTokScaleAsync();
         if (origin == RefreshOrigin.Scheduled && !refreshGate.Wait(0)) return;
         if (origin == RefreshOrigin.Manual) await refreshGate.WaitAsync(cancellationToken);
         if (origin == RefreshOrigin.Manual) SetQuotaDataBusy(true);

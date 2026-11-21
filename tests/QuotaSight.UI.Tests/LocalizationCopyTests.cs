@@ -109,4 +109,150 @@ public sealed class LocalizationCopyTests
         Assert.Equal("通知しきい値は使用率を計算できる利用枠に適用されます。CopilotのAIクレジット総量には個人別の上限がないため、対象外です。",
             new UiCopy(UiLanguage.Japanese).ProviderOverrides);
     }
+
+    [Theory]
+    [InlineData("Loading")]
+    [InlineData("Ready")]
+    [InlineData("Empty")]
+    [InlineData("Unsupported")]
+    [InlineData("Stale")]
+    [InlineData("Error")]
+    [InlineData("Unconfigured")]
+    public void Usage_breakdown_state_sentences_exist_in_both_languages(string state)
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese).UsageBreakdownState(state);
+        var english = new UiCopy(UiLanguage.English).UsageBreakdownState(state);
+
+        Assert.False(string.IsNullOrWhiteSpace(japanese));
+        Assert.False(string.IsNullOrWhiteSpace(english));
+        Assert.NotEqual(japanese, english);
+    }
+
+    [Fact]
+    public void Usage_breakdown_notes_and_labels_exist_in_both_languages()
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+
+        foreach (var copy in new[] { japanese, english })
+        {
+            Assert.Contains("TokScale", copy.UsageBreakdownNote, StringComparison.Ordinal);
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownTitle));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownUnknown));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownComponentInput));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownComponentOutput));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownComponentCacheRead));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownComponentCacheWrite));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownComponentReasoning));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownPartial));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownUnclassified(1)));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownTokens(1)));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownShare(50m)));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownOverAttributionRow("2026-11-01", 5, 4)));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageFailure(UsageFailureKind.BreakdownUnsupported)));
+            Assert.False(string.IsNullOrWhiteSpace(copy.UsageFailure(UsageFailureKind.CollectorNotFound)));
+            foreach (UsageBreakdownDimension dimension in Enum.GetValues<UsageBreakdownDimension>())
+            {
+                Assert.False(string.IsNullOrWhiteSpace(copy.UsageBreakdownDimensionName(dimension)));
+            }
+        }
+
+        // The observation note carries the log-deletion and cache-client caveats verbatim.
+        Assert.Contains("既定30日", japanese.UsageBreakdownNote, StringComparison.Ordinal);
+        Assert.Contains("30 days by default", english.UsageBreakdownNote, StringComparison.Ordinal);
+        Assert.Contains("クライアント", japanese.UsageBreakdownDimensionName(UsageBreakdownDimension.Client), StringComparison.Ordinal);
+        Assert.Equal("Client", english.UsageBreakdownDimensionName(UsageBreakdownDimension.Client));
+    }
+
+    [Fact]
+    public void TokScale_section_copy_exists_in_both_languages_and_known_clients_have_names()
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+
+        foreach (var copy in new[] { japanese, english })
+        {
+            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleSectionTitle));
+            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleBadge));
+            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleToday));
+            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleWeek));
+            foreach (var state in new[] { "Loading", "Ready", "Empty", "Stale", "Error" })
+            {
+                Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleState(state)));
+            }
+        }
+
+        Assert.Contains("他端末", japanese.TokScaleBadge, StringComparison.Ordinal);
+        Assert.Contains("other devices", english.TokScaleBadge, StringComparison.Ordinal);
+        Assert.Equal("Claude Code", japanese.TokScaleClientName("claude"));
+        Assert.Equal("Claude Code", english.TokScaleClientName("claude"));
+        Assert.Equal("Codex CLI", english.TokScaleClientName("codex"));
+        // An unknown id is displayed as-is, never invented.
+        Assert.Equal("some-new-client", english.TokScaleClientName("some-new-client"));
+        Assert.Equal("some-new-client", japanese.TokScaleClientName("some-new-client"));
+    }
+
+    [Fact]
+    public void Breakdown_and_TokScale_copy_is_present_in_both_languages_and_Japanese_is_never_English_passthrough()
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+
+        var pairs = new List<(string Japanese, string English, string Name)>
+        {
+            (japanese.UsageBreakdownNote, english.UsageBreakdownNote, nameof(UiCopy.UsageBreakdownNote)),
+            (japanese.UsageBreakdownTitle, english.UsageBreakdownTitle, nameof(UiCopy.UsageBreakdownTitle)),
+            (japanese.UsageBreakdownDimensionSelector, english.UsageBreakdownDimensionSelector, nameof(UiCopy.UsageBreakdownDimensionSelector)),
+            (japanese.UsageBreakdownUnknown, english.UsageBreakdownUnknown, nameof(UiCopy.UsageBreakdownUnknown)),
+            (japanese.UsageBreakdownTotal, english.UsageBreakdownTotal, nameof(UiCopy.UsageBreakdownTotal)),
+            (japanese.UsageBreakdownPartial, english.UsageBreakdownPartial, nameof(UiCopy.UsageBreakdownPartial)),
+            (japanese.TokScaleSectionTitle, english.TokScaleSectionTitle, nameof(UiCopy.TokScaleSectionTitle)),
+            (japanese.TokScaleBadge, english.TokScaleBadge, nameof(UiCopy.TokScaleBadge)),
+            (japanese.TokScaleToday, english.TokScaleToday, nameof(UiCopy.TokScaleToday)),
+            (japanese.TokScaleWeek, english.TokScaleWeek, nameof(UiCopy.TokScaleWeek)),
+        };
+
+        foreach (UsageBreakdownDimension dimension in Enum.GetValues<UsageBreakdownDimension>())
+        {
+            pairs.Add((japanese.UsageBreakdownDimensionName(dimension), english.UsageBreakdownDimensionName(dimension), $"dimension {dimension}"));
+        }
+
+        foreach (var state in new[] { "Loading", "Ready", "Empty", "Stale", "Error" })
+        {
+            // "Unconfigured" is not a TokScale state: without a connection the whole section hides.
+            pairs.Add((japanese.UsageBreakdownState(state), english.UsageBreakdownState(state), $"breakdown state {state}"));
+            pairs.Add((japanese.TokScaleState(state), english.TokScaleState(state), $"TokScale state {state}"));
+        }
+
+        foreach (var component in new (Func<string> Japanese, Func<string> English, string Name)[]
+        {
+            (() => japanese.UsageBreakdownComponentInput, () => english.UsageBreakdownComponentInput, "Input"),
+            (() => japanese.UsageBreakdownComponentOutput, () => english.UsageBreakdownComponentOutput, "Output"),
+            (() => japanese.UsageBreakdownComponentCacheRead, () => english.UsageBreakdownComponentCacheRead, "CacheRead"),
+            (() => japanese.UsageBreakdownComponentCacheWrite, () => english.UsageBreakdownComponentCacheWrite, "CacheWrite"),
+            (() => japanese.UsageBreakdownComponentReasoning, () => english.UsageBreakdownComponentReasoning, "Reasoning"),
+        })
+        {
+            pairs.Add((component.Japanese(), component.English(), component.Name));
+        }
+
+        foreach (var (japaneseText, englishText, name) in pairs)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(japaneseText), $"The Japanese copy for {name} is missing.");
+            Assert.False(string.IsNullOrWhiteSpace(englishText), $"The English copy for {name} is missing.");
+            Assert.NotEqual(englishText, japaneseText);
+            // The Japanese sentence must be written in Japanese: identical wording with
+            // different punctuation is still an untranslated passthrough.
+            Assert.True(
+                HasJapaneseGlyph(japaneseText),
+                $"The Japanese copy for {name} is an English passthrough: '{japaneseText}'.");
+        }
+
+        // The dimension switcher must carry its own accessibility name, not reuse the card title.
+        Assert.Equal("内訳の集計単位", japanese.UsageBreakdownDimensionSelector);
+        Assert.Equal("Breakdown grouping", english.UsageBreakdownDimensionSelector);
+    }
+
+    private static bool HasJapaneseGlyph(string text) =>
+        text.Any(character => character is >= '\u3040' and <= '\u30FF' or >= '\u4E00' and <= '\u9FFF');
 }

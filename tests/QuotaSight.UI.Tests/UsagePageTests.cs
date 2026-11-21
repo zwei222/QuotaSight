@@ -172,6 +172,9 @@ public sealed class UsagePageTests
     {
         public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
             Task.FromResult(new DailyUsage(from, to, [], 0));
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
     }
 
     private sealed class PeriodBoundaryUsageReadPort : IUsageReadPort
@@ -184,6 +187,9 @@ public sealed class UsagePageTests
                 return Task.FromResult(new DailyUsage(from, to, [new(to, "old-period", 17)], 17));
             return second.Task;
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
         public void FailSecondRead() => second.TrySetException(new IOException("offline"));
     }
 
@@ -197,6 +203,9 @@ public sealed class UsagePageTests
             Calls++; From = from; To = to;
             return Task.FromResult(new DailyUsage(from, to, [new(new DateOnly(2026, 11, 19), "collector-a", 0)], 0));
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
     }
 
     private sealed class DeferredUsageReadPort : IUsageReadPort
@@ -208,6 +217,9 @@ public sealed class UsagePageTests
             if (Interlocked.Increment(ref calls) == 1) return completion.Task;
             return Task.FromResult(new DailyUsage(from, to, [new(to, "return", 9)], 9));
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
         public void Complete(DailyUsage result) => completion.TrySetResult(result);
     }
 

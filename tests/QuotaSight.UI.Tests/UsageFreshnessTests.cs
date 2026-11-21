@@ -307,6 +307,13 @@ public sealed class UsageFreshnessTests
                 return Task.FromException<DailyUsage>(failure);
             }
         }
+
+        public Task<UsageBreakdown> ReadBreakdownAsync(
+            DateOnly from,
+            DateOnly to,
+            string? collectorId,
+            CancellationToken cancellationToken) =>
+            Task.FromException<UsageBreakdown>(new InvalidOperationException("Not used by this test."));
     }
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider

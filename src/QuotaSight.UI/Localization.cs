@@ -49,7 +49,124 @@ public sealed class UiCopy
         (UsageFailureKind.Redirected, false) => "The usage API redirected the request. Check the endpoint.",
         (UsageFailureKind.CredentialMissing, true) => "利用量 API の資格情報がありません。設定画面で接続してください。",
         (UsageFailureKind.CredentialMissing, false) => "No usage API credential is stored. Connect the API in settings.",
+        (UsageFailureKind.BreakdownUnsupported, true) => "サーバーが内訳に未対応です。",
+        (UsageFailureKind.BreakdownUnsupported, false) => "The server does not provide the usage breakdown yet.",
+        (UsageFailureKind.CollectorNotFound, true) => "collector の指定が正しくありません。設定画面で確認してください。",
+        (UsageFailureKind.CollectorNotFound, false) => "The collector name is not valid. Review the settings.",
         _ => string.Empty
+    };
+
+    // Fixed state sentences for the breakdown card. "Unsupported" is its own state, not
+    // an error: the daily totals still work, only this capability is missing server-side.
+    public string UsageBreakdownState(string state) => (state, IsJapanese) switch
+    {
+        ("Loading", true) => "利用内訳を読み込み中…",
+        ("Loading", false) => "Loading the usage breakdown…",
+        ("Ready", true) => "利用内訳を表示しています。",
+        ("Ready", false) => "Usage breakdown loaded.",
+        ("Empty", true) => "この期間の内訳はまだありません。",
+        ("Empty", false) => "No attributed breakdown for this period yet.",
+        ("Unsupported", true) => "サーバーが内訳に未対応です。",
+        ("Unsupported", false) => "The server does not provide the usage breakdown yet.",
+        ("Stale", true) => "前回の内訳を表示しています（更新に失敗しました）。",
+        ("Stale", false) => "Showing the last loaded breakdown; the refresh failed.",
+        ("Error", true) => "利用内訳を読み込めませんでした。",
+        ("Error", false) => "Could not load the usage breakdown.",
+        ("Unconfigured", true) => "利用量 API は未設定です。",
+        ("Unconfigured", false) => "Usage API is not configured.",
+        _ => state
+    };
+
+    // The fixed disclaimer the breakdown card always carries with values on screen. It
+    // names the limits of the observation instead of implying a complete measurement.
+    public string UsageBreakdownNote => IsJapanese
+        ? "TokScale がローカルログから集計した観測値です。ログの削除（Claude Code は既定30日）や API・キャッシュ型クライアントでは欠落・遅れがあります。"
+        : "Observed values aggregated by TokScale from local logs. Log deletion (Claude Code keeps 30 days by default) and API or cache-type clients can leave gaps or delays.";
+
+    public string UsageBreakdownTitle => IsJapanese ? "利用内訳" : "Usage breakdown";
+    public string UsageBreakdownDimensionName(UsageBreakdownDimension dimension) => (dimension, IsJapanese) switch
+    {
+        (UsageBreakdownDimension.Client, true) => "クライアント",
+        (UsageBreakdownDimension.Client, false) => "Client",
+        (UsageBreakdownDimension.Provider, true) => "プロバイダー",
+        (UsageBreakdownDimension.Provider, false) => "Provider",
+        (UsageBreakdownDimension.Model, true) => "モデル",
+        (UsageBreakdownDimension.Model, false) => "Model",
+        _ => dimension.ToString()
+    };
+    /// <summary>The dimension switcher's own name for screen readers, distinct from the card title.</summary>
+    public string UsageBreakdownDimensionSelector => IsJapanese ? "内訳の集計単位" : "Breakdown grouping";
+    public string UsageBreakdownUnknown => IsJapanese ? "（不明）" : "(unknown)";
+    public string UsageBreakdownTotal => IsJapanese ? "合計" : "Total";
+    public string UsageBreakdownShare(decimal share) => IsJapanese
+        ? $"構成比 {share:0.#}%"
+        : $"{share:0.#}% of total";
+    public string UsageBreakdownComponentInput => IsJapanese ? "入力" : "Input";
+    public string UsageBreakdownComponentOutput => IsJapanese ? "出力" : "Output";
+    public string UsageBreakdownComponentCacheRead => IsJapanese ? "キャッシュ読取" : "Cache read";
+    public string UsageBreakdownComponentCacheWrite => IsJapanese ? "キャッシュ書込" : "Cache write";
+    public string UsageBreakdownComponentReasoning => IsJapanese ? "推論" : "Reasoning";
+    public string UsageBreakdownTokens(long tokens) => IsJapanese
+        ? $"{tokens:N0} トークン"
+        : $"{tokens:N0} tokens";
+    public string UsageBreakdownUnclassified(long tokens) => IsJapanese
+        ? $"未分類 {tokens:N0} トークン（内訳のない利用）"
+        : $"Unclassified: {tokens:N0} tokens (usage without a breakdown)";
+    public string UsageBreakdownPartial => IsJapanese
+        ? "一部の日だけ内訳があります。"
+        : "Only some days have a breakdown.";
+    public string UsageBreakdownOverAttributionRow(string date, long breakdown, long total) => IsJapanese
+        ? $"{date} の内訳が日合計を超えています（{breakdown:N0} > {total:N0}）"
+        : $"{date}: the breakdown exceeds the day total ({breakdown:N0} > {total:N0})";
+
+    /// <summary>
+    /// Display name of a TokScale client id. Product names are stable and identical in
+    /// both languages; an unknown id is shown as-is rather than invented.
+    /// </summary>
+    public string TokScaleClientName(string id) => id switch
+    {
+        "claude" => "Claude Code",
+        "codex" => "Codex CLI",
+        "gemini" => "Gemini CLI",
+        "opencode" => "OpenCode",
+        "cursor" => "Cursor",
+        "copilot" => "GitHub Copilot",
+        "kimi" => "Kimi CLI",
+        "qwen" => "Qwen Code",
+        "goose" => "goose",
+        "zed" => "Zed",
+        "kiro" => "Kiro",
+        "grok" => "Grok CLI",
+        "aider" => "Aider",
+        "cline" => "Cline",
+        "amp" => "Amp",
+        "crush" => "Crush",
+        "droid" => "Droid",
+        "iflow" => "iFlow CLI",
+        _ => id
+    };
+
+    // The dashboard's observed-usage section. It is deliberately named as an observation:
+    // TokScale has no quota, so no ring, no gauge and no threshold ever appears here.
+    public string TokScaleSectionTitle => IsJapanese ? "観測使用量（TokScale）" : "Observed usage (TokScale)";
+    public string TokScaleBadge => IsJapanese
+        ? "観測値・推定・他端末分は含まない"
+        : "Observed · no estimates · other devices excluded";
+    public string TokScaleToday => IsJapanese ? "今日" : "Today";
+    public string TokScaleWeek => IsJapanese ? "7日" : "7 days";
+    public string TokScaleState(string state) => (state, IsJapanese) switch
+    {
+        ("Loading", true) => "観測使用量を読み込み中…",
+        ("Loading", false) => "Loading observed usage…",
+        ("Ready", true) => "観測使用量を表示しています。",
+        ("Ready", false) => "Observed usage loaded.",
+        ("Empty", true) => "観測されたクライアントはありません。",
+        ("Empty", false) => "No observed client yet.",
+        ("Stale", true) => "前回の観測使用量を表示しています（更新に失敗しました）。",
+        ("Stale", false) => "Showing the last observed usage; the refresh failed.",
+        ("Error", true) => "観測使用量を読み込めませんでした。",
+        ("Error", false) => "Could not load observed usage.",
+        _ => state
     };
 
     // Freshness copy. The time is always formatted by the caller in the local time zone,

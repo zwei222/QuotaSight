@@ -445,6 +445,13 @@ public sealed class ReconfigurableUsageReadPort : IUsageReadPort, IDisposable
     }
 
     /// <inheritdoc />
+    public Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken)
+    {
+        var snapshot = Volatile.Read(ref configuration);
+        return snapshot.Port.ReadBreakdownAsync(from, to, collectorId, cancellationToken);
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// Only the installed reference is dropped. No client is disposed, because none belongs to
     /// a configuration: the shared client lives for the process and an injected one belongs to
