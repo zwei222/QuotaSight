@@ -255,6 +255,28 @@ public sealed class UiCopy
     public string GithubClientId => IsJapanese ? "GitHub App Client ID（秘密情報ではありません）" : "GitHub App Client ID (not a secret)";
     public string GithubOrganization => IsJapanese ? "GitHub Organization slug（組織名のURL用表記・秘密情報ではありません）" : "GitHub organization slug (not a secret)";
     public string GithubOrganizationHint => IsJapanese ? "入力内容は変更時に自動保存されます。保存後はダッシュボードで更新してください。例: acme-engineering" : "Changes are auto-saved. After saving, refresh the dashboard. Example: acme-engineering";
+    // Usage connection section. Credential values are never part of this copy: it is fixed
+    // text that is safe to show, log or screenshot next to masked inputs.
+    public string UsageConnectionTitle => IsJapanese ? "利用量 API 接続" : "Usage API connection";
+    public string UsageConnectionDescription => IsJapanese
+        ? "利用量 API のエンドポイントと Access Client ID、Client Secret を保存します。認証情報は安全な資格情報ストアにのみ保存され、保存後は表示・コピーできません。"
+        : "Saves the usage API endpoint with its Access Client ID and Client Secret. Credentials live only in the secure credential store and cannot be viewed or copied after saving.";
+    public string UsageEndpointLabel => IsJapanese ? "利用量 API エンドポイント" : "Usage API endpoint";
+    public string UsageEndpointHint => IsJapanese ? "https のオリジンを指定します（例: https://usage.example.test）。" : "Enter an https origin (for example, https://usage.example.test).";
+    public string UsageClientIdLabel => IsJapanese ? "Access Client ID" : "Access Client ID";
+    public string UsageClientSecretLabel => IsJapanese ? "Client Secret（保存後に表示・コピーできません）" : "Client secret (cannot be viewed or copied after saving)";
+    public string UsageConnectionSave => IsJapanese ? "接続を保存" : "Save connection";
+    public string UsageConnectionRemove => IsJapanese ? "接続を削除" : "Remove connection";
+    public string UsageConnectionRemoveConfirm => IsJapanese ? "保存した利用量 API の接続設定を削除しますか？この操作は取り消せません。" : "Remove the saved usage API connection? This cannot be undone.";
+    public string UsageConnectionConfirmRemove => IsJapanese ? "削除する" : "Remove";
+    public string UsageConnectionCancelRemove => IsJapanese ? "キャンセル" : "Cancel";
+    public string UsageConnectionSaving => IsJapanese ? "保存中…" : "Saving…";
+    public string UsageConnectionRemoving => IsJapanese ? "削除中…" : "Removing…";
+    public string UsageConnectionSaveFailure => IsJapanese ? "接続設定を保存できませんでした。" : "Unable to save the connection.";
+    public string UsageCredentialSaved => IsJapanese ? "認証情報: 保存済み" : "Credential: saved";
+    public string UsageCredentialNone => IsJapanese ? "認証情報: 未保存" : "Credential: not saved";
+    public string UsageSessionOnlyBadge => IsJapanese ? "このセッション限り" : "This session only";
+    public string UsageStoreUnavailableBadge => IsJapanese ? "資格情報ストア利用不可のため保存できません" : "Cannot save: the credential store is unavailable";
     public string Autostart => IsJapanese ? "自動起動: 現在利用できません（プラットフォーム機能が未導入）" : "Autostart: Unsupported · platform backend not installed";
     public string AccountWatermark => IsJapanese ? "個人" : "Personal";
     public string UsedPercentWatermark => IsJapanese ? "0以上" : "0 or more";

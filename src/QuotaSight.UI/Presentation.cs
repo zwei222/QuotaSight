@@ -1758,6 +1758,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Fixed, localized sentence for <see cref="UsageConnectionError"/>; it echoes no input.</summary>
     public string UsageConnectionErrorText => CopyText.UsageConnectionErrorText(usageConnectionError);
 
+    // State flags the settings card binds to; they let the card color and icon each state
+    // without converters, and are refreshed with the rest of the connection surface.
+    /// <summary>True when no usable endpoint or credential pair is stored.</summary>
+    public bool IsUsageConnectionUnconfigured => usageConnectionState == UsageConnectionState.Unconfigured;
+
+    /// <summary>True when the connection is saved in a secure credential store.</summary>
+    public bool IsUsageConnectionConfigured => usageConnectionState == UsageConnectionState.Configured;
+
+    /// <summary>True when the credential pair lives in this session only.</summary>
+    public bool IsUsageConnectionSessionOnly => usageConnectionState == UsageConnectionState.SessionOnly;
+
+    /// <summary>True when nothing can be saved because the credential store is unavailable.</summary>
+    public bool IsUsageConnectionStoreUnavailable => usageConnectionState == UsageConnectionState.StoreUnavailable;
+
+    /// <summary>True when the stored endpoint violates the endpoint rules.</summary>
+    public bool IsUsageConnectionInvalid => usageConnectionState == UsageConnectionState.Invalid;
+
+    /// <summary>True when the last connection change was refused, so fixed copy must show near the fields.</summary>
+    public bool HasUsageConnectionError => usageConnectionError is not UsageConnectionError.None;
+
+    /// <summary>Presence-only credential text: whether a pair is stored, never any stored value.</summary>
+    public string UsageCredentialStatusText => HasUsageCredential ? CopyText.UsageCredentialSaved : CopyText.UsageCredentialNone;
+
     /// <summary>
     /// Validates the endpoint, stores the client id and the client secret in the credential
     /// store, persists the endpoint as an ordinary setting, and then points the usage read
@@ -1968,6 +1991,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(UsageConnectionError));
         OnPropertyChanged(nameof(UsageConnectionStatusText));
         OnPropertyChanged(nameof(UsageConnectionErrorText));
+        OnPropertyChanged(nameof(IsUsageConnectionUnconfigured));
+        OnPropertyChanged(nameof(IsUsageConnectionConfigured));
+        OnPropertyChanged(nameof(IsUsageConnectionSessionOnly));
+        OnPropertyChanged(nameof(IsUsageConnectionStoreUnavailable));
+        OnPropertyChanged(nameof(IsUsageConnectionInvalid));
+        OnPropertyChanged(nameof(HasUsageConnectionError));
+        OnPropertyChanged(nameof(UsageCredentialStatusText));
     }
     public string EmptyStateText => CopyText.EmptyTitle;
     public string EmptyStateDescription => CopyText.EmptyDescription;
@@ -2641,7 +2671,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)
