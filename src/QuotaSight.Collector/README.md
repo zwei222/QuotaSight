@@ -3,7 +3,8 @@
 A small, dependency-free .NET 10 CLI that reads **one** `tokscale graph --json`
 document from an **explicit stdin** and normalizes it into a **candidate**
 `PUT /v1/collectors/{collectorId}/snapshots/{revision}` body for
-`src/QuotaSight.Usage.Api` (wire v1, see `src/QuotaSight.Usage.Api/src/schema.ts`).
+`src/QuotaSight.Usage.Api` (wire v1 by default, wire v2 opt-in — see
+`src/QuotaSight.Usage.Api/src/schema.ts`).
 
 It is a normalizer, not a collector of record:
 
@@ -26,6 +27,15 @@ dotnet run --project src/QuotaSight.Collector -- --preview --generation 1 --buck
 | `--generation <n>` | Required. Collector generation, a positive integer ≤ 2^53-1. Not derivable from upstream data. |
 | `--bucket-time-zone <zone>` | Required. The zone the operator *verified* that the upstream scan bucketed days in. The `graph` JSON does **not** report it, so it is never inferred from the dates; API v1 only accepts `Asia/Tokyo` today, so anything else is rejected. |
 | `--upstream-partial` | Declares that upstream reported partial, unpriced or stale-priced usage (its stderr warning). The candidate is still emitted in preview, but the exit code becomes `3`. Cannot be combined with `--send`. |
+| `--wire-schema <1\|2>` | Default `1`. `1` sends daily totals only. `2` also sends the per-client/provider/model breakdown (see "Wire v2: the breakdown"), which the API stores and serves from `GET /v1/usage/breakdown`. Opt-in on purpose: the API has to understand v2 before a collector starts sending it. |
+| `--parts-budget-bytes <bytes>` | Wire v2 only; with `--wire-schema 1` it is a usage error, because v1 carries no breakdown. Body budget for the breakdown, `4096` to `32768` bytes, default `30720` (30 KiB — headroom below the API's 32 KiB body ceiling). The day totals are always sent; this only decides how much breakdown fits beside them. |
+
+A v2 preview, byte-identical to what a v2 send would transmit:
+
+```bash
+dotnet run --project src/QuotaSight.Collector -- --preview --wire-schema 2 \
+  --generation 1 --bucket-time-zone Asia/Tokyo < graph.json
+```
 
 ## Sending (explicit only)
 
@@ -63,6 +73,67 @@ would write in preview. Access service-token headers are attached per request.
 
 stderr reports one reason class per run; response bodies, headers, the full URL,
 identifiers and paths are never printed.
+
+## Wire v2: the breakdown (opt-in)
+
+`--wire-schema 2` adds the per-client/provider/model breakdown to the same
+snapshot. The day totals are unchanged: every day still carries its own
+`totalTokens`, and a day whose breakdown is not sent is still a complete day —
+what is missing is the explanation, not the usage.
+
+**What a row is.** One row is the usage of one `(client, provider, model)` key on
+one day, split into the five components the API stores: input, output, cache
+read, cache write and reasoning. A day's rows must add up to exactly the day's
+`totalTokens`; when they do not, the day is sent with its total only. Tokens an
+upstream row cannot attribute stay unattributed: the collector never invents a row
+to close the gap.
+
+**Identifier normalization.** Upstream values are folded and validated, never
+repaired:
+
+- **client**: ASCII lowercase, then `[a-z0-9][a-z0-9._-]{0,31}`;
+- **provider**: upstream may report a comma-separated list of every provider that
+  served a request, so it is split on `,`, trimmed, lowercased, de-duplicated and
+  sorted, then re-joined with `,` — at most 4 elements and 64 characters;
+- **model**: lowercased, at most 96 characters, and kept only if it names an
+  identifier rather than a location. A path-shaped value becomes `""`: a leading
+  `/` or `\`, any `\`, a drive letter (`c:…`), a local weight-file suffix
+  (`.gguf`, `.safetensors`, `.bin`, `.onnx`), or two or more `/`. A single `/`
+  stays, because `org/model` is a real model-id form.
+
+A value that fails any of these rules becomes the empty string, which means
+"observed usage whose key is unknown". Rows that normalize to the same key are
+summed component by component — the only addition the document itself supports.
+The same rules live in the API (`src/QuotaSight.Usage.Api/src/schema.ts`), and a
+shared fixture keeps the two from drifting.
+
+**Limits, and what happens at them.** At most 32 rows per day, 1024 rows per
+snapshot and 128 distinct keys; a day above its row bound loses its breakdown
+rather than being truncated. The serialized body is then reduced until it fits
+`--parts-budget-bytes`: the **oldest** day's breakdown is dropped first, because a
+reader looks at recent days first, and a day total is never dropped. If even the
+day totals alone do not fit the budget, the run exits `4` and sends nothing.
+
+**Withheld days.** Every day whose breakdown is withheld — no client rows
+upstream, a sum that does not match the day total, an unreadable row, more rows or
+keys than the bound, or the byte budget — is counted, and the run prints one
+fixed stderr line:
+
+```text
+parts_omitted: <n> days were sent without a breakdown
+```
+
+The exit code stays `0`: the snapshot is complete at the day level, and the line
+says how many days lost their explanation. Which days lost it is deliberately not
+printed.
+
+**Input size.** The upstream document is bounded at 512 KiB locally
+(`MaxInputBytes`), not at 64 KiB. Reading `contributions[].clients` as well as the
+daily totals made the document much larger: a real 17-day document is already
+about 34 KiB, and `tokscale graph --days 30` is larger than the old 64 KiB
+ceiling, so that ceiling would have turned a normal month into a rejection. A
+document above 512 KiB exits `4`. The emitted body stays bounded at 32 KiB
+whatever the input size.
 
 ## Revision allocation and the send state
 
@@ -270,18 +341,24 @@ A `2xx` is a success only when its body is the receipt the API documents
 `changedDays`, `ignoredReductions`) for exactly this collector, generation and
 revision. `ignoredReductions` is required and must be an integer between `0` and
 `62` (the API's per-snapshot day bound); a receipt without it, with a negative
-or fractional value, or with a value above that bound is not verified. Anything
-else — including a `204`, an unexpected field, or a body over 8 KiB — is
+or fractional value, or with a value above that bound is not verified. A **v2**
+send expects two more fields after those seven — `changedParts` (`0`…`1024`) and
+`ignoredPartReductions` (`0`…`62`, a day count like `ignoredReductions`) — and a
+**v1** receipt must carry exactly the seven, so a v2 receipt on a v1 send (or the
+reverse) is not verified either. Anything else — including a `204`, an
+unexpected field, or a body over 8 KiB — is
 `send_receipt_unverified` (`27`), or `send_response_too_large` (`22`) for the
 size case. Both record the revision as unverified and set the
 `response_unverified` block, because the local record and the server may now
 disagree. No body is ever printed.
 
 When the verified receipt reports `ignoredReductions` above `0`, the run prints
-one extra fixed line to stderr: `reductions_ignored: <n>`. The exit code stays
-`0` (`sent: accepted`): the API accepted the snapshot and consumed the revision,
-and the count only says how many days kept an already accepted, higher total. It
-is a fixed token and an integer — never a response excerpt.
+one extra fixed line to stderr: `reductions_ignored: <n>`. A v2 send whose receipt
+reports `ignoredPartReductions` above `0` prints `part_reductions_ignored: <n>` in
+the same way. The exit code stays `0` (`sent: accepted`): the API accepted the
+snapshot and consumed the revision, and the counts only say how many days kept an
+already accepted, higher total — for the day total, and for the day's breakdown.
+Each is a fixed token and an integer, never a response excerpt.
 
 When the recorded outcome of the previous revision is `none` or `unknown`, every
 send first reports `previous_send_unresolved` and then continues with the next
@@ -316,7 +393,8 @@ usage data:
 - The candidate was previewed with `--preview` and the wire is the intended snapshot.
 - Upstream did not report partial, unpriced or stale-priced usage. `--upstream-partial` cannot be combined with `--send`.
 - `--endpoint` is the intended Access-protected HTTPS origin, not a preview or unauthenticated host.
-- `--collector-id`, `--generation` and `--bucket-time-zone` are the intended values.
+- `--generation` and `--bucket-time-zone` are the intended values.
+- If `--wire-schema 2` is used: the API has migration `0004` applied (a v2 body sent to a database without it fails with a server error and the revision is consumed), and the preview's `keys` / `parts` are the breakdown you intend to send — normalized identifiers can differ from the upstream spelling, and a path-shaped model id arrives as `""`.
 - No other collector reads the same logs: two collector ids counting the same usage cannot be told apart by the API.
 - `STATE_DIRECTORY` is set by `StateDirectory=` with `StateDirectoryMode=0700` and a fixed `User=`, and `--state-init --first-revision` has been run once with a floor above every revision this collector has sent for that `(collector, generation)` pair.
 - Credentials are installed only through systemd `LoadCredential`, not in the unit environment and not on the command line.
@@ -369,19 +447,33 @@ Consumed fields, and nothing else:
 - `contributions[].date` — strict `YYYY-MM-DD` calendar date, 2000-2100.
 - `contributions[].totals.tokens` — non-negative integer ≤ 2^53-1, never a
   fraction, an exponent, a string or a boolean.
+- **Only with `--wire-schema 2`**, `contributions[].clients[]` —
+  `client`, `modelId`, `providerId` and
+  `tokens.{input,output,cacheRead,cacheWrite,reasoning}`, at most 512 rows read
+  per day. `cost` and `messages` are allowed at that level and never mapped; an
+  unknown key there, a repeated key and a missing `tokens` are rejections.
 
 Everything else (`summary`, `years`, `timeMetrics`, `intensity`,
-`tokenBreakdown`, `clients`, `cost`, `messages`, `costProvenance`,
-`meta.dateRange`) is skipped and never echoed. Unknown keys at the consumed
-levels, repeated keys, duplicate dates, unsorted-but-unique dates (canonicalized
-into ascending order), out-of-order or out-of-bound values, and trailing content
-after the single JSON value are handled explicitly — see
+`tokenBreakdown`, the day-level `clients` in wire v1, `cost`, `messages`,
+`costProvenance`, `meta.dateRange`) is skipped and never echoed. Unknown keys at
+the consumed levels, repeated keys, duplicate dates, unsorted-but-unique dates
+(canonicalized into ascending order), out-of-order or out-of-bound values, and
+trailing content after the single JSON value are handled explicitly — see
 `tests/QuotaSight.Collector.Tests`.
 
 ## Wire shape
 
+Wire v1 (the default):
+
 ```json
 {"schemaVersion":1,"adapterVersion":"tokscale-4.23.0","generation":1,"collectedAt":"2026-11-19T18:49:08.875Z","bucketTimeZone":"Asia/Tokyo","coveredRange":{"from":"2026-11-17","to":"2026-11-19"},"days":[{"date":"2026-11-17","totalTokens":400},{"date":"2026-11-18","totalTokens":1200},{"date":"2026-11-19","totalTokens":1440}]}
+```
+
+Wire v2 (`--wire-schema 2`), which keeps the v1 keys in the v1 order and adds
+`keys` and `days[].parts` after them:
+
+```json
+{"schemaVersion":2,"adapterVersion":"tokscale-4.23.0","generation":1,"collectedAt":"2026-11-19T18:49:08.875Z","bucketTimeZone":"Asia/Tokyo","coveredRange":{"from":"2026-11-17","to":"2026-11-18"},"keys":[["codex","","gpt-5.1"],["gemini","anthropic","claude-sonnet-4-5"]],"days":[{"date":"2026-11-17","totalTokens":400,"parts":[[0,300,40,20,20,20],[1,20,0,0,0,0]]},{"date":"2026-11-18","totalTokens":1200}]}
 ```
 
 - Only allowlisted API fields, in the API's own key order, compact, one trailing newline.
@@ -389,7 +481,12 @@ after the single JSON value are handled explicitly — see
   string the API hashes for `body_digest`.
 - `coveredRange` is the tight min/max of the emitted dated rows, never upstream `dateRange`.
 - An **absent** day produces no row; an explicitly observed `0` on a dated row is preserved.
-- Bounds enforced before writing: body ≤ 32 KiB, ≤ 62 days, covered span ≤ 62 days.
+- In v2, `keys` is ascending by `(client, provider, model)`, `parts` is ascending
+  by key index, each part is `[keyIndex, input, output, cacheRead, cacheWrite, reasoning]`,
+  and a day either carries its whole breakdown (adding up to its `totalTokens`) or
+  omits `parts` entirely — never an empty array.
+- Bounds enforced before writing: body ≤ 32 KiB, ≤ 62 days, covered span ≤ 62 days,
+  and for v2 ≤ 128 keys, ≤ 32 rows per day, ≤ 1024 rows per snapshot.
 - `revision` is not part of this body. It is allocated from the state directory.
 
 ## Tests

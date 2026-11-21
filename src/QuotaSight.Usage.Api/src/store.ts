@@ -556,18 +556,31 @@ export const DELETE_REPLACED_PARTS_SQL = `
 /**
  * Inserts the breakdown of the days that were just emptied.
  *
- * The `WHERE` clause is what keeps an ignored day untouched: for a day that was
- * not deleted, its stored rows still add up to at least the incoming total, so no
- * row of it is inserted. For a replaced day the rows are inserted one by one and
- * the running sum stays below the incoming total, because the parts of a day add
- * up to exactly that total and no component is negative. The one case this skips
- * is a zero-token row that comes after the day is already fully accounted — a row
- * that contributes nothing to any sum and would only be stored as a key with no
- * usage.
+ * The `WHERE` clause keeps an ignored day untouched, and it is written in the
+ * same shape as the delete so the two read as one rule: the day's incoming total
+ * (`dt`) must be greater than what is stored for that day, and a row that carries
+ * no tokens is not stored at all. Both sides of that comparison are evaluated
+ * against the state at the *start of this statement*, which is what makes the
+ * two shapes interchangeable: for a day the batch's delete emptied, the stored
+ * sum is zero here whatever the statement then inserts, so every row of a
+ * replaced day is inserted (order does not matter), and for a day that was not
+ * deleted the stored sum is at least the incoming total, so no row of it is
+ * inserted. Relying on a running sum instead would make the result depend on the
+ * order of the rows within one statement.
  *
- * `ON CONFLICT` cannot fire for a replaced day (its rows are gone and a day
- * carries each key at most once), so it is only a guard: a same-key write during
- * the same statement would otherwise abort the whole transaction.
+ * The zero-token condition is what keeps a key with no usage out of storage: it
+ * contributes nothing to any sum and would only widen the day's key set. Nothing
+ * is lost by dropping it — the day's parts always add up to exactly the day total
+ * the contract carries, so a zero row is not part of any explanation.
+ *
+ * There is no `ON CONFLICT` clause on purpose. It could only fire for a day whose
+ * rows still exist (a day this write did not delete) or for a key repeated inside
+ * one statement, and neither is a state the write path produces: a duplicate key
+ * is refused by the validation contract before this point, and a day is either
+ * deleted and re-inserted or left alone. Keeping the maximum of two rows would
+ * turn such a bug into a quietly larger day; without the clause the primary key
+ * refuses it and the whole batch rolls back, so the inconsistency cannot be
+ * stored.
  *
  * Bind order: collectorId, generation, updatedAt, parts JSON, collectorId,
  * generation.
@@ -583,23 +596,15 @@ export const INSERT_PARTS_SQL = `
          json_extract(p.value, '$.cr'), json_extract(p.value, '$.cw'),
          json_extract(p.value, '$.r'), json_extract(p.value, '$.t'), ?
   FROM json_each(?) AS p
-  WHERE json_extract(p.value, '$.t') > COALESCE(
-    (
-      SELECT SUM(stored.total_tokens)
-      FROM usage_part AS stored
-      WHERE stored.collector_id = ?
-        AND stored.generation = ?
-        AND stored.bucket_date = json_extract(p.value, '$.d')
-    ), 0)
-  ON CONFLICT (collector_id, generation, bucket_date, client, provider, model) DO UPDATE
-    SET input_tokens = excluded.input_tokens,
-        output_tokens = excluded.output_tokens,
-        cache_read_tokens = excluded.cache_read_tokens,
-        cache_write_tokens = excluded.cache_write_tokens,
-        reasoning_tokens = excluded.reasoning_tokens,
-        total_tokens = excluded.total_tokens,
-        updated_at = excluded.updated_at
-    WHERE excluded.total_tokens > usage_part.total_tokens
+  WHERE json_extract(p.value, '$.dt') > COALESCE(
+      (
+        SELECT SUM(stored.total_tokens)
+        FROM usage_part AS stored
+        WHERE stored.collector_id = ?
+          AND stored.generation = ?
+          AND stored.bucket_date = json_extract(p.value, '$.d')
+      ), 0)
+    AND json_extract(p.value, '$.t') > 0
   RETURNING bucket_date
 `;
 
@@ -697,6 +702,11 @@ export async function applySnapshotV2(
       const key = snapshot.keys[part.keyIndex] as SnapshotV2['keys'][number];
       return {
         d: day.date,
+        // The day's own total travels with each row because the insert compares
+        // the day against what is stored, not the row against it (see
+        // INSERT_PARTS_SQL): the same comparison the delete makes, on the same
+        // value, so a day is inserted exactly when it was emptied.
+        dt: day.totalTokens,
         c: key.client,
         p: key.provider,
         m: key.model,

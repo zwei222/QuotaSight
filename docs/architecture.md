@@ -25,15 +25,15 @@
 
 ## リモート利用量の流れ（任意機能）
 
-1. Collectorはローカルで上流CLIの集計を読み取り、許可した項目だけを日次スナップショット（`schemaVersion`、`adapterVersion`、`generation`、`collectedAt`、`bucketTimeZone`、`coveredRange`、`days[{date,totalTokens}]`）へ写像します。プロンプト、パス、モデル名などは含めません。
-2. Collectorは送信済みrevisionより大きいrevisionでスナップショットを送信します。受信側は世代・revision・日次合計の単調性をトランザクション内で検証し、受理済みの合計を下げません。下げる必要があった件数は受領応答の`ignoredReductions`として返します。
-3. UIは日次合計と、Collectorごとの`lastReceivedAt`（active generationで最後に受理した時刻）を読み取ります。読み取りは collector の active generation だけを対象にし、旧 generation の行は保存されたまま読み取り API では返りません（過去 generation を読む手段は未提供）。読み取りポートは契約違反を推測で補正せず、失敗を型付きで分類します。
+1. Collectorはローカルで上流CLIの集計を読み取り、許可した項目だけを日次スナップショットへ写像します。既定は wire v1(`schemaVersion` 1、`adapterVersion`、`generation`、`collectedAt`、`bucketTimeZone`、`coveredRange`、`days[{date,totalTokens}]`)で、日次合計だけを送ります。オプトインの wire v2(`schemaVersion` 2)では、その日に利用した client / provider / model の識別子(正規化済み・小文字・不明は空文字)と、5成分(入力、出力、cache read、cache write、reasoning)のトークン内訳を `keys` と `days[].parts` として送り、受信側は `usage_part` に日単位の集合として保存します。どちらの版でも、プロンプト、応答本文、コスト・料金、メッセージ数、ファイルパス、パスらしいモデルID、アカウント表示名は送りません。モデル名を送るかどうかは運用者が `--wire-schema` で選び、既定は送らない v1 です。
+2. Collectorは送信済みrevisionより大きいrevisionでスナップショットを送信します。受信側は世代・revision・日次合計の単調性をトランザクション内で検証し、受理済みの合計を下げません。下げる必要があった件数は受領応答の`ignoredReductions`として返します。v2 の内訳は日単位の集合として扱い、受信した Σparts が保存済みより大きい日だけを入れ替えます。同値の日は古い集合が勝ち、下げた日数と挿入した行数を `ignoredPartReductions` と `changedParts` として返します。
+3. UIは日次合計と、Collectorごとの`lastReceivedAt`（active generationで最後に受理した時刻）を読み取ります。内訳は `GET /v1/usage/breakdown` から、キー別の合計と、日ごとの「その日の合計 / 内訳で説明できた分」を読みます。読み取りは collector の active generation だけを対象にし、旧 generation の行は保存されたまま読み取り API では返りません（過去 generation を読む手段は未提供）。読み取りポートは契約違反を推測で補正せず、失敗を型付きで分類します。
 4. ViewModelは最も古い`lastReceivedAt`を鮮度として表示し、名前付きのしきい値（12時間）を超える場合は遅延データとして明示します。読み取りに失敗した場合、前回の行・合計・鮮度を保持したままstale状態と失敗種別を表示し、値を消したりゼロに置き換えたりしません。
 5. 未認証（401）、権限不足（403）、対象なし（404）、一時的な失敗（timeout、接続失敗、429、5xx）、契約違反の応答、リダイレクトは別の状態として扱い、それぞれ固定文言で案内します。403 とリダイレクト（追従しない）は、どちらも設定画面でエンドポイントと資格情報を見直す導線に結びつけます。サーバー側の設定不備は、資格情報の誤りと区別できるよう 503 `auth_unconfigured` として返し、クライアントは一時的な失敗として再試行します。実環境の Cloudflare Access の応答は、2026-11-22 に1つのアカウント（strict service token authentication オン、`Service Auth` のみのポリシー、Managed OAuth オフ）で観測した範囲では、資格情報なしが HTTP 403（`text/html` の Access エラーページで、Worker には到達しない）、Client ID が正しく Secret が誤りが HTTP 401、ローテーション後の失効済み Secret も HTTP 401 で、302 は出ませんでした。strict オフの組織、期限切れトークン、別アプリのトークンの応答は未検証です。
 
 この構成は任意機能であり、有効にする場合だけ、利用者が自分のCloudflareアカウントへAccessアプリケーション、Worker、D1を配置します。配置の順序、Accessを迂回する経路を残さないための条件、リモートD1でのスモークテスト、資格情報のローテーション訓練は[デプロイ手順](deployment.md)にまとめています。サービストークンには有効期限を設定し、期限の1週間前に通知し、ローテーションではSecretだけを更新してClient IDとサーバー側のprincipal定義は変えません。
 
-配置先はWorkers Free、D1 Free、Zero Trust Freeの範囲に限定します。WorkersのCPU上限はWorker自身のJavaScriptの実行時間に対して課され、D1のクエリ待ちは算入されません。算入されるのはAccessアサーションのRS256検証、最大32 KiB本文の`JSON.parse`、1回の`batch()`のための最大63文の組み立て、応答の`JSON.stringify`です。認証を扱うWorkerは典型10〜20 msと案内されているため無料の10 msと同水準であり、この実装の実測はありません。したがって無料枠で成立しうるかは条件的（未検証）であり、デプロイ直後の実機測定（1102件数とCPU時間のP99）で判定します。測定に合格しない場合の設計変更案は「適用しない案」として[デプロイ手順](deployment.md)に置き、それでも収まらない場合は無料枠では成立しないと結論してデプロイを取りやめます。
+配置先はWorkers Free、D1 Free、Zero Trust Freeの範囲に限定します。WorkersのCPU上限はWorker自身のJavaScriptの実行時間に対して課され、D1のクエリ待ちは算入されません。算入されるのはAccessアサーションのRS256検証、最大32 KiB本文の`JSON.parse`、`batch()`のための文の組み立て、応答の`JSON.stringify`です。文の数は契約の形で決まり、v1 は日ごとに1文を組むため最大63文、v2 は内訳込みでも4文固定(日次合計、日単位の削除、内訳の挿入、受領記録)ですが、1文あたりのJSON分解は内訳の行数(最大1024行)に比例します。認証を扱うWorkerは典型10〜20 msと案内されているため無料の10 msと同水準であり、この実装の実測はありません。したがって無料枠で成立しうるかは条件的（未検証）であり、デプロイ直後の実機測定（1102件数とCPU時間のP99）で判定します。測定に合格しない場合の設計変更案は「適用しない案」として[デプロイ手順](deployment.md)に置き、それでも収まらない場合は無料枠では成立しないと結論してデプロイを取りやめます。
 
 ## 保存先と設定
 
