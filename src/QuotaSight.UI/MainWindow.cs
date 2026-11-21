@@ -102,6 +102,7 @@ public partial class MainWindow : Window
         }
 
         ApplyUsageConnectionState();
+        ApplyUsageStateVisuals();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -109,6 +110,11 @@ public partial class MainWindow : Window
         if (e.PropertyName is null or nameof(MainViewModel.UsageConnectionState) or nameof(MainViewModel.UsageConnectionStatusText))
         {
             ApplyUsageConnectionState();
+        }
+
+        if (e.PropertyName is null or nameof(MainViewModel.UsageFailure) or nameof(MainViewModel.UsageFailureText) or nameof(MainViewModel.IsUsageStale))
+        {
+            ApplyUsageStateVisuals();
         }
     }
 
@@ -128,6 +134,31 @@ public partial class MainWindow : Window
             UsageConnectionState.Invalid => "invalid",
             _ => "unconfigured",
         });
+    }
+
+    // The daily usage card's failure banner is colored by state the same way the settings
+    // card is: one class per visual state, applied here because the fixed sentence is
+    // already bound. Stale (values kept) warns, a first failure with no values reads as an
+    // error. The settings detour appears only for failures a retry cannot fix.
+    private void ApplyUsageStateVisuals()
+    {
+        if (this.FindControl<Border>("UsageFailurePanel") is not { } panel) return;
+        var failure = ViewModel.UsageFailure;
+        panel.IsVisible = failure is not UsageFailureKind.None;
+        foreach (var name in new[] { "stale", "error" })
+        {
+            panel.Classes.Remove(name);
+        }
+
+        if (panel.IsVisible)
+        {
+            panel.Classes.Add(ViewModel.IsUsageStale ? "stale" : "error");
+        }
+
+        if (this.FindControl<Button>("UsageOpenSettingsButton") is { } settings)
+        {
+            settings.IsVisible = failure is UsageFailureKind.Unauthorized or UsageFailureKind.Forbidden or UsageFailureKind.CredentialMissing;
+        }
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default) => initializationTask ??= InitializeCoreAsync(cancellationToken);
@@ -295,6 +326,8 @@ public partial class MainWindow : Window
     private void UsageClick(object? sender, RoutedEventArgs e) => ViewModel.NavigateToUsage();
     private void HistoryClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.History);
     private void SettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
+    private void UsageOpenSettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
+    private void UsageRetryClick(object? sender, RoutedEventArgs e) => UsageRefreshClick(sender, e);
     private async void UsageRefreshClick(object? sender, RoutedEventArgs e)
     {
         try { await ViewModel.RefreshUsageAsync(); }

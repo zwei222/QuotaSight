@@ -1704,7 +1704,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string UsageStatusText => UsageStateText;
     public IReadOnlyList<UsageDay> UsageRows => usageRows;
     public string UsageTotalText => usageTotal;
-    public bool IsUsageTotalVisible => (usageState is "Ready" or "Stale") && usageRows.Count > 0;
+    public bool IsUsageTotalVisible => usageRows.Count > 0
+        && (usageState is "Ready" or "Stale" || (usageState == "Loading" && hasUsageValues));
     public string UsageRangeText => usageState is "Unconfigured" or "Error"
         ? string.Empty
         : $"{DisplayedRangeFrom:yyyy-MM-dd} – {DisplayedRangeTo:yyyy-MM-dd} · Asia/Tokyo";

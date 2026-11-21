@@ -61,6 +61,10 @@ public sealed class UiCopy
         : $"{UsageFreshnessLastReceived(local)} ({UsageFreshnessMissing})";
     public string UsageFreshnessNeverReceived => UsageFreshnessMissing;
 
+    // Actions of the usage page's status banners.
+    public string UsageRetry => IsJapanese ? "再試行" : "Retry";
+    public string UsageOpenSettings => IsJapanese ? "設定画面で見直す" : "Review it in settings";
+
     // Delayed data is still shown, but never as if it were current.
     public string UsageDelayed => IsJapanese
         ? "遅延データ: 最終受信から12時間以上経過しています。"
