@@ -16,13 +16,15 @@ on a D1 query is not. What is measured is the RS256 verification of the Access
 assertion, the `JSON.parse` of a body of up to 32 KiB, the assembly of up to 63
 statements for one `batch()`, and the `JSON.stringify` of the response, so
 Cloudflare's guidance that authentication-handling Workers typically use 10-20 ms
-puts this slice at the same order as the limit. There is no measurement of this
-implementation and the local suite settles correctness rather than CPU, so it is
-**conditionally feasible** on the free plans (unverified). Whether it holds is
-decided by the **CPU measurement gate** in the runbook — zero `Exceeded CPU Time
-Limits` (Error 1102) events over 24 hours and a CPU-time P99 below 8 ms measured on
-the deployed Worker — and by nothing else; do not upgrade the account to answer
-that question. The operator runbook — ordering, the gate, the fallback options
+puts this slice at the same order as the limit. The local suite settles correctness
+rather than CPU, and the one measurement of a deployed Worker — one account on
+2026-11-22, recorded in the runbook — saw no Error 1102 in 24 hours but only 53
+invocations including cold starts, so this slice is **conditionally feasible** on
+the free plans (unverified). Whether it holds is decided by the **CPU measurement
+gate** in the runbook — zero `Exceeded CPU Time Limits` (Error 1102) events over
+24 hours and a CPU-time P99 below 8 ms measured on the deployed Worker — and by
+nothing else; that gate is still undecided, and you must not upgrade the account
+to answer it. The operator runbook — ordering, the gate, the fallback options
 that are deliberately not applied, the remote smoke test, the rotation drill and
 the list of behaviour that only a real deployment can settle — is
 [docs/deployment.md](../../docs/deployment.md).
@@ -363,10 +365,11 @@ rest of this section is what it did not settle.
   created on or after 2026-10-05 have the setting on by default and cannot turn it
   off.
 - **Whether the deployment fits in 10 ms of CPU time on the free plans** is not
-  measurable here: the suite proves behaviour, not CPU, and no number in this
-  repository is a measurement of a deployed Worker. The runbook's CPU measurement
-  gate settles it against the real account, and its fallback options are
-  documented as not applied.
+  settled here: the suite proves behaviour, not CPU. One measurement of a deployed
+  Worker exists — the runbook's §6.0: 53 invocations in 24 hours, no Error 1102,
+  P99 14.93 ms with cold starts included — and it is not the 24-hour gate reading,
+  so the runbook's CPU measurement gate is still undecided. Its fallback options
+  are documented as not applied.
 - **Whether remote D1 supports `RETURNING`** is not described in the D1
   documentation. `changedDays` and `ignoredReductions` are read from the rows that
   `RETURNING` hands back inside the write's `batch()`, so a database that did not
