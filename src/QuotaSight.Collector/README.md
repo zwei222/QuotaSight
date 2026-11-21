@@ -8,7 +8,8 @@ document from an **explicit stdin** and normalizes it into a **candidate**
 It is a normalizer, not a collector of record:
 
 - Preview is the default. Nothing is sent unless `--send` is explicit.
-- `--preview` alone never opens a socket.
+- `--preview` alone never opens a socket and never touches the send state.
+- The snapshot revision is **allocated locally**, never passed in by the caller.
 - No logging framework and no payload echo on stderr.
 - Never claims the upstream scan was complete.
 - Does not launch another process.
@@ -28,17 +29,16 @@ dotnet run --project src/QuotaSight.Collector -- --preview --generation 1 --buck
 
 ## Sending (explicit only)
 
-Nothing is transmitted unless `--send`, `--endpoint`, `--collector-id` and
-`--revision` are all present. `--preview` together with `--send` is a usage
-error. `--endpoint`, `--collector-id` and `--revision` are rejected unless
-`--send` is also set.
+Nothing is transmitted unless `--send`, `--endpoint`, `--collector-id`,
+`--generation` and `--bucket-time-zone` are all present. `--preview` together
+with `--send` is a usage error. `--endpoint` and `--collector-id` are rejected
+unless `--send` is also set.
 
 ```bash
 dotnet run --project src/QuotaSight.Collector -- \
   --send \
   --endpoint https://example.invalid \
   --collector-id collector-id \
-  --revision 1 \
   --generation 1 \
   --bucket-time-zone Asia/Tokyo \
   < graph.json
@@ -49,20 +49,181 @@ dotnet run --project src/QuotaSight.Collector -- \
 | `--send` | Transmit the candidate. Off by default. |
 | `--endpoint <https-base-url>` | HTTPS origin only. Empty path or `/`. No user info, query or fragment. `http` is rejected, including loopback. Redirects are not followed. |
 | `--collector-id <id>` | Collector id, a lowercase slug of 3-64 characters (`[a-z0-9_-]`). |
-| `--revision <n>` | Client-chosen snapshot revision for that collector generation. A positive integer ≤ 2^53-1, no leading zeros. It is a path parameter, not a field of the snapshot body. |
+| `--generation <n>` | Collector generation, a positive integer ≤ 2^53-1. |
+| `--bucket-time-zone <zone>` | As in preview. |
+
+`--revision` no longer exists. The revision is a path parameter, it is not part
+of the snapshot body, and it is allocated from the state directory described
+below. Passing `--revision` is a usage error.
 
 The request is `PUT {endpoint}/v1/collectors/{collectorId}/snapshots/{revision}`
 with `Content-Type: application/json` and the exact bytes `SnapshotWire`
 would write in preview. Access service-token headers are attached per request.
 `Authorization` and `Cookie` are not sent.
 
-The API treats an identical revision and payload as success (replay). A
-different payload for the same revision, a stale revision, an inactive
-generation, or an unverified reduction is `409` and is not retried. `401` and
-`403` stop immediately. `5xx` (including `503`), timeouts and transport
-failures are retried at most 3 times with exponential backoff and jitter.
-The revision and body do not change between attempts. stderr reports a reason
-class only; response bodies, headers and the full URL are not printed.
+stderr reports one reason class per run; response bodies, headers, the full URL,
+identifiers and paths are never printed.
+
+## Revision allocation and the send state
+
+Every send allocates the next revision for its `(collector, generation)` pair
+from a state file in `STATE_DIRECTORY`, and writes that number **before** the
+request leaves the process. A revision is never reused: if the outcome of a
+send is unknown, the number is dropped and the next run uses the next one.
+
+**The order of a send is fixed:**
+
+1. take the inter-process lock (`send.lock`),
+2. validate the state directory and read `send-state.json`,
+3. read the upstream document from stdin and normalize it,
+4. read the Access credential,
+5. allocate the next revision and fsync it (state file, then the directory),
+6. transmit the same bytes, up to three attempts,
+7. record the outcome.
+
+A failure before step 5 consumes no revision. A failure after it does: the
+number is gone, and the next run sends the next one.
+
+### `STATE_DIRECTORY` (required, Linux only)
+
+The collector reads **only** the `STATE_DIRECTORY` environment variable. There
+is no command line option for the path and no fallback. The directory must:
+
+- exist and be a directory, not a symbolic link,
+- be an absolute path in its own normalized form (no `..`, `//` or `/.`),
+- contain a single path (not a systemd colon-separated list),
+- be owned by the effective user,
+- have mode `0700` — nothing for group or other.
+
+Inside it the collector uses exactly three files, all opened with `O_NOFOLLOW`
+and re-checked with `fstat` (regular file, owner, `0600`):
+
+| File | Purpose |
+| --- | --- |
+| `send-state.json` | The state document. At most 4 KiB. |
+| `send-state.json.tmp` | Temporary sibling of the atomic replace. |
+| `send.lock` | Serialises concurrent collector processes. |
+
+A write is atomic and durable: a stale temporary file of ours is removed, the
+temporary file is created exclusively (`O_CREAT|O_EXCL|O_NOFOLLOW`), forced to
+`0600` with `fchmod` (the umask cannot widen it), re-checked with `fstat`
+(regular file, one link, our owner), written, `fsync`ed, renamed over the state
+document, and the directory is `fsync`ed. The state document is machine-written;
+a hand edit is detected (the bytes must be exactly what the collector writes)
+and refused.
+
+A crash between creating the temporary file and renaming it leaves
+`send-state.json.tmp` behind. The next write removes it if it is a regular file
+this user owns, and refuses anything else at that path (a FIFO, a directory,
+another owner, a symbolic link) with `23` (`state_unavailable:
+StateWriteFailed`). To recover by hand: stop the unit, verify that
+`send-state.json` is intact (`--state-show`), remove `send-state.json.tmp` as the
+unit's user, and start the unit again. Never copy another collector's state
+document into this directory.
+
+Two collector processes cannot send at the same time: the second waits up to
+5 seconds and then exits with `23` (`state_unavailable: StateLocked`).
+
+**Platform support:** the state directory, its lock and its mode/owner checks
+are implemented for Linux x86-64 only. On any other host, preview works but
+send and the state commands refuse with `23`
+(`state_unavailable: UnsupportedPlatform`). `DynamicUser=` is not supported:
+the state directory must be owned by the unit's fixed `User=`.
+
+The native calls need a C library that exports `lstat` and `fstat`: glibc 2.33
+or newer, or musl. A host whose library or symbol is missing is refused with the
+same `23` (`state_unavailable: UnsupportedPlatform`) instead of failing with an
+unhandled exception. The musl path is **unverified**: this build has only been
+exercised against glibc 2.33 and newer.
+
+```ini
+# placeholders only — replace the ids, paths and user with the operator's own
+[Service]
+User=example-user
+StateDirectory=example-collector
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/QuotaSight.Collector --send \
+  --endpoint https://example.invalid \
+  --collector-id collector-id \
+  --generation 1 \
+  --bucket-time-zone Asia/Tokyo
+LoadCredential=access-client-id:/etc/example/access-client-id
+LoadCredential=access-client-secret:/etc/example/access-client-secret
+```
+
+`StateDirectory=example-collector` becomes `STATE_DIRECTORY=/var/lib/example-collector`
+(owned by `User=` and mode `0700` because of `StateDirectoryMode=0700`).
+
+### Run interval
+
+Aim for one run every 1-6 hours. The upstream report window must stay well
+longer than the interval, and inside the API's 62-day snapshot bound: keep it
+at 7 days or more and 62 days or less.
+
+### State commands
+
+| Command | Effect |
+| --- | --- |
+| `--state-show` | Prints the canonical state document to stdout and changes nothing. |
+| `--state-init --first-revision <n>` | Writes a new state whose next allocated revision is `n`. Requires `--collector-id` and `--generation`. |
+| `--state-advance` | Clears a block (a `409`, or a `2xx` whose receipt could not be verified) after the operator has resolved the cause. Changes nothing else. |
+
+`--state-init` is how a lost or damaged state is recovered, and it may only move
+forward. When a usable state document exists, it is refused with `25`
+(`state_mismatch`) unless all of this holds:
+
+- `--collector-id` is the same collector — another collector's state is never overwritten;
+- `--generation` is the same or higher, never lower;
+- for the same generation, `--first-revision` is greater than the last allocated revision.
+
+So the only two accepted moves are "raise the generation" or "raise the floor of
+the same generation". Revisions are never reused: choose a floor above every
+revision this collector has sent for that `(collector, generation)` pair, or a
+`409` will follow. A state document that exists but is unsafe (wrong owner or
+mode, a symbolic link) is never overwritten either.
+
+A generation is raised by the operator only. After a reset of the collector's
+active generation, run `--state-init` with the new `--generation` and a floor of
+`1` for it.
+
+### 409 reasons and what to do
+
+| Reason | Meaning | Action |
+| --- | --- | --- |
+| `revision_conflict` | That revision was already accepted with a different payload. | Confirm the state belongs to this collector generation, then `--state-init --first-revision <above it>`. |
+| `stale_revision` | A newer revision was already accepted for this generation. | `--state-init --first-revision <above the accepted revision>`. |
+| `reduction_unverified` | A previously accepted day total would decrease. | Fix the upstream scan (partial log), then `--state-advance`. |
+| `generation_inactive` | The snapshot generation is no longer the collector's active generation. | Set `--generation` to the active one, then `--state-init --first-revision 1` for that generation. |
+| `conflict_unknown` | The 409 body was missing, unreadable or named a reason this build does not know. | Inspect the API and the operator records, then decide; `--state-advance` unblocks. |
+| `response_unverified` | A `2xx` arrived, but its body was not the receipt this collector, generation and revision expect. The write may or may not have been applied. | Check the API for that revision and the collector's records; the number is never reused, so `--state-advance` and the next run send the next revision. |
+
+A `409`, and a `2xx` whose receipt could not be verified, block the next send
+until `--state-advance`. Nothing recovers automatically: the collector never
+raises `generation` by itself and never guesses a revision above its own record.
+
+Other outcomes do not block: `400`/`404`/`413`/`415`/`422` and the other client
+errors drop the allocated revision and the next run sends the next one; `5xx`,
+timeouts and transport failures leave the outcome unknown and also move on.
+
+A `2xx` is a success only when its body is the receipt the API documents
+(`status`, `collectorId`, `generation`, `revision`, `receivedAt`,
+`changedDays`) for exactly this collector, generation and revision. Anything
+else — including a `204`, an unexpected field, or a body over 8 KiB — is
+`send_receipt_unverified` (`27`), or `send_response_too_large` (`22`) for the
+size case. Both record the revision as unverified and set the
+`response_unverified` block, because the local record and the server may now
+disagree. No body is ever printed.
+
+When the recorded outcome of the previous revision is `none` or `unknown`, every
+send first reports `previous_send_unresolved` and then continues with the next
+revision: the number is never retried, so the warning only says that no result
+was confirmed for it.
+
+If the send itself succeeds but its result cannot be written to the state
+document (for example a foreign object at the temporary path), the run reports
+`state_unrecorded` and exits `28`. The revision is already allocated and the
+request has already been sent, so the next run treats it as unresolved and moves
+on.
 
 ### Credentials
 
@@ -86,7 +247,9 @@ usage data:
 - The candidate was previewed with `--preview` and the wire is the intended snapshot.
 - Upstream did not report partial, unpriced or stale-priced usage. `--upstream-partial` cannot be combined with `--send`.
 - `--endpoint` is the intended Access-protected HTTPS origin, not a preview or unauthenticated host.
-- `--collector-id`, `--generation`, `--revision` and `--bucket-time-zone` are the intended values.
+- `--collector-id`, `--generation` and `--bucket-time-zone` are the intended values.
+- No other collector reads the same logs: two collector ids counting the same usage cannot be told apart by the API.
+- `STATE_DIRECTORY` is set by `StateDirectory=` with `StateDirectoryMode=0700` and a fixed `User=`, and `--state-init --first-revision` has been run once with a floor above every revision this collector has sent for that `(collector, generation)` pair.
 - Credentials are installed only through systemd `LoadCredential`, not in the unit environment and not on the command line.
 - Sending is intentional. Preview remains the default; omitting `--send` sends nothing.
 
@@ -94,23 +257,29 @@ usage data:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Preview candidate emitted, or send accepted (`sent: accepted` on stderr). Still not a claim that the upstream scan was complete. |
+| `0` | Preview candidate emitted, send accepted, or a state command completed. |
 | `2` | No dated rows upstream. No snapshot, empty stdout, nothing sent. |
 | `3` | Preview candidate emitted **but** upstream declared partial/unpriced evidence. Not sent. |
 | `4` | Input violates the pinned contract, the API bounds, or the bounded stdin limit. Empty stdout, nothing sent. |
-| `5` | Unusable invocation (missing mode or required arguments, `--send` with `--preview`, bad endpoint, unknown argument). |
+| `5` | Unusable invocation (missing mode or required arguments, `--send` with `--preview`, `--revision`, bad endpoint, unknown argument). |
 | `11` | Send refused: authentication failed (401). Not retried. |
 | `12` | Send refused: authorization failed (403). Not retried. |
 | `13` | Send refused: redirect, not followed. |
-| `14` | Send refused: conflict (409). Not retried. |
+| `14` | Send refused: conflict (409). The state is now blocked until `--state-advance`. |
 | `15` | Send refused: precondition failed (412). Not retried. |
 | `16` | Send refused: unprocessable (422). Not retried. |
 | `17` | Send refused: other client error. Not retried. |
-| `18` | Send failed: server unavailable after retries (5xx, including 503). |
-| `19` | Send failed: timed out after retries. |
-| `20` | Send failed: transport failed after retries. |
-| `21` | Send refused: credentials unavailable or unsupported. |
-| `22` | Send refused: response body exceeded the read bound. |
+| `18` | Send failed: server unavailable after retries (5xx, including 503). Outcome unknown, revision consumed. |
+| `19` | Send failed: timed out after retries. Outcome unknown, revision consumed. |
+| `20` | Send failed: transport failed after retries. Outcome unknown, revision consumed. |
+| `21` | Send refused: credentials unavailable or unsupported. The revision is not consumed. |
+| `22` | Send refused: response body exceeded the read bound. The revision is recorded as unverified and blocks until `--state-advance`. |
+| `23` | The state directory or state document is unusable, or another process holds the lock. Nothing was sent. |
+| `24` | An unresolved 409 is waiting for `--state-advance`. Nothing was sent. |
+| `25` | The state belongs to another collector or generation, or a floor would move backwards. Nothing was sent or changed. |
+| `26` | No revision is left to allocate for this (collector, generation). Nothing was sent. |
+| `27` | 2xx, but the body was not the expected receipt. The revision is consumed, recorded as unverified, and blocks until `--state-advance`. |
+| `28` | The request was sent, but its result could not be recorded in the state document. The revision is consumed; the next run reports it as unresolved. |
 
 The collector cannot detect partiality by itself: `summary.costProvenance.kind`
 is `unknown` for complete and partial documents alike. The partial signal lives
@@ -147,10 +316,12 @@ after the single JSON value are handled explicitly — see
 ```
 
 - Only allowlisted API fields, in the API's own key order, compact, one trailing newline.
+- The bytes sent are these bytes; dropping the trailing newline gives exactly the
+  string the API hashes for `body_digest`.
 - `coveredRange` is the tight min/max of the emitted dated rows, never upstream `dateRange`.
 - An **absent** day produces no row; an explicitly observed `0` on a dated row is preserved.
 - Bounds enforced before writing: body ≤ 32 KiB, ≤ 62 days, covered span ≤ 62 days.
-- `revision` is not part of this body. The operator supplies it on `--send`.
+- `revision` is not part of this body. It is allocated from the state directory.
 
 ## Tests
 
@@ -161,4 +332,6 @@ dotnet test tests/QuotaSight.Collector.Tests/QuotaSight.Collector.Tests.csproj -
 The fixtures under `tests/QuotaSight.Collector.Tests/Fixtures` are minimized
 synthetic shapes derived from real public `tokscale` 4.23.0 output; they contain
 no private paths, accounts or credentials. Tests drive the CLI in-process with
-injected streams and, for send, a fake HTTP handler. No socket is opened.
+injected streams, a fake HTTP handler and a private temporary state directory.
+No socket is opened and no real state directory is used. The state, send and
+lock tests run on Linux only and are reported as skipped elsewhere.

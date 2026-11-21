@@ -1,8 +1,20 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
 
 namespace QuotaSight.Collector;
+
+/// <summary>
+/// The result of one explicit send, as the state file needs to record it.
+/// The message is a fixed reason class and never quotes a body, a header, a URL
+/// or an identifier from the response.
+/// </summary>
+/// <param name="ExitCode">Process exit code for this outcome.</param>
+/// <param name="Message">Line for stderr. Fixed tokens only.</param>
+/// <param name="Outcome">What may be recorded in the state file.</param>
+/// <param name="ConflictReason">Allowlisted 409 reason, or <c>conflict_unknown</c>.</param>
+public sealed record SendOutcome(int ExitCode, string Message, CollectorSendOutcome Outcome, string? ConflictReason);
 
 /// <summary>
 /// HTTPS transport for one explicit snapshot send. Redirects and cookies are
@@ -16,7 +28,7 @@ public static class CollectorSnapshotTransport
     /// <summary>Per-attempt deadline.</summary>
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
 
-    /// <summary>Success bodies larger than this are refused and never quoted.</summary>
+    /// <summary>Response bodies larger than this are refused and never quoted.</summary>
     public const int MaxResponseBytes = 8 * 1024;
 
     private static readonly string[] ForbiddenDefaultHeaders =
@@ -25,6 +37,16 @@ public static class CollectorSnapshotTransport
         "CF-Access-Client-Id",
         "CF-Access-Client-Secret",
         "Cookie",
+    ];
+
+    private static readonly string[] ReceiptKeys =
+    [
+        "status",
+        "collectorId",
+        "generation",
+        "revision",
+        "receivedAt",
+        "changedDays",
     ];
 
     /// <summary>Creates the production handler. Does not open a socket.</summary>
@@ -81,22 +103,27 @@ public static class CollectorSnapshotTransport
     }
 
     /// <summary>
-    /// PUT the exact wire bytes. Same revision and body on every attempt.
-    /// 2xx is success, including the API's identical-payload replay (also 2xx).
-    /// 409/412/422 and other 4xx are not retried. 5xx, timeouts and transport
-    /// failures retry up to <see cref="MaxAttempts"/>. The response body is not
-    /// quoted; a 2xx body over <see cref="MaxResponseBytes"/> is refused.
+    /// PUT the exact wire bytes. The same revision and body are used on every
+    /// attempt.
+    ///
+    /// A 2xx is only a success when the body is the receipt the API documents for
+    /// this collector, generation and revision; anything else 2xx is
+    /// <see cref="CollectorSendOutcome.UnverifiedReceipt"/>. A 409 records the
+    /// reason word from the allowlist (an unknown or unreadable body becomes
+    /// <c>conflict_unknown</c>) and is never retried. Other 4xx are rejected
+    /// without a retry. 5xx, timeouts and transport failures retry up to
+    /// <see cref="MaxAttempts"/> and leave the outcome unknown.
     /// </summary>
-    public static int Transmit(
+    public static SendOutcome Transmit(
         HttpClient client,
         Uri endpoint,
         string collectorId,
+        long generation,
         long revision,
         byte[] body,
         CollectorAccessCredential credential,
         Action<TimeSpan> delay,
-        Func<double> nextJitterUnit,
-        TextWriter stderr)
+        Func<double> nextJitterUnit)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -105,14 +132,13 @@ public static class CollectorSnapshotTransport
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(delay);
         ArgumentNullException.ThrowIfNull(nextJitterUnit);
-        ArgumentNullException.ThrowIfNull(stderr);
 
         var uri = BuildSnapshotUri(endpoint, collectorId, revision);
-        Attempt last = default;
+        var last = Unavailable();
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            last = Once(client, uri, body, credential);
-            if (!last.Retryable || attempt == MaxAttempts)
+            last = Once(client, uri, body, credential, collectorId, generation, revision);
+            if (!IsRetryable(last) || attempt == MaxAttempts)
             {
                 break;
             }
@@ -120,9 +146,187 @@ public static class CollectorSnapshotTransport
             delay(Backoff(attempt, nextJitterUnit()));
         }
 
-        stderr.WriteLine(last.Message);
-        return last.ExitCode;
+        return last;
     }
+
+    /// <summary>
+    /// True when <paramref name="body"/> is the receipt the API returns for this
+    /// write: exactly the documented keys, this collector, generation and
+    /// revision, a canonical instant and ascending unique days.
+    /// </summary>
+    public static bool IsExpectedReceipt(ReadOnlySpan<byte> body, string collectorId, long generation, long revision)
+    {
+        ArgumentNullException.ThrowIfNull(collectorId);
+        if (body.IsEmpty || body.Length > MaxResponseBytes)
+        {
+            return false;
+        }
+
+        try
+        {
+            var reader = new Utf8JsonReader(body, new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Disallow,
+                AllowTrailingCommas = false,
+                MaxDepth = 3,
+            });
+
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                return false;
+            }
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var status = false;
+            var collector = false;
+            var generationMatches = false;
+            var revisionMatches = false;
+            var instant = false;
+            var days = false;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    return !reader.Read() && status && collector && generationMatches
+                        && revisionMatches && instant && days && seen.Count == ReceiptKeys.Length;
+                }
+
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    return false;
+                }
+
+                var name = reader.GetString()!;
+                if (!seen.Add(name) || !reader.Read())
+                {
+                    return false;
+                }
+
+                switch (name)
+                {
+                    case "status":
+                        status = reader.TokenType == JsonTokenType.String
+                            && (reader.ValueTextEquals("applied"u8) || reader.ValueTextEquals("replayed"u8));
+                        break;
+                    case "collectorId":
+                        collector = reader.TokenType == JsonTokenType.String
+                            && string.Equals(reader.GetString(), collectorId, StringComparison.Ordinal);
+                        break;
+                    case "generation":
+                        generationMatches = reader.TokenType == JsonTokenType.Number
+                            && reader.TryGetInt64(out var receivedGeneration)
+                            && receivedGeneration == generation;
+                        break;
+                    case "revision":
+                        revisionMatches = reader.TokenType == JsonTokenType.Number
+                            && reader.TryGetInt64(out var receivedRevision)
+                            && receivedRevision == revision;
+                        break;
+                    case "receivedAt":
+                        instant = reader.TokenType == JsonTokenType.String && IsCanonicalInstant(reader.GetString());
+                        break;
+                    case "changedDays":
+                        days = IsDayList(ref reader);
+                        break;
+                    default:
+                        return false;
+                }
+            }
+
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Maps a 409 body to an allowlisted reason word.</summary>
+    public static string ConflictReason(ReadOnlySpan<byte> body)
+    {
+        if (body.IsEmpty || body.Length > MaxResponseBytes)
+        {
+            return CollectorSendState.UnknownConflictReason;
+        }
+
+        try
+        {
+            var reader = new Utf8JsonReader(body, new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Disallow,
+                AllowTrailingCommas = false,
+                MaxDepth = 3,
+            });
+
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject || !reader.Read())
+            {
+                return CollectorSendState.UnknownConflictReason;
+            }
+
+            if (reader.TokenType != JsonTokenType.PropertyName || !reader.ValueTextEquals("error"u8))
+            {
+                return CollectorSendState.UnknownConflictReason;
+            }
+
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                return CollectorSendState.UnknownConflictReason;
+            }
+
+            string? code = null;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    break;
+                }
+
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    return CollectorSendState.UnknownConflictReason;
+                }
+
+                var name = reader.GetString();
+                if (!reader.Read())
+                {
+                    return CollectorSendState.UnknownConflictReason;
+                }
+
+                if (string.Equals(name, "code", StringComparison.Ordinal))
+                {
+                    if (reader.TokenType != JsonTokenType.String || code is not null)
+                    {
+                        return CollectorSendState.UnknownConflictReason;
+                    }
+
+                    code = reader.GetString();
+                }
+                else if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray)
+                {
+                    reader.Skip();
+                }
+            }
+
+            return code is null ? CollectorSendState.UnknownConflictReason : CollectorSendState.NormalizeConflictReason(code);
+        }
+        catch (JsonException)
+        {
+            return CollectorSendState.UnknownConflictReason;
+        }
+        catch (InvalidOperationException)
+        {
+            return CollectorSendState.UnknownConflictReason;
+        }
+    }
+
+    private static bool IsRetryable(SendOutcome outcome) =>
+        outcome.ExitCode is CollectorExitCodes.SendUnavailable
+            or CollectorExitCodes.SendTimeout
+            or CollectorExitCodes.SendTransport;
 
     private static Uri BuildSnapshotUri(Uri endpoint, string collectorId, long revision)
     {
@@ -137,7 +341,14 @@ public static class CollectorSnapshotTransport
         return builder.Uri;
     }
 
-    private static Attempt Once(HttpClient client, Uri uri, byte[] body, CollectorAccessCredential credential)
+    private static SendOutcome Once(
+        HttpClient client,
+        Uri uri,
+        byte[] body,
+        CollectorAccessCredential credential,
+        string collectorId,
+        long generation,
+        long revision)
     {
         using var request = new HttpRequestMessage(HttpMethod.Put, uri);
         var content = new ByteArrayContent(body);
@@ -146,7 +357,7 @@ public static class CollectorSnapshotTransport
         if (!request.Headers.TryAddWithoutValidation("CF-Access-Client-Id", credential.ClientId)
             || !request.Headers.TryAddWithoutValidation("CF-Access-Client-Secret", credential.ClientSecret))
         {
-            return Attempt.Final(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
+            return Rejected(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
         }
 
         using var timeout = new CancellationTokenSource(RequestTimeout);
@@ -157,76 +368,99 @@ public static class CollectorSnapshotTransport
         }
         catch (OperationCanceledException)
         {
-            return Attempt.Retry(CollectorExitCodes.SendTimeout, "send_timeout: deadline exceeded");
+            return Unknown(CollectorExitCodes.SendTimeout, "send_timeout: deadline exceeded");
         }
         catch (HttpRequestException)
         {
-            return Attempt.Retry(CollectorExitCodes.SendTransport, "send_transport: transport failed");
+            return Unknown(CollectorExitCodes.SendTransport, "send_transport: transport failed");
         }
 
         using (response)
         {
             if (AnsweredDifferentUri(response, uri))
             {
-                return Attempt.Final(CollectorExitCodes.SendRedirect, "send_redirect: redirect not followed");
+                return Rejected(CollectorExitCodes.SendRedirect, "send_redirect: redirect not followed");
             }
 
             var status = (int)response.StatusCode;
             if (status is >= 300 and <= 399)
             {
-                return Attempt.Final(CollectorExitCodes.SendRedirect, "send_redirect: redirect not followed");
+                return Rejected(CollectorExitCodes.SendRedirect, "send_redirect: redirect not followed");
             }
 
             if (status == (int)HttpStatusCode.Unauthorized)
             {
-                return Attempt.Final(CollectorExitCodes.SendUnauthorized, "send_unauthorized: authentication failed");
+                return Rejected(CollectorExitCodes.SendUnauthorized, "send_unauthorized: authentication failed");
             }
 
             if (status == (int)HttpStatusCode.Forbidden)
             {
-                return Attempt.Final(CollectorExitCodes.SendForbidden, "send_forbidden: authorization failed");
+                return Rejected(CollectorExitCodes.SendForbidden, "send_forbidden: authorization failed");
             }
 
             if (status == (int)HttpStatusCode.Conflict)
             {
-                return Attempt.Final(CollectorExitCodes.SendConflict, "send_conflict: revision rejected");
+                var reason = ReadBounded(response, timeout.Token, out var conflictBody) == BodyRead.Ok
+                    ? ConflictReason(conflictBody)
+                    : CollectorSendState.UnknownConflictReason;
+                return new SendOutcome(
+                    CollectorExitCodes.SendConflict,
+                    "send_conflict: " + reason,
+                    CollectorSendOutcome.Conflict,
+                    reason);
             }
 
             if (status == (int)HttpStatusCode.PreconditionFailed)
             {
-                return Attempt.Final(CollectorExitCodes.SendPrecondition, "send_precondition: precondition failed");
+                return Rejected(CollectorExitCodes.SendPrecondition, "send_precondition: precondition failed");
             }
 
             if (status == 422)
             {
-                return Attempt.Final(CollectorExitCodes.SendUnprocessable, "send_unprocessable: snapshot not processable");
+                return Rejected(CollectorExitCodes.SendUnprocessable, "send_unprocessable: snapshot not processable");
             }
 
             if (status is >= 400 and <= 499)
             {
-                return Attempt.Final(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
+                return Rejected(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
             }
 
             if (status is >= 500 and <= 599)
             {
-                return Attempt.Retry(CollectorExitCodes.SendUnavailable, "send_unavailable: service unavailable");
+                return Unknown(CollectorExitCodes.SendUnavailable, "send_unavailable: service unavailable");
             }
 
             if (status is >= 200 and <= 299)
             {
-                if (SuccessBodyTooLarge(response, timeout.Token))
+                var read = ReadBounded(response, timeout.Token, out var receipt);
+                if (read == BodyRead.TooLarge)
                 {
-                    return Attempt.Final(CollectorExitCodes.SendResponseTooLarge, "send_response_too_large: response too large");
+                    return Unverified(CollectorExitCodes.SendResponseTooLarge, "send_response_too_large: response too large");
                 }
 
-                // 2xx covers both applied and replayed. The API returns 200 for an
-                // identical revision+payload replay; the body is not read to tell them apart.
-                return Attempt.Final(CollectorExitCodes.Candidate, "sent: accepted");
+                if (read != BodyRead.Ok || !IsExpectedReceipt(receipt, collectorId, generation, revision))
+                {
+                    return Unverified(CollectorExitCodes.SendReceiptUnverified, "send_receipt_unverified: receipt not verified");
+                }
+
+                return new SendOutcome(CollectorExitCodes.Candidate, "sent: accepted", CollectorSendOutcome.Accepted, null);
             }
 
-            return Attempt.Final(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
+            return Rejected(CollectorExitCodes.SendRejected, "send_rejected: request rejected");
         }
     }
+
+    private static SendOutcome Unknown(int exitCode, string message) =>
+        new(exitCode, message, CollectorSendOutcome.Unknown, null);
+
+    private static SendOutcome Rejected(int exitCode, string message) =>
+        new(exitCode, message, CollectorSendOutcome.Rejected, null);
+
+    private static SendOutcome Unverified(int exitCode, string message) =>
+        new(exitCode, message, CollectorSendOutcome.UnverifiedReceipt, null);
+
+    private static SendOutcome Unavailable() =>
+        new(CollectorExitCodes.SendUnavailable, "send_unavailable: service unavailable", CollectorSendOutcome.Unknown, null);
 
     private static bool AnsweredDifferentUri(HttpResponseMessage response, Uri requested)
     {
@@ -243,58 +477,107 @@ public static class CollectorSnapshotTransport
             || !string.Equals(answered.Query, requested.Query, StringComparison.Ordinal);
     }
 
-    private static bool SuccessBodyTooLarge(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static bool IsCanonicalInstant(string? value) =>
+        value is not null
+        && DateTimeOffset.TryParseExact(
+            value,
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out _);
+
+    private static bool IsDayList(ref Utf8JsonReader reader)
     {
+        if (reader.TokenType != JsonTokenType.StartArray)
+        {
+            return false;
+        }
+
+        var previous = string.Empty;
+        var count = 0;
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                return true;
+            }
+
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                return false;
+            }
+
+            var date = reader.GetString();
+            if (!IsCanonicalDate(date) || count == TokscaleGraphContract.MaxDays)
+            {
+                return false;
+            }
+
+            if (count > 0 && string.CompareOrdinal(date, previous) <= 0)
+            {
+                return false;
+            }
+
+            previous = date!;
+            count++;
+        }
+
+        return false;
+    }
+
+    private static bool IsCanonicalDate(string? value) =>
+        value is not null
+        && DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+        && date.Year is >= TokscaleGraphContract.MinYear and <= TokscaleGraphContract.MaxYear;
+
+    private static BodyRead ReadBounded(HttpResponseMessage response, CancellationToken cancellationToken, out byte[] body)
+    {
+        body = [];
         var content = response.Content;
         if (content is null)
         {
-            return false;
+            return BodyRead.Ok;
         }
 
         if (content.Headers.ContentLength is > MaxResponseBytes)
         {
-            return true;
+            return BodyRead.TooLarge;
         }
 
-        if (content.Headers.ContentLength is not null)
+        try
         {
-            return false;
-        }
-
-        using var stream = content.ReadAsStream(cancellationToken);
-        var buffer = new byte[MaxResponseBytes + 1];
-        var total = 0;
-        while (total < buffer.Length)
-        {
-            var read = stream.Read(buffer, total, buffer.Length - total);
-            if (read <= 0)
+            using var stream = content.ReadAsStream(cancellationToken);
+            var buffer = new byte[MaxResponseBytes + 1];
+            var total = 0;
+            while (total < buffer.Length)
             {
-                break;
+                var read = stream.Read(buffer, total, buffer.Length - total);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                total += read;
             }
 
-            total += read;
-        }
+            if (total > MaxResponseBytes)
+            {
+                return BodyRead.TooLarge;
+            }
 
-        return total > MaxResponseBytes;
+            body = buffer.AsSpan(0, total).ToArray();
+            return BodyRead.Ok;
+        }
+        catch (Exception exception) when (exception is IOException or HttpRequestException or OperationCanceledException)
+        {
+            return BodyRead.Unreadable;
+        }
     }
 
-    private readonly struct Attempt
+    private enum BodyRead
     {
-        private Attempt(int exitCode, string message, bool retryable)
-        {
-            ExitCode = exitCode;
-            Message = message;
-            Retryable = retryable;
-        }
-
-        public int ExitCode { get; }
-
-        public string Message { get; }
-
-        public bool Retryable { get; }
-
-        public static Attempt Final(int exitCode, string message) => new(exitCode, message, retryable: false);
-
-        public static Attempt Retry(int exitCode, string message) => new(exitCode, message, retryable: true);
+        Ok,
+        TooLarge,
+        Unreadable,
     }
 }

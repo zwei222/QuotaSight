@@ -177,6 +177,13 @@ public sealed class CollectorSendContext
     /// <summary>Credential source. Production uses systemd LoadCredential when this is null.</summary>
     public ICollectorCredentialSource? Credentials { get; init; }
 
+    /// <summary>
+    /// State directory value for tests. Null means "read <c>STATE_DIRECTORY</c>";
+    /// a function that returns null means the variable is unset. This is a test
+    /// seam only: there is no command line option for the path.
+    /// </summary>
+    public Func<string?>? StateDirectory { get; init; }
+
     /// <summary>Backoff wait. Tests record the span and return immediately.</summary>
     public Action<TimeSpan>? Delay { get; init; }
 

@@ -59,6 +59,24 @@ public static class CollectorExitCodes
 
     /// <summary>Send refused: the response body exceeded the read bound.</summary>
     public const int SendResponseTooLarge = 22;
+
+    /// <summary>The state directory or the state document is unusable; nothing was sent.</summary>
+    public const int StateUnavailable = 23;
+
+    /// <summary>An unresolved 409 is waiting for <c>--state-advance</c>; nothing was sent.</summary>
+    public const int StateBlocked = 24;
+
+    /// <summary>The state belongs to another collector or generation, or a floor would go backwards.</summary>
+    public const int StateMismatch = 25;
+
+    /// <summary>No revision is left to allocate for this (collector, generation).</summary>
+    public const int RevisionExhausted = 26;
+
+    /// <summary>2xx, but the body was not the receipt the API documents; the outcome is unverified.</summary>
+    public const int SendReceiptUnverified = 27;
+
+    /// <summary>The send happened but its result could not be recorded in the state file.</summary>
+    public const int StateUnrecorded = 28;
 }
 
 /// <summary>
@@ -67,30 +85,50 @@ public static class CollectorExitCodes
 /// candidate to stdout in <c>--preview</c> mode only.
 ///
 /// A socket is opened only when <c>--send</c> is explicit and <c>--preview</c>
-/// is absent. Payload text is never written to stderr.
+/// is absent. The revision is never an argument: it is allocated from the
+/// validated state directory before the request leaves the process. Payload text
+/// is never written to stderr.
 /// </summary>
 public static class CollectorCli
 {
     /// <summary>Explicit preview mode flag; without it nothing is written to stdout.</summary>
     public const string PreviewFlag = "--preview";
 
-    /// <summary>Explicit send mode flag. Does nothing unless endpoint, collector id and revision are also set.</summary>
+    /// <summary>Explicit send mode flag. Does nothing unless endpoint, collector id and generation are also set.</summary>
     public const string SendFlag = "--send";
 
     /// <summary>Declares that upstream reported partial, unpriced or stale-priced usage.</summary>
     public const string UpstreamPartialFlag = "--upstream-partial";
 
+    /// <summary>Initialises the state document with an explicit revision floor.</summary>
+    public const string StateInitFlag = "--state-init";
+
+    /// <summary>Clears a 409 block after the operator has resolved it.</summary>
+    public const string StateAdvanceFlag = "--state-advance";
+
+    /// <summary>Prints the state document and changes nothing.</summary>
+    public const string StateShowFlag = "--state-show";
+
     private const string GenerationOption = "--generation";
     private const string BucketTimeZoneOption = "--bucket-time-zone";
     private const string EndpointOption = "--endpoint";
     private const string CollectorIdOption = "--collector-id";
-    private const string RevisionOption = "--revision";
+    private const string FirstRevisionOption = "--first-revision";
+    private const string RemovedRevisionOption = "--revision";
 
     private const string UsageText =
         "usage: QuotaSight.Collector --preview --generation <positive integer> "
         + "--bucket-time-zone <zone> [--upstream-partial] < graph.json\n"
         + "       QuotaSight.Collector --send --endpoint <https-base-url> --collector-id <id> "
-        + "--revision <positive integer> --generation <positive integer> --bucket-time-zone <zone> < graph.json";
+        + "--generation <positive integer> --bucket-time-zone <zone> < graph.json\n"
+        + "       QuotaSight.Collector --state-init --collector-id <id> --generation <positive integer> "
+        + "--first-revision <positive integer>\n"
+        + "       QuotaSight.Collector --state-show\n"
+        + "       QuotaSight.Collector --state-advance";
+
+    private const string RemovedRevisionMessage =
+        "--revision is not accepted: the collector allocates each revision from STATE_DIRECTORY. "
+        + "Set the floor explicitly with --state-init --first-revision.";
 
     /// <summary>Runs the collector against explicit streams.</summary>
     /// <param name="args">Command line arguments.</param>
@@ -106,7 +144,7 @@ public static class CollectorCli
     /// <param name="stdin">Upstream document stream (the operator's explicit stdin).</param>
     /// <param name="stdout">Preview sink; receives only the API wire candidate.</param>
     /// <param name="stderr">One-line status sink; never receives payload text.</param>
-    /// <param name="send">Injected transport and credentials. Production passes null.</param>
+    /// <param name="send">Injected transport, credentials and state directory. Production passes null.</param>
     /// <returns>Process exit code from <see cref="CollectorExitCodes"/>.</returns>
     public static int Run(string[] args, Stream stdin, Stream stdout, TextWriter stderr, CollectorSendContext? send) =>
         RunCore(args, stdin, stdout, stderr, send);
@@ -121,11 +159,14 @@ public static class CollectorCli
         var preview = false;
         var sendRequested = false;
         var upstreamPartial = false;
+        var stateInit = false;
+        var stateAdvance = false;
+        var stateShow = false;
         long? generation = null;
+        long? firstRevision = null;
         string? bucketTimeZone = null;
         string? endpoint = null;
         string? collectorId = null;
-        string? revisionRaw = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -141,6 +182,17 @@ public static class CollectorCli
                 case UpstreamPartialFlag:
                     upstreamPartial = true;
                     break;
+                case StateInitFlag:
+                    stateInit = true;
+                    break;
+                case StateAdvanceFlag:
+                    stateAdvance = true;
+                    break;
+                case StateShowFlag:
+                    stateShow = true;
+                    break;
+                case RemovedRevisionOption:
+                    return Usage(stderr, RemovedRevisionMessage);
                 case EndpointOption:
                     if (!TryTakeValue(args, ref index, out var endpointValue, stderr, EndpointOption))
                     {
@@ -157,13 +209,18 @@ public static class CollectorCli
 
                     collectorId = collectorValue;
                     break;
-                case RevisionOption:
-                    if (!TryTakeValue(args, ref index, out var revisionValue, stderr, RevisionOption))
+                case FirstRevisionOption:
+                    if (!TryTakeValue(args, ref index, out var firstValue, stderr, FirstRevisionOption))
                     {
                         return CollectorExitCodes.Usage;
                     }
 
-                    revisionRaw = revisionValue;
+                    if (!TryParsePositiveInteger(firstValue, out var parsedFirst))
+                    {
+                        return Usage(stderr, "--first-revision must be a positive integer no greater than 2^53-1.");
+                    }
+
+                    firstRevision = parsedFirst;
                     break;
                 case GenerationOption:
                     if (!TryTakeValue(args, ref index, out var generationValue, stderr, GenerationOption))
@@ -171,7 +228,7 @@ public static class CollectorCli
                         return CollectorExitCodes.Usage;
                     }
 
-                    if (!TryParseGeneration(generationValue, out var parsed))
+                    if (!TryParsePositiveInteger(generationValue, out var parsed))
                     {
                         return Usage(stderr, "generation must be a positive integer no greater than 2^53-1.");
                     }
@@ -187,6 +244,11 @@ public static class CollectorCli
                     bucketTimeZone = zoneValue;
                     break;
                 default:
+                    if (TrySplitOption(argument, RemovedRevisionOption, out _))
+                    {
+                        return Usage(stderr, RemovedRevisionMessage);
+                    }
+
                     if (TrySplitOption(argument, EndpointOption, out var inlineEndpoint))
                     {
                         endpoint = inlineEndpoint;
@@ -199,15 +261,20 @@ public static class CollectorCli
                         break;
                     }
 
-                    if (TrySplitOption(argument, RevisionOption, out var inlineRevision))
+                    if (TrySplitOption(argument, FirstRevisionOption, out var inlineFirst))
                     {
-                        revisionRaw = inlineRevision;
+                        if (!TryParsePositiveInteger(inlineFirst, out var parsedInlineFirst))
+                        {
+                            return Usage(stderr, "--first-revision must be a positive integer no greater than 2^53-1.");
+                        }
+
+                        firstRevision = parsedInlineFirst;
                         break;
                     }
 
                     if (TrySplitOption(argument, GenerationOption, out var inlineGeneration))
                     {
-                        if (!TryParseGeneration(inlineGeneration, out var parsedInline))
+                        if (!TryParsePositiveInteger(inlineGeneration, out var parsedInline))
                         {
                             return Usage(stderr, "generation must be a positive integer no greater than 2^53-1.");
                         }
@@ -231,9 +298,66 @@ public static class CollectorCli
             return Usage(stderr, "send_usage: --send and --preview cannot be combined.");
         }
 
-        if (!sendRequested && (endpoint is not null || collectorId is not null || revisionRaw is not null))
+        var modes = (preview ? 1 : 0) + (sendRequested ? 1 : 0) + (stateInit ? 1 : 0)
+            + (stateAdvance ? 1 : 0) + (stateShow ? 1 : 0);
+        if (modes > 1)
         {
-            return Usage(stderr, "send_usage: --endpoint, --collector-id and --revision are only valid with --send.");
+            return Usage(
+                stderr,
+                "send_usage: only one of --preview, --send, --state-init, --state-advance and --state-show may be given.");
+        }
+
+        if (firstRevision is not null && !stateInit)
+        {
+            return Usage(stderr, "state_usage: --first-revision is only valid with --state-init.");
+        }
+
+        if (stateShow || stateAdvance)
+        {
+            if (endpoint is not null || collectorId is not null || generation is not null
+                || bucketTimeZone is not null || firstRevision is not null || upstreamPartial)
+            {
+                return Usage(stderr, "state_usage: --state-show and --state-advance take no other option.");
+            }
+
+            return stateShow
+                ? ShowState(send, stdout, stderr)
+                : AdvanceState(send, stderr);
+        }
+
+        if (stateInit)
+        {
+            if (endpoint is not null || bucketTimeZone is not null || upstreamPartial)
+            {
+                return Usage(stderr, "state_usage: --state-init takes --collector-id, --generation and --first-revision only.");
+            }
+
+            if (collectorId is null)
+            {
+                return Usage(stderr, "state_usage: --state-init requires --collector-id.");
+            }
+
+            if (!CollectorSendState.IsCollectorId(collectorId))
+            {
+                return Usage(stderr, "send_usage: --collector-id is not a lowercase slug of 3-64 characters.");
+            }
+
+            if (generation is null)
+            {
+                return Usage(stderr, "state_usage: --state-init requires --generation.");
+            }
+
+            if (firstRevision is null)
+            {
+                return Usage(stderr, "state_usage: --state-init requires --first-revision.");
+            }
+
+            return InitState(send, collectorId, generation.Value, firstRevision.Value, stderr);
+        }
+
+        if (!sendRequested && (endpoint is not null || collectorId is not null))
+        {
+            return Usage(stderr, "send_usage: --endpoint and --collector-id are only valid with --send.");
         }
 
         if (!sendRequested && !preview)
@@ -247,7 +371,6 @@ public static class CollectorCli
         }
 
         Uri? sendEndpoint = null;
-        long revision = 0;
         if (sendRequested)
         {
             if (endpoint is null)
@@ -260,24 +383,14 @@ public static class CollectorCli
                 return Usage(stderr, "send_usage: --send requires --collector-id.");
             }
 
-            if (revisionRaw is null)
-            {
-                return Usage(stderr, "send_usage: --send requires --revision.");
-            }
-
             if (!TryParseEndpoint(endpoint, out sendEndpoint))
             {
                 return Usage(stderr, "send_usage: --endpoint must be https with an empty path and no user info, query or fragment.");
             }
 
-            if (!IsCollectorId(collectorId))
+            if (!CollectorSendState.IsCollectorId(collectorId))
             {
                 return Usage(stderr, "send_usage: --collector-id is not a lowercase slug of 3-64 characters.");
-            }
-
-            if (!TryParseRevision(revisionRaw, out revision))
-            {
-                return Usage(stderr, "send_usage: --revision must be a positive integer no greater than 2^53-1.");
             }
         }
 
@@ -296,54 +409,56 @@ public static class CollectorCli
             return Rejected(stderr, "bucketTimeZone", "unsupported_time_zone", "API v1 only accepts the Asia/Tokyo bucket time zone.");
         }
 
-        var (tooLarge, document) = ReadBounded(stdin);
-        if (tooLarge)
+        if (sendRequested)
         {
-            return Rejected(
-                stderr,
-                "input",
-                "too_large",
-                $"The upstream document must not exceed {TokscaleGraphContract.MaxInputBytes} bytes.");
+            return Send(send, sendEndpoint!, collectorId!, generation.Value, stdin, stderr);
         }
 
-        var result = TokscaleGraphNormalizer.Normalize(document);
-        switch (result.Status)
-        {
-            case NormalizationStatus.Rejected:
-                return Rejected(stderr, result.Field!, result.Reason!, result.Message!);
-            case NormalizationStatus.NoObservedDays:
-                stderr.WriteLine($"no_snapshot: {result.Reason} (no dated row was observed; nothing was emitted)");
-                return CollectorExitCodes.NoObservedDays;
-            default:
-                break;
-        }
-
-        var wire = SnapshotWire.Serialize(result.Candidate!, generation.Value);
-        if (!sendRequested)
-        {
-            stdout.Write(wire, 0, wire.Length);
-            stdout.Flush();
-
-            if (upstreamPartial)
-            {
-                stderr.WriteLine("candidate_unverified: upstream reported partial, unpriced or stale-priced usage; the candidate is not complete evidence");
-                return CollectorExitCodes.CandidateUnverified;
-            }
-
-            return CollectorExitCodes.Candidate;
-        }
-
-        return Send(send, sendEndpoint!, collectorId!, revision, wire, stderr);
+        return Preview(generation.Value, upstreamPartial, stdin, stdout, stderr);
     }
 
+    private static int Preview(
+        long generation,
+        bool upstreamPartial,
+        Stream stdin,
+        Stream stdout,
+        TextWriter stderr)
+    {
+        if (!TryNormalize(stdin, stderr, out var candidate, out var exitCode))
+        {
+            return exitCode;
+        }
+
+        var wire = SnapshotWire.Serialize(candidate!, generation);
+        stdout.Write(wire, 0, wire.Length);
+        stdout.Flush();
+
+        if (upstreamPartial)
+        {
+            stderr.WriteLine("candidate_unverified: upstream reported partial, unpriced or stale-priced usage; the candidate is not complete evidence");
+            return CollectorExitCodes.CandidateUnverified;
+        }
+
+        return CollectorExitCodes.Candidate;
+    }
+
+    /// <summary>
+    /// Send, in the documented order: lock, state validation, normalization,
+    /// credentials, allocation (fsynced before the request), transmit, record.
+    /// </summary>
     private static int Send(
         CollectorSendContext? send,
         Uri endpoint,
         string collectorId,
-        long revision,
-        byte[] wire,
+        long generation,
+        Stream stdin,
         TextWriter stderr)
     {
+        if (!OperatingSystem.IsLinux() || !SystemdStateDirectory.IsSupportedPlatform)
+        {
+            return StateFailure(stderr, CollectorStateFailure.UnsupportedPlatform);
+        }
+
         HttpClient? owned = null;
         var client = send?.HttpClient;
         if (client is null)
@@ -359,30 +474,302 @@ public static class CollectorCli
                 return Usage(stderr, "send_usage: the injected client carries a forbidden default header.");
             }
 
-            var credentials = send?.Credentials ?? new SystemdLoadCredentialSource();
-            var read = credentials.Read();
-            if (!read.Succeeded || read.Credential is null)
+            if (!CollectorStateStore.TryOpen(Directory(send), out var store, out var openFailure))
             {
-                stderr.WriteLine($"credential_unavailable: {read.Failure}");
-                return CollectorExitCodes.CredentialUnavailable;
+                return StateFailure(stderr, openFailure);
             }
 
-            var delay = send?.Delay ?? DefaultDelay;
-            var jitter = send?.NextJitterUnit ?? DefaultJitter;
-            return CollectorSnapshotTransport.Transmit(
-                client,
-                endpoint,
-                collectorId,
-                revision,
-                wire,
-                read.Credential,
-                delay,
-                jitter,
-                stderr);
+            using (store)
+            {
+                if (!store!.TryLock(out var lease))
+                {
+                    return StateFailure(stderr, CollectorStateFailure.StateLocked);
+                }
+
+                using (lease)
+                {
+                    var state = store.Read(out var readFailure);
+                    if (state is null)
+                    {
+                        return StateFailure(stderr, readFailure);
+                    }
+
+                    if (!state.Matches(collectorId, generation))
+                    {
+                        stderr.WriteLine(
+                            "state_mismatch: the state belongs to a different collector or generation; "
+                            + "re-initialise it with --state-init --first-revision");
+                        return CollectorExitCodes.StateMismatch;
+                    }
+
+                    if (state.IsBlocked)
+                    {
+                        stderr.WriteLine(
+                            $"state_blocked: {state.BlockedReason}; resolve the conflict, then run --state-advance");
+                        return CollectorExitCodes.StateBlocked;
+                    }
+
+                    if (!TryNormalize(stdin, stderr, out var candidate, out var normalizeExit))
+                    {
+                        return normalizeExit;
+                    }
+
+                    var wire = SnapshotWire.Serialize(candidate!, generation);
+
+                    var credentials = send?.Credentials ?? new SystemdLoadCredentialSource();
+                    var read = credentials.Read();
+                    if (!read.Succeeded || read.Credential is null)
+                    {
+                        stderr.WriteLine($"credential_unavailable: {read.Failure}");
+                        return CollectorExitCodes.CredentialUnavailable;
+                    }
+
+                    if (state.LastOutcome is CollectorSendOutcome.None or CollectorSendOutcome.Unknown)
+                    {
+                        stderr.WriteLine(
+                            "previous_send_unresolved: the previous revision has no confirmed result; "
+                            + "sending continues with the next revision");
+                    }
+
+                    if (!state.TryAllocate(out var allocated))
+                    {
+                        stderr.WriteLine("state_revision_exhausted: no revision is left to allocate");
+                        return CollectorExitCodes.RevisionExhausted;
+                    }
+
+                    if (!store.Write(allocated!, out var allocateFailure))
+                    {
+                        return StateFailure(stderr, allocateFailure);
+                    }
+
+                    var outcome = CollectorSnapshotTransport.Transmit(
+                        client,
+                        endpoint,
+                        collectorId,
+                        generation,
+                        allocated!.LastRevision,
+                        wire,
+                        read.Credential,
+                        send?.Delay ?? DefaultDelay,
+                        send?.NextJitterUnit ?? DefaultJitter);
+
+                    if (!store.Write(allocated.Record(outcome.Outcome, outcome.ConflictReason), out var recordFailure))
+                    {
+                        // The request left the process, so the result cannot be replayed
+                        // and the next run must not assume anything about it.
+                        stderr.WriteLine($"state_unrecorded: {CollectorStateFailureText.Describe(recordFailure)}");
+                        stderr.WriteLine(outcome.Message);
+                        return CollectorExitCodes.StateUnrecorded;
+                    }
+
+                    stderr.WriteLine(outcome.Message);
+                    return outcome.ExitCode;
+                }
+            }
         }
         finally
         {
             owned?.Dispose();
+        }
+    }
+
+    private static int ShowState(CollectorSendContext? send, Stream stdout, TextWriter stderr)
+    {
+        if (!OperatingSystem.IsLinux() || !SystemdStateDirectory.IsSupportedPlatform)
+        {
+            return StateFailure(stderr, CollectorStateFailure.UnsupportedPlatform);
+        }
+
+        if (!CollectorStateStore.TryOpen(Directory(send), out var store, out var openFailure))
+        {
+            return StateFailure(stderr, openFailure);
+        }
+
+        using (store)
+        {
+            var state = store!.Read(out var readFailure);
+            if (state is null)
+            {
+                return StateFailure(stderr, readFailure);
+            }
+
+            var document = state.ToCanonicalJson();
+            stdout.Write(document, 0, document.Length);
+            stdout.Flush();
+            return CollectorExitCodes.Candidate;
+        }
+    }
+
+    private static int InitState(
+        CollectorSendContext? send,
+        string collectorId,
+        long generation,
+        long firstRevision,
+        TextWriter stderr)
+    {
+        if (!OperatingSystem.IsLinux() || !SystemdStateDirectory.IsSupportedPlatform)
+        {
+            return StateFailure(stderr, CollectorStateFailure.UnsupportedPlatform);
+        }
+
+        if (!CollectorStateStore.TryOpen(Directory(send), out var store, out var openFailure))
+        {
+            return StateFailure(stderr, openFailure);
+        }
+
+        using (store)
+        {
+            if (!store!.TryLock(out var lease))
+            {
+                return StateFailure(stderr, CollectorStateFailure.StateLocked);
+            }
+
+            using (lease)
+            {
+                var existing = store.Read(out var readFailure);
+                if (existing is not null)
+                {
+                    // An existing state may only move forward for the same collector:
+                    // another collector's state is never overwritten, the generation
+                    // never goes backwards, and the floor only moves up.
+                    if (!string.Equals(existing.CollectorId, collectorId, StringComparison.Ordinal))
+                    {
+                        stderr.WriteLine(
+                            "state_mismatch: the state belongs to another collector; nothing was changed");
+                        return CollectorExitCodes.StateMismatch;
+                    }
+
+                    if (generation < existing.Generation)
+                    {
+                        stderr.WriteLine(
+                            "state_mismatch: the generation must not go backwards; nothing was changed");
+                        return CollectorExitCodes.StateMismatch;
+                    }
+
+                    if (generation == existing.Generation && firstRevision <= existing.LastRevision)
+                    {
+                        stderr.WriteLine(
+                            "state_mismatch: --first-revision must be above the last allocated revision; nothing was changed");
+                        return CollectorExitCodes.StateMismatch;
+                    }
+                }
+                else if (!IsReplaceable(readFailure))
+                {
+                    // A missing, empty, malformed or non-canonical document is replaced:
+                    // recovering from a lost or damaged state is the operator's explicit
+                    // call. A document that exists but is unreadable (wrong owner, wrong
+                    // mode, a symbolic link) is not overwritten.
+                    return StateFailure(stderr, readFailure);
+                }
+
+                var state = CollectorSendState.ForFirstRevision(collectorId, generation, firstRevision);
+                if (!store.Write(state, out var writeFailure))
+                {
+                    return StateFailure(stderr, writeFailure);
+                }
+
+                stderr.WriteLine(
+                    $"state_initialized: next revision {state.NextRevision.ToString(CultureInfo.InvariantCulture)}");
+                return CollectorExitCodes.Candidate;
+            }
+        }
+    }
+
+    private static int AdvanceState(CollectorSendContext? send, TextWriter stderr)
+    {
+        if (!OperatingSystem.IsLinux() || !SystemdStateDirectory.IsSupportedPlatform)
+        {
+            return StateFailure(stderr, CollectorStateFailure.UnsupportedPlatform);
+        }
+
+        if (!CollectorStateStore.TryOpen(Directory(send), out var store, out var openFailure))
+        {
+            return StateFailure(stderr, openFailure);
+        }
+
+        using (store)
+        {
+            if (!store!.TryLock(out var lease))
+            {
+                return StateFailure(stderr, CollectorStateFailure.StateLocked);
+            }
+
+            using (lease)
+            {
+                var state = store.Read(out var readFailure);
+                if (state is null)
+                {
+                    return StateFailure(stderr, readFailure);
+                }
+
+                var wasBlocked = state.IsBlocked;
+                if (!store.Write(state.ClearBlock(), out var writeFailure))
+                {
+                    return StateFailure(stderr, writeFailure);
+                }
+
+                stderr.WriteLine(wasBlocked
+                    ? "state_advanced: block cleared"
+                    : "state_advanced: no block was set");
+                return CollectorExitCodes.Candidate;
+            }
+        }
+    }
+
+    private static bool IsReplaceable(CollectorStateFailure failure) =>
+        failure is CollectorStateFailure.StateMissing
+            or CollectorStateFailure.Empty
+            or CollectorStateFailure.Malformed
+            or CollectorStateFailure.StateNotCanonical
+            or CollectorStateFailure.StateUnsupportedVersion
+            or CollectorStateFailure.StateInvalidField;
+
+    private static SystemdStateDirectory Directory(CollectorSendContext? send) =>
+        new(
+            static () => SystemdStateDirectory.IsSupportedPlatform,
+            send?.StateDirectory ?? SystemdStateDirectory.FromEnvironment);
+
+    private static int StateFailure(TextWriter stderr, CollectorStateFailure failure)
+    {
+        stderr.WriteLine($"state_unavailable: {CollectorStateFailureText.Describe(failure)}");
+        if (failure == CollectorStateFailure.StateMissing)
+        {
+            stderr.WriteLine("state_missing: set a revision floor with --state-init --first-revision before sending");
+        }
+
+        return CollectorExitCodes.StateUnavailable;
+    }
+
+    /// <summary>Reads one bounded document from stdin and normalizes it. Nothing is emitted here.</summary>
+    private static bool TryNormalize(Stream stdin, TextWriter stderr, out SnapshotCandidate? candidate, out int exitCode)
+    {
+        candidate = null;
+        exitCode = CollectorExitCodes.Candidate;
+
+        var (tooLarge, document) = ReadBounded(stdin);
+        if (tooLarge)
+        {
+            exitCode = Rejected(
+                stderr,
+                "input",
+                "too_large",
+                $"The upstream document must not exceed {TokscaleGraphContract.MaxInputBytes} bytes.");
+            return false;
+        }
+
+        var result = TokscaleGraphNormalizer.Normalize(document);
+        switch (result.Status)
+        {
+            case NormalizationStatus.Rejected:
+                exitCode = Rejected(stderr, result.Field!, result.Reason!, result.Message!);
+                return false;
+            case NormalizationStatus.NoObservedDays:
+                stderr.WriteLine($"no_snapshot: {result.Reason} (no dated row was observed; nothing was emitted)");
+                exitCode = CollectorExitCodes.NoObservedDays;
+                return false;
+            default:
+                candidate = result.Candidate;
+                return true;
         }
     }
 
@@ -428,36 +815,9 @@ public static class CollectorCli
         return true;
     }
 
-    private static bool IsCollectorId(string value)
+    private static bool TryParsePositiveInteger(string raw, out long value)
     {
-        if (value.Length is < 3 or > 64)
-        {
-            return false;
-        }
-
-        if (!IsLowerAlphaNumeric(value[0]))
-        {
-            return false;
-        }
-
-        for (var index = 1; index < value.Length; index++)
-        {
-            var character = value[index];
-            if (!IsLowerAlphaNumeric(character) && character is not ('_' or '-'))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool IsLowerAlphaNumeric(char value) =>
-        value is >= 'a' and <= 'z' or >= '0' and <= '9';
-
-    private static bool TryParseRevision(string raw, out long revision)
-    {
-        revision = 0;
+        value = 0;
         if (raw.Length == 0 || raw[0] == '0')
         {
             return false;
@@ -471,9 +831,9 @@ public static class CollectorCli
             }
         }
 
-        return long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out revision)
-            && revision >= 1
-            && revision <= TokscaleGraphContract.MaxSafeInteger;
+        return long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out value)
+            && value >= 1
+            && value <= TokscaleGraphContract.MaxSafeInteger;
     }
 
     private static (bool TooLarge, byte[] Document) ReadBounded(Stream stdin)
@@ -525,11 +885,6 @@ public static class CollectorCli
         value = string.Empty;
         return false;
     }
-
-    private static bool TryParseGeneration(string raw, out long generation) =>
-        long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out generation)
-        && generation >= 1
-        && generation <= TokscaleGraphContract.MaxSafeInteger;
 
     private static int Usage(TextWriter stderr, string message)
     {
