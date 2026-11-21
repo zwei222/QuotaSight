@@ -179,7 +179,6 @@ public sealed class CollectorSendStateTests
     [Theory]
     [InlineData("revision_conflict")]
     [InlineData("stale_revision")]
-    [InlineData("reduction_unverified")]
     [InlineData("generation_inactive")]
     [InlineData("conflict_unknown")]
     [InlineData("response_unverified")]
@@ -193,6 +192,31 @@ public sealed class CollectorSendStateTests
         Assert.Equal(CollectorStateFailure.None, failure);
         Assert.Equal(reason, state!.BlockedReason);
         Assert.True(state.IsBlocked);
+    }
+
+    [Fact]
+    public void AStateBlockedByThePreviousContractStillParses()
+    {
+        // `reduction_unverified` was a 409 reason while a decreased day refused
+        // the whole snapshot. A state file written then must still open, so the
+        // operator can clear it with `--state-advance`.
+        Assert.True(CollectorSendState.TryParse(
+            Encoding.UTF8.GetBytes(Document(blockedReason: "\"reduction_unverified\"")),
+            out var state,
+            out var failure));
+
+        Assert.Equal(CollectorStateFailure.None, failure);
+        Assert.Equal("reduction_unverified", state!.BlockedReason);
+        Assert.True(state.IsBlocked);
+    }
+
+    [Fact]
+    public void ThePreviousReductionReasonIsNoLongerRecorded()
+    {
+        var recorded = Sample().Record(CollectorSendOutcome.Conflict, "reduction_unverified");
+
+        Assert.False(CollectorSendState.IsConflictReason("reduction_unverified"));
+        Assert.Equal(CollectorSendState.UnknownConflictReason, recorded.BlockedReason);
     }
 
     [Fact]
@@ -248,7 +272,6 @@ public sealed class CollectorSendStateTests
     [Theory]
     [InlineData("revision_conflict")]
     [InlineData("stale_revision")]
-    [InlineData("reduction_unverified")]
     [InlineData("generation_inactive")]
     public void AllowlistedConflictReasonsBlock(string reason)
     {

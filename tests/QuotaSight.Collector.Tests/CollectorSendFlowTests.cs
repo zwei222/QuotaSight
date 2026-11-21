@@ -113,7 +113,6 @@ public sealed class CollectorSendFlowTests
     [LinuxTheory]
     [InlineData("revision_conflict")]
     [InlineData("stale_revision")]
-    [InlineData("reduction_unverified")]
     [InlineData("generation_inactive")]
     public void AConflictBlocksUntilTheOperatorAdvances(string reason)
     {
@@ -510,17 +509,22 @@ public sealed class CollectorSendFlowTests
     }
 
     [LinuxTheory]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":2,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":8,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-other\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
-    [InlineData("{\"status\":\"queued\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00Z\",\"changedDays\":[]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[\"2026-11-18\",\"2026-11-17\"]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[\"2026-11-17\",\"2026-11-17\"]}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"note\":1}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\"}")]
-    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":\"3\",\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
-    [InlineData("{}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":8,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-other\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"queued\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00Z\",\"changedDays\":[],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[\"2026-11-18\",\"2026-11-17\"],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[\"2026-11-17\",\"2026-11-17\"],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0,\"note\":1}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":\"3\",\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[]}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":-1}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":63}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":\"0\"}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":0.5}")]
+    [InlineData("{\"status\":\"applied\",\"collectorId\":\"col-test\",\"generation\":7,\"revision\":3,\"receivedAt\":\"2026-11-21T00:00:00.000Z\",\"changedDays\":[],\"ignoredReductions\":null}")]
+    [InlineData("{}}")]
     [InlineData("")]
     public void AnUnverifiedReceiptIsNotSuccess(string body)
     {
@@ -567,8 +571,7 @@ public sealed class CollectorSendFlowTests
     }
 
     [LinuxTheory]
-    [InlineData("applied", "[\"2026-11-17\"]")]
-    [InlineData("replayed", "[]")]
+    [InlineData("applied", "[]")]
     public void AVerifiedReceiptIsSuccess(string status, string changedDays)
     {
         using var harness = SendHarness.Create();
@@ -579,7 +582,31 @@ public sealed class CollectorSendFlowTests
 
         Assert.Equal(CollectorExitCodes.Candidate, run.ExitCode);
         Assert.Contains("sent: accepted", run.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("reductions_ignored", run.Stderr, StringComparison.Ordinal);
         Assert.Equal(CollectorSendOutcome.Accepted, harness.ReadState()!.LastOutcome);
+        SendHarness.AssertNoLeak(run);
+    }
+
+    [LinuxTheory]
+    [InlineData("applied", "1")]
+    [InlineData("replayed", "2")]
+    public void AnAcceptedReceiptReportsHowManyDaysWereIgnored(string status, string ignoredReductions)
+    {
+        using var harness = SendHarness.Create();
+        harness.WriteState(2);
+        harness.Handler.Enqueue(
+            HttpStatusCode.OK,
+            SendHarness.Receipt(3, status, changedDays: "[]", ignoredReductions: ignoredReductions));
+
+        var run = harness.RunSend();
+
+        // A reduction that the API ignored is not a failure: the snapshot was
+        // accepted and the revision is consumed.
+        Assert.Equal(CollectorExitCodes.Candidate, run.ExitCode);
+        Assert.Contains("sent: accepted", run.Stderr, StringComparison.Ordinal);
+        Assert.Contains("reductions_ignored: " + ignoredReductions, run.Stderr, StringComparison.Ordinal);
+        Assert.Equal(CollectorSendOutcome.Accepted, harness.ReadState()!.LastOutcome);
+        Assert.Equal(3, harness.ReadState()!.LastRevision);
         SendHarness.AssertNoLeak(run);
     }
 

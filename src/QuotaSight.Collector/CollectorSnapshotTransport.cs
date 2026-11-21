@@ -14,7 +14,16 @@ namespace QuotaSight.Collector;
 /// <param name="Message">Line for stderr. Fixed tokens only.</param>
 /// <param name="Outcome">What may be recorded in the state file.</param>
 /// <param name="ConflictReason">Allowlisted 409 reason, or <c>conflict_unknown</c>.</param>
-public sealed record SendOutcome(int ExitCode, string Message, CollectorSendOutcome Outcome, string? ConflictReason);
+/// <param name="IgnoredReductions">
+/// Days the API accepted but did not write because their accepted total was
+/// higher. Always <c>0</c> unless a receipt was verified.
+/// </param>
+public sealed record SendOutcome(
+    int ExitCode,
+    string Message,
+    CollectorSendOutcome Outcome,
+    string? ConflictReason,
+    int IgnoredReductions = 0);
 
 /// <summary>
 /// HTTPS transport for one explicit snapshot send. Redirects and cookies are
@@ -47,6 +56,7 @@ public static class CollectorSnapshotTransport
         "revision",
         "receivedAt",
         "changedDays",
+        "ignoredReductions",
     ];
 
     /// <summary>Creates the production handler. Does not open a socket.</summary>
@@ -152,11 +162,19 @@ public static class CollectorSnapshotTransport
     /// <summary>
     /// True when <paramref name="body"/> is the receipt the API returns for this
     /// write: exactly the documented keys, this collector, generation and
-    /// revision, a canonical instant and ascending unique days.
+    /// revision, a canonical instant, ascending unique days and a count of
+    /// ignored reductions that fits the API's per-snapshot day bound.
+    /// <paramref name="ignoredReductions"/> is only meaningful when this is true.
     /// </summary>
-    public static bool IsExpectedReceipt(ReadOnlySpan<byte> body, string collectorId, long generation, long revision)
+    public static bool IsExpectedReceipt(
+        ReadOnlySpan<byte> body,
+        string collectorId,
+        long generation,
+        long revision,
+        out int ignoredReductions)
     {
         ArgumentNullException.ThrowIfNull(collectorId);
+        ignoredReductions = 0;
         if (body.IsEmpty || body.Length > MaxResponseBytes)
         {
             return false;
@@ -183,12 +201,13 @@ public static class CollectorSnapshotTransport
             var revisionMatches = false;
             var instant = false;
             var days = false;
+            var ignored = false;
             while (reader.Read())
             {
                 if (reader.TokenType == JsonTokenType.EndObject)
                 {
                     return !reader.Read() && status && collector && generationMatches
-                        && revisionMatches && instant && days && seen.Count == ReceiptKeys.Length;
+                        && revisionMatches && instant && days && ignored && seen.Count == ReceiptKeys.Length;
                 }
 
                 if (reader.TokenType != JsonTokenType.PropertyName)
@@ -227,6 +246,17 @@ public static class CollectorSnapshotTransport
                         break;
                     case "changedDays":
                         days = IsDayList(ref reader);
+                        break;
+                    case "ignoredReductions":
+                        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var count))
+                        {
+                            ignored = count is >= 0 and <= TokscaleGraphContract.MaxDays;
+                            if (ignored)
+                            {
+                                ignoredReductions = count;
+                            }
+                        }
+
                         break;
                     default:
                         return false;
@@ -438,12 +468,18 @@ public static class CollectorSnapshotTransport
                     return Unverified(CollectorExitCodes.SendResponseTooLarge, "send_response_too_large: response too large");
                 }
 
-                if (read != BodyRead.Ok || !IsExpectedReceipt(receipt, collectorId, generation, revision))
+                if (read != BodyRead.Ok
+                    || !IsExpectedReceipt(receipt, collectorId, generation, revision, out var ignoredReductions))
                 {
                     return Unverified(CollectorExitCodes.SendReceiptUnverified, "send_receipt_unverified: receipt not verified");
                 }
 
-                return new SendOutcome(CollectorExitCodes.Candidate, "sent: accepted", CollectorSendOutcome.Accepted, null);
+                return new SendOutcome(
+                    CollectorExitCodes.Candidate,
+                    "sent: accepted",
+                    CollectorSendOutcome.Accepted,
+                    null,
+                    ignoredReductions);
             }
 
             return Rejected(CollectorExitCodes.SendRejected, "send_rejected: request rejected");

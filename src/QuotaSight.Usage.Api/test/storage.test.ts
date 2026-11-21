@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../src/errors';
 import { canonicalSnapshotJson, parseSnapshot, sha256Hex } from '../src/schema';
-import { applySnapshot, loadOwnedCollector } from '../src/store';
+import { applySnapshot, loadOwnedCollector, UPSERT_DAY_SQL } from '../src/store';
 import { createHarness, FIXTURE, resetData, scalar, snapshotBody, usageRows, type Harness } from './harness';
 
 let h: Harness;
@@ -104,7 +104,44 @@ describe('schema guards inside the transaction', () => {
     expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(1);
   });
 
-  it('refuses a decrease of an accepted day', async () => {
+  it('rolls back a batch that contains an ignored reduction, so no day is partly applied', async () => {
+    await h.db
+      .prepare(
+        'INSERT INTO usage_day (collector_id, generation, bucket_date, total_tokens, updated_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .bind(FIXTURE.collectorA1, 1, '2026-11-08', 100, '2026-11-20T00:00:00Z')
+      .run();
+
+    // A receipt for this revision already exists, so the last statement of the
+    // batch collides. The upserts before it are a reduction (2026-11-08) and a
+    // new day (2026-11-09): both must be rolled back with the receipt.
+    await h.db
+      .prepare(
+        'INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .bind(FIXTURE.collectorA1, 1, 60, 'a'.repeat(64), '2026-11-20T00:00:00Z')
+      .run();
+
+    const upsert = h.db.prepare(UPSERT_DAY_SQL);
+    await expect(
+      h.db.batch([
+        upsert.bind(FIXTURE.collectorA1, 1, '2026-11-08', 40, '2026-11-20T03:00:00Z'),
+        upsert.bind(FIXTURE.collectorA1, 1, '2026-11-09', 7, '2026-11-20T03:00:00Z'),
+        h.db
+          .prepare(
+            'INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at) VALUES (?, ?, ?, ?, ?)',
+          )
+          .bind(FIXTURE.collectorA1, 1, 60, 'b'.repeat(64), '2026-11-20T03:00:00Z'),
+      ]),
+    ).rejects.toThrow(/UNIQUE constraint failed: snapshot_receipts/);
+
+    expect((await usageRows(h.db)).map((row) => [row.bucket_date, row.total_tokens])).toEqual([
+      ['2026-11-08', 100],
+    ]);
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(1);
+  });
+
+  it('refuses a direct decrease of an accepted day', async () => {
     await h.db
       .prepare(
         'INSERT INTO usage_day (collector_id, generation, bucket_date, total_tokens, updated_at) VALUES (?, ?, ?, ?, ?)',

@@ -2,10 +2,10 @@
  * D1 persistence for the first slice.
  *
  * A write is a single `batch()` (one D1 transaction) containing one prepared
- * upsert per changed day plus the receipt insert. If any statement aborts, D1
- * rolls the whole batch back, so "receipt recorded" and "days replaced" can
- * never disagree. Ordering, generation and non-reduction rules are enforced by
- * schema triggers, i.e. inside the write, not only by a preceding read.
+ * upsert per day plus the receipt insert. If any statement aborts, D1 rolls the
+ * whole batch back, so "receipt recorded" and "days written" can never disagree.
+ * Ordering, generation and monotonic-total rules are enforced by the statements
+ * and the schema triggers, i.e. inside the write, not only by a preceding read.
  */
 import { ApiError } from './errors';
 import type { DailyQuery, Snapshot } from './schema';
@@ -24,6 +24,7 @@ export interface SnapshotReceipt {
   readonly revision: number;
   readonly receivedAt: string;
   readonly changedDays: readonly string[];
+  readonly ignoredReductions: number;
 }
 
 export interface DailyRow {
@@ -36,27 +37,59 @@ const SELECT_OWNED_COLLECTOR =
   'SELECT id, owner_id, active_generation FROM collectors WHERE id = ? AND owner_id = ?';
 
 const SELECT_RECEIPT =
-  'SELECT body_digest, received_at FROM snapshot_receipts WHERE collector_id = ? AND generation = ? AND revision = ?';
+  'SELECT body_digest, received_at, ignored_reductions FROM snapshot_receipts WHERE collector_id = ? AND generation = ? AND revision = ?';
 
 /**
- * Replace only the affected day partitions. The `WHERE` clause makes an
- * unchanged total a genuine no-op (no row returned, so it is not reported as a
- * changed day), and the schema trigger rejects any decrease.
+ * Upsert one day partition.
+ *
+ * The stored total is `MAX(accepted, incoming)`:
+ *   * higher than the accepted total (or a new day) — written, and `RETURNING`
+ *     reports the incoming total;
+ *   * equal — the `WHERE` clause makes it a genuine no-op, so no row comes back
+ *     and the day is neither changed nor ignored;
+ *   * lower — the accepted total is kept (`updated_at` is kept with it) and
+ *     `RETURNING` reports that larger stored total, which is how the caller
+ *     counts an ignored reduction.
+ *
+ * Because the value only ever moves up, `usage_day_rejects_unverified_reduction`
+ * from 0001 can never abort this statement; it stays as the guard for anything
+ * that writes the table directly.
+ *
+ * Exported so the atomicity test can build the same statement it asserts on.
  */
-const UPSERT_DAY = `
+export const UPSERT_DAY_SQL = `
   INSERT INTO usage_day (collector_id, generation, bucket_date, total_tokens, updated_at)
   VALUES (?, ?, ?, ?, ?)
   ON CONFLICT (collector_id, generation, bucket_date) DO UPDATE
-    SET total_tokens = excluded.total_tokens,
-        updated_at = excluded.updated_at
+    SET total_tokens = MAX(usage_day.total_tokens, excluded.total_tokens),
+        updated_at = CASE
+          WHEN excluded.total_tokens > usage_day.total_tokens THEN excluded.updated_at
+          ELSE usage_day.updated_at
+        END
     WHERE usage_day.total_tokens <> excluded.total_tokens
-  RETURNING bucket_date
+  RETURNING bucket_date, total_tokens
 `;
 
-/** Plain insert: a duplicate revision aborts the transaction instead of being ignored. */
-const INSERT_RECEIPT = `
-  INSERT INTO snapshot_receipts (collector_id, generation, revision, body_digest, received_at)
-  VALUES (?, ?, ?, ?, ?)
+/**
+ * Insert the receipt. A duplicate revision aborts the transaction instead of
+ * being ignored, and the ignored-reduction count is computed by the statement
+ * itself from the days the batch just left in `usage_day`, so the count always
+ * belongs to the same transaction as the writes.
+ */
+const INSERT_RECEIPT_SQL = `
+  INSERT INTO snapshot_receipts
+    (collector_id, generation, revision, body_digest, received_at, ignored_reductions)
+  SELECT ?, ?, ?, ?, ?,
+    (
+      SELECT COUNT(*)
+      FROM json_each(?) AS incoming
+      JOIN usage_day AS u
+        ON u.collector_id = ?
+       AND u.generation = ?
+       AND u.bucket_date = json_extract(incoming.value, '$.d')
+      WHERE u.total_tokens > json_extract(incoming.value, '$.t')
+    )
+  RETURNING ignored_reductions
 `;
 
 const DUPLICATE_RECEIPT = /UNIQUE constraint failed: snapshot_receipts/i;
@@ -64,6 +97,7 @@ const DUPLICATE_RECEIPT = /UNIQUE constraint failed: snapshot_receipts/i;
 interface ReceiptFields {
   body_digest: string;
   received_at: string;
+  ignored_reductions: number;
 }
 
 interface CollectorFields {
@@ -108,14 +142,9 @@ function messageOf(error: unknown): string {
 
 function translateWriteAbort(error: unknown, revision: number, generation: number): ApiError {
   const message = messageOf(error);
-  if (message.includes('usage_reduction_unverified')) {
-    return new ApiError(
-      409,
-      'reduction_unverified',
-      'A previously accepted day total would decrease. Unverified reductions are not accepted in this milestone.',
-      { revision, reason: 'reduction_unverified' },
-    );
-  }
+  // `usage_reduction_unverified` is deliberately not translated: the API path
+  // can no longer lower a stored total (the upsert keeps the larger value), so
+  // that abort is only reachable by a write to `usage_day` outside this module.
   if (message.includes('collector_revision_stale')) {
     return new ApiError(
       409,
@@ -165,13 +194,32 @@ export async function applySnapshot(
       revision,
       receivedAt: existing.received_at,
       changedDays: [],
+      // Same value the first write returned; nothing is recomputed on a replay.
+      ignoredReductions: existing.ignored_reductions,
     };
   }
 
   const statements: D1PreparedStatement[] = snapshot.days.map((day) =>
-    db.prepare(UPSERT_DAY).bind(collector.id, generation, day.date, day.totalTokens, receivedAt),
+    db.prepare(UPSERT_DAY_SQL).bind(collector.id, generation, day.date, day.totalTokens, receivedAt),
   );
-  statements.push(db.prepare(INSERT_RECEIPT).bind(collector.id, generation, revision, digest, receivedAt));
+  // The ignored count is derived inside the same transaction, from the state the
+  // upserts of this batch left behind: a day that kept a larger accepted total is
+  // a reduction that was not written. `NULL` for an empty day list is not needed
+  // because the schema requires at least one day.
+  statements.push(
+    db
+      .prepare(INSERT_RECEIPT_SQL)
+      .bind(
+        collector.id,
+        generation,
+        revision,
+        digest,
+        receivedAt,
+        JSON.stringify(snapshot.days.map((day) => ({ d: day.date, t: day.totalTokens }))),
+        collector.id,
+        generation,
+      ),
+  );
 
   let results: D1Result<Record<string, unknown>>[];
   try {
@@ -196,16 +244,30 @@ export async function applySnapshot(
           revision,
           receivedAt: winner.received_at,
           changedDays: [],
+          ignoredReductions: winner.ignored_reductions,
         };
       }
     }
     throw translateWriteAbort(error, revision, generation);
   }
 
-  const changedDays = results
-    .slice(0, snapshot.days.length)
-    .flatMap((result) => (result.results ?? []).map((row) => String(row['bucket_date'])))
-    .sort();
+  // A day is "changed" only when the stored total is the incoming one. The
+  // upsert returns a row for a reduction too (it keeps the larger accepted
+  // total), so the returned value, not the presence of a row, is what counts.
+  const changedDays: string[] = [];
+  snapshot.days.forEach((day, index) => {
+    const row = (results[index]?.results ?? [])[0];
+    if (row !== undefined && Number(row['total_tokens']) === day.totalTokens) {
+      changedDays.push(day.date);
+    }
+  });
+  changedDays.sort();
+
+  const ignoredReductions = Number(
+    (results[snapshot.days.length]?.results ?? [{ ignored_reductions: 0 }])[0]?.[
+      'ignored_reductions'
+    ] ?? 0,
+  );
 
   return {
     status: 'applied',
@@ -214,6 +276,7 @@ export async function applySnapshot(
     revision,
     receivedAt,
     changedDays,
+    ignoredReductions,
   };
 }
 

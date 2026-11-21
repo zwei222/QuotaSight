@@ -16,7 +16,8 @@ PUT /v1/collectors/{collectorId}/snapshots/{revision}
 GET /v1/usage/daily?from=YYYY-MM-DD&to=YYYY-MM-DD[&collector=collectorId]
 ```
 
-`PUT` returns `{ status, collectorId, generation, revision, receivedAt, changedDays }`
+`PUT` returns
+`{ status, collectorId, generation, revision, receivedAt, changedDays, ignoredReductions }`
 where `status` is `applied` or `replayed`. `GET` returns
 `{ from, to, days: [{ date, collectorId, totalTokens }], totalTokens }`.
 
@@ -50,25 +51,50 @@ Enforced strictly (unknown keys are rejected, never ignored):
 ## Write semantics
 
 - **Delta of positive authoritative snapshots.** A write replaces only the day
-  partitions it carries, with the snapshot's authoritative total. Only strictly
-  higher totals (or a first observation) change a row, and only changed days are
-  reported in `changedDays`.
+  partitions it carries, with the snapshot's authoritative total. A day is
+  changed only when the incoming total is higher than the accepted one (or the
+  day is new), and only changed days are listed in `changedDays`. `changedDays`
+  therefore always describes what was actually written, never what was merely
+  submitted.
+- **A decreased day keeps the accepted total.** Daily totals are cumulative, and
+  a re-scan can carry a smaller number for the same day (a shorter log window,
+  a rotated file). Such a day is not written: the accepted total stays, the
+  receipt counts it in `ignoredReductions` (an integer, `0` or more), and the
+  rest of the snapshot is accepted normally. The API does **not** record that
+  the upstream total went back — there is no correction, only "the previous
+  value is still the higher one".
+- **An equal total is neither a change nor an ignored reduction.** It is a
+  no-op and is reported in neither field.
+- **All-decreased snapshots are accepted.** A snapshot whose every day is lower
+  is `200 applied` with `changedDays: []` and `ignoredReductions` equal to the
+  number of days it carried. The revision is consumed either way.
 - **Never delete on absence.** A day missing from a later snapshot keeps its last
   accepted value.
-- **Reductions are rejected** (`409 reduction_unverified`) for this milestone:
-  there is no way to verify a correction yet, so the previous value is kept.
 - **Measured zero is data.** `totalTokens: 0` for a previously absent day is
   accepted and stored; it is distinct from "not observed" (no row).
 - **Idempotent and ordered.** Replaying the same `revision` with the identical
-  payload is a no-op (`replayed`); the same revision with a different payload is
+  payload is a no-op (`replayed`) that returns the first write's `receivedAt`,
+  `changedDays: []` and the same `ignoredReductions` (the count is stored in the
+  receipt, not recomputed); the same revision with a different payload is
   `409 revision_conflict`; a revision older than the accepted maximum is
   `409 stale_revision` and never overwrites. Revisions are scoped to
   (collector, generation).
 - **Active generation only.** A snapshot for a superseded generation is
   `409 generation_inactive`.
 - **Atomic.** Days and the receipt are written in one D1 `batch()` transaction;
-  the guards that abort a write are schema triggers, so a rejected write cannot
-  leave a receipt without its days (or vice versa).
+  the guards that abort a write are statements and schema triggers, so a
+  rejected write cannot leave a receipt without its days (or vice versa), and an
+  ignored reduction can never be half-applied.
+
+### Why a decrease is ignored rather than refused
+
+A refusal would let one short upstream scan stop every later snapshot for that
+collector: the collector blocks on a `409` until an operator intervenes, and the
+upstream number is not something it can repair. Keeping the accepted total is
+the conservative reading of a cumulative total — the stored value is the maximum
+ever accepted for that day, so a day can be over-counted but never
+under-counted. A client that needs to know this happened reads
+`ignoredReductions` on the receipt.
 
 ## Transport bounds and error hygiene
 
@@ -205,8 +231,7 @@ Errors are JSON: `{ "error": { "code": "...", "message": "...", "details"?: {...
 with codes `unauthorized`, `auth_unavailable`, `forbidden_scope`, `forbidden_collector`,
 `collector_not_found`, `invalid_snapshot`, `invalid_revision`, `invalid_query`,
 `invalid_request`, `invalid_json`, `unsupported_media_type`, `payload_too_large`,
-`result_too_large`, `revision_conflict`, `stale_revision`,
-`reduction_unverified`, `generation_inactive`.
+`result_too_large`, `revision_conflict`, `stale_revision`, `generation_inactive`.
 
 ## Local development and tests
 
@@ -239,6 +264,21 @@ So the read is now owner-driven, without a measured latency regression.
 `usage_day_by_bucket_date` is kept: nothing measured argues for removing it, and
 both indexes are asserted in `test/access.test.ts`, which also asserts that the
 plan for the production SQL does not scan `usage_day`.
+
+### Migrations
+
+`migrations/0001_initial.sql` and `0002_read_indexes.sql` are unchanged by the
+ignored-reduction contract. `migrations/0003_receipt_ignored_reductions.sql`
+adds `snapshot_receipts.ignored_reductions` (a bounded, non-negative integer,
+`DEFAULT 0`) because a replay must answer with the count of the first write; the
+alternative — recomputing it from `usage_day` on replay — is wrong, since other
+days may have moved on in between. The migration history is therefore append-only
+rather than rewriting `0001` for an unpublished local database.
+
+The `usage_day_rejects_unverified_reduction` trigger from `0001` stays. The
+upsert now stores `MAX(accepted, incoming)`, so the API path can never lower a
+stored total and the trigger never fires there; it remains the schema-level
+guard that a direct `UPDATE` cannot move a stored total backwards either.
 
 ## No exposure
 

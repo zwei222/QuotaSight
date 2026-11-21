@@ -108,6 +108,7 @@ export function createApp(options: AppOptions) {
       revision: receipt.revision,
       receivedAt: receipt.receivedAt,
       changedDays: receipt.changedDays,
+      ignoredReductions: receipt.ignoredReductions,
     });
   });
 

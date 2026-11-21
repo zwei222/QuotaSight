@@ -134,7 +134,7 @@ describe('PUT /v1/collectors/:collectorId/snapshots/:revision', () => {
     expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(1);
   });
 
-  it('rejects an unverified reduction and rolls the whole write back', async () => {
+  it('keeps a decreased day at its accepted total and applies the other days', async () => {
     expect(
       (
         await h.putSnapshot({
@@ -149,7 +149,9 @@ describe('PUT /v1/collectors/:collectorId/snapshots/:revision', () => {
       ).status,
     ).toBe(200);
 
-    const rejected = await h.putSnapshot({
+    // 2026-11-17 is lower than the accepted 120, so it is ignored rather than
+    // written; the new day 2026-11-19 is still accepted in the same batch.
+    const accepted = await h.putSnapshot({
       revision: 2,
       body: snapshotBody({
         days: [
@@ -158,18 +160,163 @@ describe('PUT /v1/collectors/:collectorId/snapshots/:revision', () => {
         ],
       }),
     });
-    expect(rejected.status).toBe(409);
-    expect((await json(rejected)).error.code).toBe('reduction_unverified');
+    expect(accepted.status).toBe(200);
+    expect(await json(accepted)).toMatchObject({
+      status: 'applied',
+      revision: 2,
+      changedDays: ['2026-11-19'],
+      ignoredReductions: 1,
+    });
+
+    const rows = await usageRows(h.db);
+    expect(rows.map((row) => [row.bucket_date, row.total_tokens])).toEqual([
+      ['2026-11-17', 120],
+      ['2026-11-18', 10],
+      ['2026-11-19', 99],
+    ]);
+    expect(
+      await scalar(h.db, 'SELECT ignored_reductions AS value FROM snapshot_receipts WHERE revision = 2'),
+    ).toBe(1);
+    // The revision was consumed even though one day was not written.
+    const next = await h.putSnapshot({
+      revision: 3,
+      body: snapshotBody({ days: [{ date: '2026-11-17', totalTokens: 130 }] }),
+    });
+    expect(next.status).toBe(200);
+    expect(await json(next)).toMatchObject({ status: 'applied', changedDays: ['2026-11-17'] });
+  });
+
+  it('accepts a snapshot in which every day decreased and writes no day', async () => {
+    expect(
+      (
+        await h.putSnapshot({
+          revision: 1,
+          body: snapshotBody({
+            days: [
+              { date: '2026-11-17', totalTokens: 120 },
+              { date: '2026-11-18', totalTokens: 10 },
+            ],
+          }),
+        })
+      ).status,
+    ).toBe(200);
+
+    const allLower = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBody({
+        days: [
+          { date: '2026-11-17', totalTokens: 100 },
+          { date: '2026-11-18', totalTokens: 5 },
+        ],
+      }),
+    });
+    expect(allLower.status).toBe(200);
+    expect(await json(allLower)).toMatchObject({
+      status: 'applied',
+      revision: 2,
+      changedDays: [],
+      ignoredReductions: 2,
+    });
 
     const rows = await usageRows(h.db);
     expect(rows.map((row) => [row.bucket_date, row.total_tokens])).toEqual([
       ['2026-11-17', 120],
       ['2026-11-18', 10],
     ]);
-    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(1);
+    // The revision is still consumed: the API recorded it even though no day
+    // was written, so the next allowed revision is 3.
     expect(
-      await scalar(h.db, "SELECT COUNT(*) AS value FROM snapshot_receipts WHERE revision = 2"),
-    ).toBe(0);
+      await scalar(h.db, 'SELECT MAX(revision) AS value FROM snapshot_receipts'),
+    ).toBe(2);
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(2);
+  });
+
+  it('leaves the observation time of a decreased day untouched', async () => {
+    const first = await h.putSnapshot({
+      revision: 1,
+      body: snapshotBody({
+        days: [
+          { date: '2026-11-17', totalTokens: 120 },
+          { date: '2026-11-18', totalTokens: 10 },
+        ],
+      }),
+    });
+    const firstReceipt = await json(first);
+
+    const second = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBody({
+        days: [
+          { date: '2026-11-17', totalTokens: 100 },
+          { date: '2026-11-18', totalTokens: 20 },
+        ],
+      }),
+    });
+    const secondReceipt = await json(second);
+
+    // The ignored day keeps both its total and the time it was observed; the
+    // written day takes the time of the write that changed it.
+    const rows = await h.db
+      .prepare('SELECT bucket_date, total_tokens, updated_at FROM usage_day ORDER BY bucket_date')
+      .all<{ bucket_date: string; total_tokens: number; updated_at: string }>();
+    expect(rows.results).toEqual([
+      { bucket_date: '2026-11-17', total_tokens: 120, updated_at: firstReceipt.receivedAt },
+      { bucket_date: '2026-11-18', total_tokens: 20, updated_at: secondReceipt.receivedAt },
+    ]);
+  });
+
+  it('treats an equal total as neither a change nor an ignored reduction', async () => {
+    expect(
+      (
+        await h.putSnapshot({
+          revision: 1,
+          body: snapshotBody({ days: [{ date: '2026-11-18', totalTokens: 100 }] }),
+        })
+      ).status,
+    ).toBe(200);
+
+    const same = await h.putSnapshot({
+      revision: 2,
+      body: snapshotBody({ days: [{ date: '2026-11-18', totalTokens: 100 }] }),
+    });
+    expect(same.status).toBe(200);
+    expect(await json(same)).toMatchObject({ changedDays: [], ignoredReductions: 0 });
+  });
+
+  it('replays an ignored reduction with the same ignoredReductions count', async () => {
+    expect(
+      (
+        await h.putSnapshot({
+          revision: 1,
+          body: snapshotBody({
+            days: [
+              { date: '2026-11-17', totalTokens: 120 },
+              { date: '2026-11-18', totalTokens: 10 },
+            ],
+          }),
+        })
+      ).status,
+    ).toBe(200);
+
+    const body = snapshotBody({
+      days: [
+        { date: '2026-11-17', totalTokens: 100 },
+        { date: '2026-11-18', totalTokens: 5 },
+      ],
+    });
+    const first = await h.putSnapshot({ revision: 2, body });
+    expect(first.status).toBe(200);
+    expect(await json(first)).toMatchObject({ status: 'applied', ignoredReductions: 2 });
+
+    const replay = await h.putSnapshot({ revision: 2, body });
+    expect(replay.status).toBe(200);
+    expect(await json(replay)).toMatchObject({
+      status: 'replayed',
+      revision: 2,
+      changedDays: [],
+      ignoredReductions: 2,
+    });
+    expect(await scalar(h.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(2);
   });
 
   it('accepts a measured zero for a previously absent day', async () => {

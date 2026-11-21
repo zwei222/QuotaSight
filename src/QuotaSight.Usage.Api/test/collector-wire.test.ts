@@ -58,6 +58,7 @@ interface ReceiptBody {
   readonly generation: number;
   readonly revision: number;
   readonly changedDays: readonly string[];
+  readonly ignoredReductions: number;
 }
 
 /** Locates the already-built collector preview binary without building anything. */
@@ -151,6 +152,7 @@ describe('Collector preview output accepted by the local Usage API', () => {
       generation: 1,
       revision: 1,
       changedDays: ['2026-11-17', '2026-11-18', '2026-11-19'],
+      ignoredReductions: 0,
     });
 
     const read = await h.getDaily('?from=2026-11-17&to=2026-11-19', 'read-a1');
@@ -166,6 +168,33 @@ describe('Collector preview output accepted by the local Usage API', () => {
       { date: '2026-11-19', collectorId: FIXTURE.collectorA1, totalTokens: 1440 },
     ]);
     expect(body.totalTokens).toBe(3040);
+  });
+
+  it('accepts a collector wire body whose old day decreased and keeps the previous total', async () => {
+    const { snapshot } = previewSnapshot();
+    expect((await h.putSnapshot({ revision: 1, body: snapshot })).status).toBe(200);
+
+    // The shape is unchanged; only one day total is lower than what the API
+    // already accepted. That day keeps its value, the others are unchanged too.
+    const lowered = {
+      ...snapshot,
+      days: snapshot.days.map((day) =>
+        day.date === '2026-11-17' ? { date: day.date, totalTokens: 399 } : day,
+      ),
+    };
+    const second = await h.putSnapshot({ revision: 2, body: lowered });
+    expect(second.status).toBe(200);
+    const receipt = await json<ReceiptBody>(second);
+    expect(receipt.status).toBe('applied');
+    expect(receipt.changedDays).toEqual([]);
+    expect(receipt.ignoredReductions).toBe(1);
+
+    const read = await json<DailyBody>(await h.getDaily('?from=2026-11-17&to=2026-11-19', 'read-a1'));
+    expect(read.days.map((day) => [day.date, day.totalTokens])).toEqual([
+      ['2026-11-17', 400],
+      ['2026-11-18', 1200],
+      ['2026-11-19', 1440],
+    ]);
   });
 
   it('replays the same revision as a no-op and keeps the readback identical', async () => {

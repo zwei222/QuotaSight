@@ -126,14 +126,29 @@ public sealed record CollectorSendState
     /// <summary>Recorded when a 2xx body could not be verified as the API's receipt.</summary>
     public const string ResponseUnverifiedReason = "response_unverified";
 
+    /// <summary>
+    /// Reasons this build can record as a block. `reduction_unverified` is not
+    /// one of them: the API no longer refuses a snapshot for a decreased day, it
+    /// keeps the accepted total and reports the count instead.
+    /// </summary>
     private static readonly string[] ConflictReasons =
     [
         "revision_conflict",
         "stale_revision",
-        "reduction_unverified",
         "generation_inactive",
         UnknownConflictReason,
         ResponseUnverifiedReason,
+    ];
+
+    /// <summary>
+    /// Reasons a state document written by a build that still had the previous
+    /// contract may carry. They are accepted when reading, so the file can be
+    /// opened and unblocked with <c>--state-advance</c>, but nothing records them
+    /// any more.
+    /// </summary>
+    private static readonly string[] PreviousConflictReasons =
+    [
+        "reduction_unverified",
     ];
 
     private CollectorSendState(
@@ -308,6 +323,14 @@ public sealed record CollectorSendState
     public static bool IsConflictReason(string reason) =>
         Array.Exists(ConflictReasons, candidate => string.Equals(candidate, reason, StringComparison.Ordinal));
 
+    /// <summary>
+    /// True when a state document may carry <paramref name="reason"/>: a reason
+    /// this build records, or one a previous build could have written.
+    /// </summary>
+    private static bool IsStoredReason(string reason) =>
+        IsConflictReason(reason)
+        || Array.Exists(PreviousConflictReasons, candidate => string.Equals(candidate, reason, StringComparison.Ordinal));
+
     /// <summary>The exact bytes of the state document, with one trailing line feed.</summary>
     public byte[] ToCanonicalJson()
     {
@@ -456,7 +479,7 @@ public sealed record CollectorSendState
             || fields.Generation is not (>= 1 and <= MaxRevision)
             || fields.LastRevision is not (>= 0 and <= MaxRevision)
             || !TryParseOutcome(fields.LastOutcome!, out var outcome)
-            || (fields.BlockedReason is not null && !IsConflictReason(fields.BlockedReason)))
+            || (fields.BlockedReason is not null && !IsStoredReason(fields.BlockedReason)))
         {
             failure = CollectorStateFailure.StateInvalidField;
             return false;

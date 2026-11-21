@@ -558,11 +558,11 @@ public static class CollectorCli
                         // The request left the process, so the result cannot be replayed
                         // and the next run must not assume anything about it.
                         stderr.WriteLine($"state_unrecorded: {CollectorStateFailureText.Describe(recordFailure)}");
-                        stderr.WriteLine(outcome.Message);
+                        ReportOutcome(stderr, outcome);
                         return CollectorExitCodes.StateUnrecorded;
                     }
 
-                    stderr.WriteLine(outcome.Message);
+                    ReportOutcome(stderr, outcome);
                     return outcome.ExitCode;
                 }
             }
@@ -570,6 +570,21 @@ public static class CollectorCli
         finally
         {
             owned?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Writes the fixed outcome line, plus the ignored-reduction count when the
+    /// API accepted a snapshot but kept a higher accepted total for some days.
+    /// The count is a fixed token and an integer, never a response excerpt.
+    /// </summary>
+    private static void ReportOutcome(TextWriter stderr, SendOutcome outcome)
+    {
+        stderr.WriteLine(outcome.Message);
+        if (outcome.IgnoredReductions > 0)
+        {
+            stderr.WriteLine(
+                "reductions_ignored: " + outcome.IgnoredReductions.ToString(CultureInfo.InvariantCulture));
         }
     }
 

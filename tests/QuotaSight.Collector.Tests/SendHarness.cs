@@ -170,13 +170,15 @@ internal sealed class SendHarness : IDisposable
         string collectorId = CollectorId,
         long generation = Generation,
         string receivedAt = "2026-11-21T00:00:00.000Z",
-        string changedDays = "[\"2026-11-17\"]") =>
+        string changedDays = "[\"2026-11-17\"]",
+        string ignoredReductions = "0") =>
         "{\"status\":\"" + status
         + "\",\"collectorId\":\"" + collectorId
         + "\",\"generation\":" + generation.ToString(CultureInfo.InvariantCulture)
         + ",\"revision\":" + revision.ToString(CultureInfo.InvariantCulture)
         + ",\"receivedAt\":\"" + receivedAt
-        + "\",\"changedDays\":" + changedDays + "}";
+        + "\",\"changedDays\":" + changedDays
+        + ",\"ignoredReductions\":" + ignoredReductions + "}";
 
     public static byte[] ExpectedWire()
     {

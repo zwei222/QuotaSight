@@ -246,10 +246,16 @@ active generation, run `--state-init` with the new `--generation` and a floor of
 | --- | --- | --- |
 | `revision_conflict` | That revision was already accepted with a different payload. | Confirm the state belongs to this collector generation, then `--state-init --first-revision <above it>`. |
 | `stale_revision` | A newer revision was already accepted for this generation. | `--state-init --first-revision <above the accepted revision>`. |
-| `reduction_unverified` | A previously accepted day total would decrease. | Fix the upstream scan (partial log), then `--state-advance`. |
 | `generation_inactive` | The snapshot generation is no longer the collector's active generation. | Set `--generation` to the active one, then `--state-init --first-revision 1` for that generation. |
 | `conflict_unknown` | The 409 body was missing, unreadable or named a reason this build does not know. | Inspect the API and the operator records, then decide; `--state-advance` unblocks. |
 | `response_unverified` | A `2xx` arrived, but its body was not the receipt this collector, generation and revision expect. The write may or may not have been applied. | Check the API for that revision and the collector's records; the number is never reused, so `--state-advance` and the next run send the next revision. |
+
+A decreased day is **not** a 409 any more: the API keeps the accepted total for
+that day, accepts the rest of the snapshot and reports the count in
+`ignoredReductions`. This build neither blocks nor fails for it. A state file
+written by a build that still had the previous contract may carry
+`reduction_unverified` as its blocked reason; it is still read (so
+`--state-advance` can clear it) but nothing produces that reason any more.
 
 A `409`, and a `2xx` whose receipt could not be verified, block the next send
 until `--state-advance`. Nothing recovers automatically: the collector never
@@ -261,12 +267,21 @@ timeouts and transport failures leave the outcome unknown and also move on.
 
 A `2xx` is a success only when its body is the receipt the API documents
 (`status`, `collectorId`, `generation`, `revision`, `receivedAt`,
-`changedDays`) for exactly this collector, generation and revision. Anything
+`changedDays`, `ignoredReductions`) for exactly this collector, generation and
+revision. `ignoredReductions` is required and must be an integer between `0` and
+`62` (the API's per-snapshot day bound); a receipt without it, with a negative
+or fractional value, or with a value above that bound is not verified. Anything
 else — including a `204`, an unexpected field, or a body over 8 KiB — is
 `send_receipt_unverified` (`27`), or `send_response_too_large` (`22`) for the
 size case. Both record the revision as unverified and set the
 `response_unverified` block, because the local record and the server may now
 disagree. No body is ever printed.
+
+When the verified receipt reports `ignoredReductions` above `0`, the run prints
+one extra fixed line to stderr: `reductions_ignored: <n>`. The exit code stays
+`0` (`sent: accepted`): the API accepted the snapshot and consumed the revision,
+and the count only says how many days kept an already accepted, higher total. It
+is a fixed token and an integer — never a response excerpt.
 
 When the recorded outcome of the previous revision is `none` or `unknown`, every
 send first reports `previous_send_unresolved` and then continues with the next

@@ -16,7 +16,6 @@ export type ApiErrorCode =
   | 'result_too_large'
   | 'revision_conflict'
   | 'stale_revision'
-  | 'reduction_unverified'
   | 'generation_inactive'
   | 'internal_error';
 
