@@ -1,4 +1,6 @@
 using Avalonia.Controls;
+using Avalonia.Interactivity;
+using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.UI;
 
@@ -8,28 +10,175 @@ namespace QuotaSight.UI.Tests.Support;
 /// Test host that builds the synthetic quota-rings window from fixed sample data, a fixed
 /// clock, and theme/language chosen through settings, so tests and any external capture
 /// harness that links this file render the same window.
+///
+/// The <c>--usage-state</c> switch additionally builds the settings page with a synthetic
+/// usage connection. It only ever uses an in-memory credential store, a synthetic credential
+/// pair and a transport that refuses every request, so no real credential store, user setting
+/// or network endpoint is read or written.
 /// </summary>
 public static class QuotaRingsHost
 {
     public static readonly DateTimeOffset FixtureNow = DateTimeOffset.Parse("2026-11-20T12:00:00+09:00");
 
+    /// <summary>Acceptable synthetic usage endpoint for the configured states.</summary>
+    public const string SyntheticUsageEndpoint = "https://usage.example.test";
+
+    /// <summary>Deliberately invalid synthetic endpoint: cleartext is refused by the rules.</summary>
+    public const string SyntheticUsageInvalidEndpoint = "http://usage.example.test";
+
+    /// <summary>Synthetic client id. It is a fixture literal, never a real credential.</summary>
+    public const string SyntheticUsageClientId = "synthetic-fixture-client-id";
+
+    /// <summary>Synthetic client secret. It is a fixture literal, never a real credential.</summary>
+    public const string SyntheticUsageClientSecret = "synthetic-fixture-client-secret";
+
+    /// <summary>Argument that selects the connection state shown on the settings page.</summary>
+    public const string UsageStateArgument = "--usage-state";
+
+    /// <summary>Connection states the host can build, in the order they are documented.</summary>
+    public static readonly IReadOnlyList<string> UsageStates =
+        ["unconfigured", "configured", "session-only", "store-unavailable", "invalid-endpoint", "saving"];
+
     public static (Window Window, MainViewModel ViewModel) Create(string[] args)
+    {
+        var host = CreateHost(args);
+        return (host.Window, host.ViewModel);
+    }
+
+    /// <summary>
+    /// Same window as <see cref="Create"/>, plus the synthetic store so a test can inspect what
+    /// was written and whether a save is still in flight.
+    /// </summary>
+    public static FixtureHost CreateHost(string[] args)
     {
         var widget = args.Contains("--widget", StringComparer.OrdinalIgnoreCase);
         var light = args.Contains("--light", StringComparer.OrdinalIgnoreCase);
+        var narrow = args.Contains("--narrow", StringComparer.OrdinalIgnoreCase);
+        var settings = args.Contains("--settings", StringComparer.OrdinalIgnoreCase);
+        var usageState = ReadUsageState(args);
+        if (settings && widget)
+            throw new InvalidOperationException("--settings is only available on the main window; --widget has no settings page.");
+
         // Theme must be passed explicitly through settings: SetSettings applies dto.Theme and a
         // default "System" value would override the --dark variant on the host.
         var theme = light ? "Light" : "Dark";
+        var store = usageState is null
+            ? null
+            : new SyntheticUsageCredentialStore(AvailabilityFor(usageState), freezeSave: usageState == "saving");
         var viewModel = new MainViewModel(new SyntheticDashboardSource(),
-            timeProvider: new FixedTimeProvider(FixtureNow));
+            timeProvider: new FixedTimeProvider(FixtureNow),
+            usageCredentialStore: store,
+            usageHttpClientFactory: store is null ? null : CreateSyntheticHttpClient);
         viewModel.SetSettings(viewModel.CurrentSettingsForTests with { Theme = theme, CopilotReferenceCredits = 1500m }, persist: false);
         if (args.Contains("--ja", StringComparer.OrdinalIgnoreCase))
             viewModel.Language = UiLanguage.Japanese;
         Window window = widget
             ? new CompactQuotaWindow(viewModel) { Width = 410, Height = 620 }
-            : new MainWindow(viewModel) { Width = 1100, Height = 740 };
-        return (window, viewModel);
+            : new MainWindow(viewModel) { Width = narrow ? 520 : 1100, Height = 740 };
+        if (usageState is not null)
+            ApplyUsageState(window, usageState);
+        if (settings)
+            viewModel.Navigate(AppPage.Settings);
+        return new FixtureHost(window, viewModel, store, usageState);
     }
+
+    private static void ApplyUsageState(Window window, string usageState)
+    {
+        // "unconfigured" is the view model's own starting point: a store with nothing in it.
+        if (usageState == "unconfigured")
+            return;
+
+        if (window is not MainWindow main)
+            throw new InvalidOperationException("Usage connection states require the main window.");
+
+        var endpoint = usageState == "invalid-endpoint" ? SyntheticUsageInvalidEndpoint : SyntheticUsageEndpoint;
+        main.FindControl<TextBox>("UsageEndpointBox")!.Text = endpoint;
+        main.FindControl<TextBox>("UsageClientIdBox")!.Text = SyntheticUsageClientId;
+        main.FindControl<TextBox>("UsageClientSecretBox")!.Text = SyntheticUsageClientSecret;
+
+        // Saving goes through the real button handler, so the progress panel and the disabled
+        // fields a capture is supposed to show come from production code. "saving" uses a store
+        // whose write never completes, which leaves that progress state on screen.
+        main.FindControl<Button>("UsageConnectionSaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    }
+
+    private static CredentialStoreAvailability AvailabilityFor(string usageState) => usageState switch
+    {
+        "unconfigured" or "configured" => CredentialStoreAvailability.SecureStore,
+        "session-only" => CredentialStoreAvailability.SessionOnly,
+        "store-unavailable" => CredentialStoreAvailability.Unavailable,
+        // The invalid endpoint never reaches the store, so any availability is fine here.
+        _ => CredentialStoreAvailability.SecureStore,
+    };
+
+    private static string? ReadUsageState(string[] args)
+    {
+        var index = Array.FindIndex(args, argument => string.Equals(argument, UsageStateArgument, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return null;
+        if (index + 1 >= args.Length)
+            throw new ArgumentException($"{UsageStateArgument} needs a value: {string.Join(", ", UsageStates)}.");
+
+        var value = args[index + 1].Trim().ToLowerInvariant();
+        if (!UsageStates.Contains(value, StringComparer.Ordinal))
+            throw new ArgumentException($"Unknown {UsageStateArgument} value '{args[index + 1]}'; expected one of: {string.Join(", ", UsageStates)}.");
+        return value;
+    }
+
+    private static HttpClient CreateSyntheticHttpClient() => new(new OfflineUsageHandler());
+
+    /// <summary>Transport for the synthetic connection. It answers locally and never dials out.</summary>
+    private sealed class OfflineUsageHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+    }
+}
+
+/// <summary>Window, view model and synthetic store produced by <see cref="QuotaRingsHost.CreateHost"/>.</summary>
+/// <param name="UsageState">Requested state, or <c>null</c> when the host was launched without one.</param>
+public sealed record FixtureHost(
+    Window Window,
+    MainViewModel ViewModel,
+    SyntheticUsageCredentialStore? UsageCredentialStore,
+    string? UsageState);
+
+/// <summary>
+/// In-memory credential store for the fixture. <see cref="Availability"/> is chosen by the
+/// requested state, and <paramref name="freezeSave"/> makes the first write wait forever so the
+/// settings page stays in its saving state for a capture. Nothing outside this object is touched.
+/// </summary>
+public sealed class SyntheticUsageCredentialStore(CredentialStoreAvailability availability = CredentialStoreAvailability.SecureStore, bool freezeSave = false) : ICredentialStore
+{
+    private readonly Dictionary<string, string> values = new(StringComparer.Ordinal);
+    private readonly TaskCompletionSource saveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public CredentialStoreAvailability Availability { get; } = availability;
+
+    /// <summary>Completes as soon as a write has been attempted, whether or not it finished.</summary>
+    public TaskCompletionSource SaveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public int Count => values.Count;
+
+    public ValueTask<string?> GetAsync(string account, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(values.GetValueOrDefault(account));
+
+    public async ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken)
+    {
+        SaveStarted.TrySetResult();
+        if (freezeSave)
+            await saveGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        values[account] = secret;
+    }
+
+    public ValueTask RemoveAsync(string account, CancellationToken cancellationToken)
+    {
+        values.Remove(account);
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Returns the stored value for a test; the fixture never renders it.</summary>
+    public string? Peek(string account) => values.GetValueOrDefault(account);
 }
 
 public sealed class SyntheticDashboardSource : IDashboardSource

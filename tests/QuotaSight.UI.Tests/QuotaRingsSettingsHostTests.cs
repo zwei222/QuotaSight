@@ -1,0 +1,242 @@
+using Avalonia.Controls;
+using Avalonia.Headless.XUnit;
+using Avalonia.VisualTree;
+using QuotaSight.UI;
+using QuotaSight.UI.Tests.Support;
+using Xunit;
+
+namespace QuotaSight.UI.Tests;
+
+/// <summary>
+/// Keeps this class out of the parallel render wave: its windows include an indeterminate
+/// progress bar while a synthetic save is pending, and the pixel assertions elsewhere in this
+/// suite are timing sensitive. Serializing here keeps that pre-existing behaviour untouched.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class QuotaRingsSettingsHostCollection
+{
+    public const string Name = "quota-rings-settings-host";
+}
+
+/// <summary>
+/// Contract tests for the capture host's settings-page arguments. Every credential value and
+/// endpoint here is a fixture literal and every store is the host's in-memory fake.</summary>
+[Collection(QuotaRingsSettingsHostCollection.Name)]
+public sealed class QuotaRingsSettingsHostTests
+{
+    [AvaloniaFact]
+    public void Settings_argument_opens_the_settings_page_at_the_main_window_size()
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", "configured"]);
+        try
+        {
+            Assert.Equal(AppPage.Settings, host.ViewModel.CurrentPage);
+            Assert.True(host.ViewModel.IsSettingsVisible);
+            Assert.IsType<MainWindow>(host.Window);
+            Assert.Equal(1100d, host.Window.Width);
+            Assert.Equal(740d, host.Window.Height);
+
+            host.Window.Show();
+            host.Window.UpdateLayout();
+
+            Assert.True(host.Window.FindControl<Grid>("SettingsPage")!.IsVisible);
+            Assert.True(host.Window.FindControl<Border>("UsageConnectionCard")!.IsVisible);
+            Assert.Equal(QuotaRingsHost.SyntheticUsageEndpoint, host.Window.FindControl<TextBox>("UsageEndpointBox")!.Text);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Narrow_argument_shrinks_the_main_window_to_520x740_and_keeps_the_settings_page()
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--narrow", "--usage-state", "configured"]);
+        try
+        {
+            Assert.Equal(520d, host.Window.Width);
+            Assert.Equal(740d, host.Window.Height);
+            Assert.True(((MainWindow)host.Window).IsCompactLayout);
+            Assert.Equal(AppPage.Settings, host.ViewModel.CurrentPage);
+
+            host.Window.Show();
+            host.Window.UpdateLayout();
+
+            var card = host.Window.FindControl<Border>("UsageConnectionCard")!;
+            var scroll = host.Window.FindControl<ScrollViewer>("ContentScroll")!;
+            Assert.True(card.Bounds.Width > 0, "The usage connection card must be laid out.");
+            Assert.True(card.Bounds.Width <= scroll.Viewport.Width + 0.5,
+                $"The card is {card.Bounds.Width:0.#}px wide but the viewport is only {scroll.Viewport.Width:0.#}px.");
+            Assert.True(host.Window.FindControl<TextBox>("UsageEndpointBox")!.Bounds.Width > 0);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Existing_main_and_widget_arguments_keep_their_page_and_size()
+    {
+        var main = QuotaRingsHost.CreateHost(["--main", "--dark"]);
+        try
+        {
+            Assert.IsType<MainWindow>(main.Window);
+            Assert.Equal(1100d, main.Window.Width);
+            Assert.Equal(740d, main.Window.Height);
+            Assert.Equal(AppPage.Dashboard, main.ViewModel.CurrentPage);
+            Assert.Null(main.UsageState);
+            Assert.Null(main.UsageCredentialStore);
+        }
+        finally { main.Window.Close(); main.ViewModel.Dispose(); }
+
+        var widget = QuotaRingsHost.CreateHost(["--widget", "--light"]);
+        try
+        {
+            Assert.IsType<CompactQuotaWindow>(widget.Window);
+            Assert.Equal(410d, widget.Window.Width);
+            Assert.Equal(620d, widget.Window.Height);
+            Assert.Equal(AppPage.Dashboard, widget.ViewModel.CurrentPage);
+        }
+        finally { widget.Window.Close(); widget.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("unconfigured", UsageConnectionState.Unconfigured, UsageConnectionError.None, false)]
+    [InlineData("configured", UsageConnectionState.Configured, UsageConnectionError.None, true)]
+    [InlineData("session-only", UsageConnectionState.SessionOnly, UsageConnectionError.None, true)]
+    [InlineData("store-unavailable", UsageConnectionState.StoreUnavailable, UsageConnectionError.CredentialStoreUnavailable, false)]
+    [InlineData("invalid-endpoint", UsageConnectionState.Unconfigured, UsageConnectionError.NotHttps, false)]
+    public void Usage_state_argument_builds_the_expected_connection_state(
+        string state, UsageConnectionState expected, UsageConnectionError expectedError, bool credentialStored)
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", state]);
+        try
+        {
+            Assert.Equal(state, host.UsageState);
+            Assert.Equal(expected, host.ViewModel.UsageConnectionState);
+            Assert.Equal(expectedError, host.ViewModel.UsageConnectionError);
+            Assert.Equal(credentialStored, host.ViewModel.HasUsageCredential);
+            Assert.Equal(expectedError is not UsageConnectionError.None, host.ViewModel.HasUsageConnectionError);
+            Assert.Equal(credentialStored ? 2 : 0, host.UsageCredentialStore!.Count);
+            Assert.Equal(AppPage.Settings, host.ViewModel.CurrentPage);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Configured_state_shows_the_endpoint_and_never_the_credential_values()
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", "configured"]);
+        try
+        {
+            var store = host.UsageCredentialStore!;
+            Assert.Equal(QuotaRingsHost.SyntheticUsageClientId, store.Peek(StoreUsageCredentialProvider.ClientIdAccount));
+            Assert.Equal(QuotaRingsHost.SyntheticUsageClientSecret, store.Peek(StoreUsageCredentialProvider.ClientSecretAccount));
+            Assert.Equal(QuotaRingsHost.SyntheticUsageEndpoint, host.ViewModel.UsageApiEndpointText);
+            Assert.True(host.ViewModel.IsUsageConnectionConfigured);
+
+            host.Window.Show();
+            host.Window.UpdateLayout();
+
+            Assert.Equal(QuotaRingsHost.SyntheticUsageEndpoint, host.Window.FindControl<TextBox>("UsageEndpointBox")!.Text);
+            Assert.Equal(string.Empty, host.Window.FindControl<TextBox>("UsageClientIdBox")!.Text);
+            Assert.Equal(string.Empty, host.Window.FindControl<TextBox>("UsageClientSecretBox")!.Text);
+            Assert.Contains("configured", host.Window.FindControl<Border>("UsageConnectionStatusPanel")!.Classes);
+            Assert.False(host.Window.FindControl<TextBlock>("UsageConnectionValidationText")!.IsVisible);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public void Invalid_endpoint_state_keeps_the_rejected_input_and_shows_fixed_error_copy()
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", "invalid-endpoint"]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+
+            var validation = host.Window.FindControl<TextBlock>("UsageConnectionValidationText")!;
+            Assert.True(validation.IsVisible);
+            Assert.Equal(new UiCopy(UiLanguage.English).UsageConnectionErrorText(UsageConnectionError.NotHttps), validation.Text);
+            Assert.DoesNotContain("usage.example.test", validation.Text ?? string.Empty, StringComparison.Ordinal);
+            Assert.Equal(QuotaRingsHost.SyntheticUsageInvalidEndpoint, host.Window.FindControl<TextBox>("UsageEndpointBox")!.Text);
+            Assert.Equal(0, host.UsageCredentialStore!.Count);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Saving_state_freezes_on_the_progress_panel_with_the_store_write_pending()
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", "saving"]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(host.ViewModel.HasUsageCredential);
+            Assert.Equal(UsageConnectionState.Unconfigured, host.ViewModel.UsageConnectionState);
+            Assert.Equal(0, host.UsageCredentialStore.Count);
+
+            Assert.True(host.Window.FindControl<StackPanel>("UsageConnectionBusyPanel")!.IsVisible);
+            Assert.True(host.Window.FindControl<ProgressBar>("UsageConnectionProgressBar")!.IsIndeterminate);
+            Assert.Contains("Saving", host.Window.FindControl<TextBlock>("UsageConnectionBusyText")!.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.False(host.Window.FindControl<Button>("UsageConnectionSaveButton")!.IsEnabled);
+            Assert.False(host.Window.FindControl<Button>("UsageConnectionRemoveButton")!.IsEnabled);
+            Assert.False(host.Window.FindControl<TextBox>("UsageEndpointBox")!.IsEnabled);
+            Assert.False(host.Window.FindControl<TextBox>("UsageClientIdBox")!.IsEnabled);
+            Assert.False(host.Window.FindControl<TextBox>("UsageClientSecretBox")!.IsEnabled);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("unconfigured")]
+    [InlineData("configured")]
+    [InlineData("session-only")]
+    [InlineData("store-unavailable")]
+    [InlineData("invalid-endpoint")]
+    [InlineData("saving")]
+    public async Task Rendered_settings_page_never_puts_the_synthetic_credentials_in_text(string state)
+    {
+        var host = QuotaRingsHost.CreateHost(["--main", "--dark", "--settings", "--usage-state", state]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+            // The saving case deliberately leaves a store write pending. An async test body lets
+            // the headless session complete instead of waiting on that still-running operation.
+            await Task.Yield();
+
+            var text = host.Window.GetVisualDescendants().OfType<TextBlock>()
+                .Select(block => block.Text ?? string.Empty)
+                .ToArray();
+            Assert.All(text, value =>
+            {
+                Assert.DoesNotContain(QuotaRingsHost.SyntheticUsageClientId, value, StringComparison.Ordinal);
+                Assert.DoesNotContain(QuotaRingsHost.SyntheticUsageClientSecret, value, StringComparison.Ordinal);
+            });
+
+            var secret = host.Window.FindControl<TextBox>("UsageClientSecretBox")!;
+            Assert.NotEqual(default, secret.PasswordChar);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [Fact]
+    public void Unknown_usage_state_is_refused_instead_of_rendering_a_wrong_state()
+    {
+        var error = Assert.Throws<ArgumentException>(() => QuotaRingsHost.CreateHost(["--main", "--dark", "--usage-state", "unsaved"]));
+        Assert.Contains("--usage-state", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Missing_usage_state_value_is_refused()
+    {
+        Assert.Throws<ArgumentException>(() => QuotaRingsHost.CreateHost(["--main", "--dark", "--usage-state"]));
+    }
+
+    [Fact]
+    public void Settings_argument_is_refused_for_the_widget_window()
+    {
+        Assert.Throws<InvalidOperationException>(() => QuotaRingsHost.CreateHost(["--widget", "--light", "--settings"]));
+    }
+}
