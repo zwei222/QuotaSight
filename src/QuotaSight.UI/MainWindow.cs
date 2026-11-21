@@ -521,6 +521,7 @@ public partial class MainWindow : Window
 
     private void SetUsageConnectionBusy(bool busy, bool removing)
     {
+        ViewModel.SetUsageConnectionBusy(busy, removing);
         if (this.FindControl<TextBox>("UsageEndpointBox") is { } endpoint) endpoint.IsEnabled = !busy;
         if (this.FindControl<TextBox>("UsageClientIdBox") is { } id) id.IsEnabled = !busy;
         if (this.FindControl<TextBox>("UsageClientSecretBox") is { } secret) secret.IsEnabled = !busy;

@@ -1655,6 +1655,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool hasUsageCredential;
     private UsageConnectionState usageConnectionState = UsageConnectionState.Unconfigured;
     private UsageConnectionError usageConnectionError = UsageConnectionError.None;
+    private bool usageConnectionBusy;
+    private bool usageConnectionRemoving;
     private CancellationTokenSource? usageRequest;
     private long usageRequestId;
     private string usageState = "Unconfigured";
@@ -1752,8 +1754,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Classified reason the last connection change was refused.</summary>
     public UsageConnectionError UsageConnectionError => usageConnectionError;
 
-    /// <summary>Fixed, localized sentence for <see cref="UsageConnectionState"/>; it names no endpoint or identity.</summary>
-    public string UsageConnectionStatusText => CopyText.UsageConnectionStatus(usageConnectionState);
+    /// <summary>Fixed, localized sentence for <see cref="UsageConnectionState"/>; it names no endpoint or identity.
+    /// While a save or removal is in flight it names the running operation instead, so the banner never
+    /// contradicts the progress strip below it.</summary>
+    public string UsageConnectionStatusText => usageConnectionBusy
+        ? usageConnectionRemoving ? CopyText.UsageConnectionRemoving : CopyText.UsageConnectionSaving
+        : CopyText.UsageConnectionStatus(usageConnectionState);
 
     /// <summary>Fixed, localized sentence for <see cref="UsageConnectionError"/>; it echoes no input.</summary>
     public string UsageConnectionErrorText => CopyText.UsageConnectionErrorText(usageConnectionError);
@@ -1777,6 +1783,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>True when the last connection change was refused, so fixed copy must show near the fields.</summary>
     public bool HasUsageConnectionError => usageConnectionError is not UsageConnectionError.None;
+
+    /// <summary>True while a usage connection save or removal is still in flight.</summary>
+    public bool IsUsageConnectionBusy => usageConnectionBusy;
+
+    /// <summary>
+    /// Marks the usage connection operation that the settings page is currently showing its
+    /// progress strip for. Clearing it (or starting a different operation) re-renders the
+    /// status banner through <see cref="UsageConnectionStatusText"/>.
+    /// </summary>
+    public void SetUsageConnectionBusy(bool busy, bool removing)
+    {
+        if (usageConnectionBusy == busy && (!busy || usageConnectionRemoving == removing)) return;
+        usageConnectionBusy = busy;
+        usageConnectionRemoving = removing;
+        OnPropertyChanged(nameof(IsUsageConnectionBusy));
+        OnPropertyChanged(nameof(UsageConnectionStatusText));
+    }
 
     /// <summary>Presence-only credential text: whether a pair is stored, never any stored value.</summary>
     public string UsageCredentialStatusText => HasUsageCredential ? CopyText.UsageCredentialSaved : CopyText.UsageCredentialNone;

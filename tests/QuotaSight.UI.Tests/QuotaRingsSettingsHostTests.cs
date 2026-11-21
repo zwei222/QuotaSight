@@ -191,6 +191,77 @@ public sealed class QuotaRingsSettingsHostTests
     }
 
     [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Usage_connection_buttons_keep_a_gap_and_stay_inside_the_card(bool narrow)
+    {
+        var args = new List<string> { "--main", "--dark", "--settings", "--usage-state", "configured" };
+        if (narrow)
+            args.Add("--narrow");
+        var host = QuotaRingsHost.CreateHost([.. args]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+
+            var row = host.Window.FindControl<WrapPanel>("UsageConnectionActions")!;
+            var save = host.Window.FindControl<Button>("UsageConnectionSaveButton")!;
+            var remove = host.Window.FindControl<Button>("UsageConnectionRemoveButton")!;
+            Assert.Contains("danger-outline", remove.Classes);
+
+            var saveTopLeft = save.TranslatePoint(new Point(0, 0), row)!.Value;
+            var removeTopLeft = remove.TranslatePoint(new Point(0, 0), row)!.Value;
+            Assert.True(saveTopLeft.X + save.Bounds.Width <= row.Bounds.Width + 0.5,
+                $"The save button ends at {saveTopLeft.X + save.Bounds.Width:0.#}px but the row is only {row.Bounds.Width:0.#}px wide.");
+            Assert.True(removeTopLeft.X + remove.Bounds.Width <= row.Bounds.Width + 0.5,
+                $"The remove button ends at {removeTopLeft.X + remove.Bounds.Width:0.#}px but the row is only {row.Bounds.Width:0.#}px wide.");
+
+            var sameRow = Math.Abs(saveTopLeft.Y - removeTopLeft.Y) < 0.5;
+            if (sameRow)
+            {
+                var horizontalGap = removeTopLeft.X > saveTopLeft.X
+                    ? removeTopLeft.X - (saveTopLeft.X + save.Bounds.Width)
+                    : saveTopLeft.X - (removeTopLeft.X + remove.Bounds.Width);
+                Assert.True(horizontalGap >= 8,
+                    $"The two connection buttons touch: {horizontalGap:0.#}px between them at width {row.Bounds.Width:0.#}.");
+            }
+            else
+            {
+                var top = Math.Min(saveTopLeft.Y, removeTopLeft.Y);
+                var lower = saveTopLeft.Y > removeTopLeft.Y ? save : remove;
+                var verticalGap = lower.TranslatePoint(new Point(0, 0), row)!.Value.Y - (top + save.Bounds.Height);
+                Assert.True(verticalGap >= 4,
+                    $"The wrapped button rows touch: {verticalGap:0.#}px between them.");
+            }
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Saving_state_names_the_operation_in_the_status_banner(bool japanese)
+    {
+        var args = new List<string> { "--main", "--dark", "--settings", "--usage-state", "saving" };
+        if (japanese)
+            args.Add("--ja");
+        var host = QuotaRingsHost.CreateHost([.. args]);
+        try
+        {
+            host.Window.Show();
+            host.Window.UpdateLayout();
+            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var banner = host.Window.FindControl<TextBlock>("UsageConnectionStatusText")!;
+            var expected = new UiCopy(japanese ? UiLanguage.Japanese : UiLanguage.English).UsageConnectionSaving;
+            Assert.Equal(expected, banner.Text);
+            Assert.DoesNotContain("not configured", banner.Text ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("未設定", banner.Text ?? string.Empty, StringComparison.Ordinal);
+        }
+        finally { host.Window.Close(); host.ViewModel.Dispose(); }
+    }
+
+    [AvaloniaTheory]
     [InlineData("unconfigured")]
     [InlineData("configured")]
     [InlineData("session-only")]
