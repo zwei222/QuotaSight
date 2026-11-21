@@ -9,6 +9,14 @@ database. There is no account id, no remote binding and no credential in this
 repository. Authentication is Cloudflare Access service-token JWT verification,
 configured per deployment and fail-closed when that configuration is absent.
 
+**Deployment prerequisite:** a real deployment needs Workers **Paid**. Workers
+Free allows 10 ms of CPU time per request, and D1 query execution and result
+serialization count toward that CPU time, so one maximum-size `PUT` can be
+terminated for exceeding CPU even though every local test passes. The operator
+runbook — ordering, the remote smoke test, the rotation drill and the list of
+behaviour that only a real deployment can settle — is
+[docs/deployment.md](../../docs/deployment.md).
+
 ## Endpoints
 
 ```http
@@ -149,7 +157,9 @@ Enforced strictly (unknown keys are rejected, never ignored):
 - **Atomic.** Days and the receipt are written in one D1 `batch()` transaction;
   the guards that abort a write are statements and schema triggers, so a
   rejected write cannot leave a receipt without its days (or vice versa), and an
-  ignored reduction can never be half-applied.
+  ignored reduction can never be half-applied. The D1 documentation describes the
+  rollback scope of a partly failing `batch()` inconsistently, so this is proven
+  against remote D1 by the runbook's check 4 rather than assumed here.
 
 ### Why a decrease is ignored rather than refused
 
@@ -278,7 +288,11 @@ broader permission.
 - **401 `unauthorized`** — the request is not authenticated: no usable assertion,
   bad signature, expired or wrong claims, or a client id that is not in the map.
   The body is always `{ "error": { "code": "unauthorized", "message": "Credentials are required." } }`.
-  It does not say which check failed.
+  It does not say which check failed. This answer is defense-in-depth: with an
+  Access application in front of the hostname, Access evaluates the service token
+  first and answers a bad or missing one itself, so a `401` from this Worker means
+  the request reached it while bypassing Access — another route, a Service
+  Binding, or a hostname outside the application.
 - **503 `auth_unavailable`** — the Access JWKS could not be used (fetch failure,
   timeout, malformed set, no matching key). Nothing is written. The body has no
   reason, token or client id.
@@ -305,12 +319,39 @@ Unexpected verifier failures are returned as 401 or 503, never as a 500 that
 might echo internal details. Responses and logs do not include the JWT, header
 values, client ids or key material.
 
-**Unverified:** whether Cloudflare Access itself answers a bad or missing
-service token with `403` or `302` (rather than letting the request reach this
-Worker) has not been tested against a real Access deployment. Because of that,
-the desktop client classifies a `403` as a credential/scope problem and a `3xx`
-as a redirect that is never followed, and offers the settings-page detour for
-both; neither path has been observed end-to-end against Access.
+### Unverified, and what only a real deployment can settle
+
+The list below is the behaviour this package depends on that the official
+documentation does not fix, or that has not been observed in a real account. The
+same list appears as a checklist in
+[docs/deployment.md](../../docs/deployment.md).
+
+- **Which status Access returns for a bad or missing service token** is decided by
+  the Zero Trust organization setting **strict service token authentication**, not
+  by this Worker. With the setting on, Access returns `401` or `403` and never
+  redirects a non-browser client to an interactive login; with it off, a
+  non-browser client is redirected (`302`) to a page it cannot complete.
+  Organizations created on or after 2026-10-05 have the setting on by default and
+  cannot turn it off. That much is documented. Still unverified here is **which**
+  of `401` and `403` a given rejection returns, and the behaviour with Managed
+  OAuth enabled — no rejection has been observed against a real Access
+  deployment. The desktop client therefore classifies a `403` as a
+  credential/scope problem and a `3xx` as a redirect that is never followed, and
+  offers the settings-page detour for both; a `302` from a `strict`-off
+  organization is the case that reads as a redirect instead of as a credential
+  problem, which is why the runbook turns the setting on before the smoke test.
+- **`RETURNING` is not described in the D1 documentation.** `changedDays` and
+  `ignoredReductions` are read from the rows that `RETURNING` hands back inside
+  the write's `batch()`, so a remote database that did not support it would still
+  write the days and report `changedDays: []` instead of failing loudly. Local
+  tests run against a real local D1 and cannot settle this; only the remote smoke
+  test in the runbook can (checks 1 and 2).
+- **The rollback scope of `batch()` is described inconsistently.** The official
+  page says batched statements are SQL transactions whose failing statement
+  aborts or rolls back the sequence, and in the same section says D1 operates in
+  auto-commit with each statement committing in turn. This package assumes the
+  whole batch rolls back; the runbook (check 4) proves it remotely by making the
+  last statement fail and confirming that the earlier day write is absent.
 
 ### Operator signal for a missing configuration
 

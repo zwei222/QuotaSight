@@ -101,3 +101,97 @@ describe('repository hygiene', () => {
     expect(violations).toEqual([]);
   });
 });
+
+/**
+ * The deployment runbook is the one document an operator copies commands out of,
+ * so the promises it makes are pinned here rather than left to prose review: the
+ * plan prerequisite, the ordering that keeps Access in front of the hostname,
+ * the two D1 behaviours that only a remote deployment can prove, and the rule
+ * that no real account value may appear in it.
+ */
+describe('deployment runbook', () => {
+  const repoRoot = resolve(packageRoot, '..', '..');
+  const runbook = join(repoRoot, 'docs', 'deployment.md');
+
+  async function readRunbook(): Promise<string> {
+    return readFile(runbook, 'utf8');
+  }
+
+  it('treats Workers Paid as a prerequisite and says why', async () => {
+    const doc = await readRunbook();
+    expect(doc).toMatch(/Workers\s+\*\*Paid\*\*/);
+    expect(doc).toContain('10 ms');
+    expect(doc).toContain('D1 query execution and result serialization');
+    expect(doc).toContain('not a code defect');
+  });
+
+  it('creates the Access application before the hostname exists', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Create the Access application before you attach the Custom Domain.');
+    expect(doc).toContain('Service Auth');
+  });
+
+  it('pins the policy constraints that keep Access in front of every path', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Never add a `Bypass` policy to the application.');
+    expect(doc).toContain('Do not enable Managed OAuth on these applications.');
+    expect(doc).toContain('strict service token authentication');
+    expect(doc).toContain('401');
+    expect(doc).toContain('403');
+    expect(doc).toContain('302');
+    expect(doc).toContain('AUD changes');
+  });
+
+  it('requires a remote proof for RETURNING and for batch() rollback', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('RETURNING');
+    expect(doc).toContain('changedDays');
+    expect(doc).toContain('ignoredReductions');
+    expect(doc).toContain('remote D1');
+    expect(doc).toContain('stale_revision');
+    expect(doc).toContain('DELETE FROM usage_day');
+  });
+
+  it('documents secret rotation that leaves the Client ID unchanged', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Client ID does not change');
+    expect(doc).toContain('grace period');
+    expect(doc).toContain('30 days');
+    expect(doc).toContain('LoadCredential');
+    expect(doc).toContain('systemctl restart');
+    expect(doc).toContain('one week');
+  });
+
+  it('keeps credentials out of command arguments and shell history', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('-H @');
+    expect(doc).toContain('--config');
+    expect(doc).toContain('wrangler secret put');
+    expect(doc).toContain('shell history');
+  });
+
+  it('carries the unverified list as a checklist to run in a real account', async () => {
+    const doc = await readRunbook();
+    expect(doc).toContain('Verify in a real environment');
+    const items = doc.match(/^- \[ \] /gm) ?? [];
+    expect(items).toHaveLength(9);
+  });
+
+  it('has no real host, team domain, hex id or access client id', async () => {
+    const doc = await readRunbook();
+    const violations: string[] = [];
+    for (const match of doc.matchAll(/[A-Za-z0-9-]+\.cloudflareaccess\.com/g)) {
+      if (match[0] !== 'example.cloudflareaccess.com') violations.push(`domain ${match[0]}`);
+    }
+    for (const match of doc.matchAll(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,64}(?![0-9A-Fa-f])/g)) {
+      violations.push(`hex ${match[0]}`);
+    }
+    for (const match of doc.matchAll(/[0-9A-Za-z]{16,}\.access\b/g)) {
+      violations.push(`client id ${match[0]}`);
+    }
+    expect(violations).toEqual([]);
+    // No absolute path from a machine that ran the deployment, and no
+    // profile-relative path either: the runbook is published with the code.
+    expect(doc).not.toMatch(/\/(?:home|Users|root)\//);
+  });
+});
