@@ -529,15 +529,16 @@ public sealed class ThresholdNotificationPresentationTests
             next = new(TaskCreationOptions.RunContinuationsAsynchronously);
             RefreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
-        public void Complete(QuotaRefreshResult value) => active!.TrySetResult(value);
+        public void Complete(QuotaRefreshResult value) => (active ?? throw new InvalidOperationException("The gated refresh has not started.")).TrySetResult(value);
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
         {
             Calls++;
             if (next is not { } pending) return ValueTask.FromResult(Result);
-            RefreshStarted.TrySetResult();
             active = pending;
             next = null;
-            return new(pending.Task.WaitAsync(cancellationToken));
+            var task = pending.Task.WaitAsync(cancellationToken);
+            RefreshStarted.TrySetResult();
+            return new(task);
         }
     }
 
