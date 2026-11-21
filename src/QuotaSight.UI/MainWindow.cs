@@ -4,6 +4,8 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using System.Globalization;
 using QuotaSight.Application;
@@ -247,13 +249,21 @@ public partial class MainWindow : Window
     private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();
 
     private void DashboardClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Dashboard);
+    private void UsageClick(object? sender, RoutedEventArgs e) => ViewModel.NavigateToUsage();
     private void HistoryClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.History);
     private void SettingsClick(object? sender, RoutedEventArgs e) => ViewModel.Navigate(AppPage.Settings);
+    private async void UsageRefreshClick(object? sender, RoutedEventArgs e)
+    {
+        try { await ViewModel.RefreshUsageAsync(); }
+        catch (OperationCanceledException) { }
+    }
     private async void RefreshClick(object? sender, RoutedEventArgs e)
     {
+        if (ViewModel.IsUsageVisible) { await UsageRefreshClickAsync(); return; }
         try { await RunTrackedAsync(token => ViewModel.RefreshAsync(token)); }
         catch (OperationCanceledException) { }
     }
+    private async Task UsageRefreshClickAsync() { try { await ViewModel.RefreshUsageAsync(); } catch (OperationCanceledException) { } }
     private async void ThemeChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (!isInitializing && sender is ComboBox box && box.SelectedItem is LocalizedChoice<ThemeMode> theme)

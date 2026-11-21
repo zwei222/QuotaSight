@@ -10,8 +10,23 @@ public sealed class UiCopy
     private readonly UiLanguage language;
     public UiCopy(UiLanguage language) => this.language = language;
     public bool IsJapanese => language == UiLanguage.Japanese;
+    public string UsageState(string state) => (state, IsJapanese) switch
+    {
+        ("Loading", true) => "利用量を読み込み中…",
+        ("Loading", false) => "Loading usage…",
+        ("Empty", true) => "指定期間の利用データはありません。",
+        ("Empty", false) => "No usage data for this period.",
+        ("Ready", true) => "利用データを表示しています。",
+        ("Ready", false) => "Usage data loaded.",
+        ("Error", true) => "利用データを読み込めませんでした。再試行してください。",
+        ("Error", false) => "Could not load usage. Try again.",
+        ("Unconfigured", true) => "利用量 API は未設定です。",
+        ("Unconfigured", false) => "Usage API is not configured.",
+        _ => state
+    };
     public string Dashboard => IsJapanese ? "ダッシュボード" : "Dashboard";
     public string UsageOverview => IsJapanese ? "使用量" : "Usage";
+    public string UsageTotalTokens => IsJapanese ? "合計トークン" : "Total tokens";
     public string AddProvider => IsJapanese ? "追加" : "Add provider";
     public string ProviderPicker => IsJapanese ? "プロバイダーを選択" : "Choose a provider";
     public string Close => IsJapanese ? "閉じる" : "Close";

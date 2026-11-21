@@ -1,0 +1,154 @@
+{
+  "meta": {
+    "generatedAt": "2026-11-19T18:49:08.875485588+00:00",
+    "version": "4.23.0",
+    "dateRange": {
+      "start": "2026-11-17",
+      "end": "2026-11-19"
+    }
+  },
+  "summary": {
+    "totalTokens": 3040,
+    "totalCost": 0.0033,
+    "totalDays": 3,
+    "activeDays": 3,
+    "clients": [
+      "codex",
+      "hermes"
+    ],
+    "models": [
+      "claude-sonnet-4-5",
+      "gpt-5.1"
+    ],
+    "costProvenance": {
+      "kind": "unknown"
+    }
+  },
+  "years": [
+    {
+      "year": "2026",
+      "totalTokens": 3040,
+      "totalCost": 0.0033,
+      "range": {
+        "start": "2026-11-17",
+        "end": "2026-11-19"
+      },
+      "costProvenance": {
+        "kind": "unknown"
+      }
+    }
+  ],
+  "contributions": [
+    {
+      "date": "2026-11-17",
+      "totals": {
+        "tokens": -1,
+        "cost": 0.0012,
+        "messages": 2,
+        "costProvenance": {
+          "kind": "unknown"
+        }
+      },
+      "intensity": 3,
+      "tokenBreakdown": {
+        "input": 300,
+        "output": 40,
+        "cacheRead": 40,
+        "cacheWrite": 0,
+        "reasoning": 20
+      },
+      "clients": [
+        {
+          "client": "hermes",
+          "modelId": "claude-sonnet-4-5",
+          "providerId": "anthropic",
+          "tokens": {
+            "input": 300,
+            "output": 40,
+            "cacheRead": 40,
+            "cacheWrite": 0,
+            "reasoning": 20
+          },
+          "cost": 0.0012,
+          "messages": 2
+        }
+      ]
+    },
+    {
+      "date": "2026-11-18",
+      "totals": {
+        "tokens": 1200,
+        "cost": 0.0,
+        "messages": 1,
+        "costProvenance": {
+          "kind": "unknown"
+        }
+      },
+      "intensity": 0,
+      "tokenBreakdown": {
+        "input": 600,
+        "output": 150,
+        "cacheRead": 400,
+        "cacheWrite": 0,
+        "reasoning": 50
+      },
+      "clients": [
+        {
+          "client": "codex",
+          "modelId": "gpt-5.1",
+          "providerId": "openai",
+          "tokens": {
+            "input": 600,
+            "output": 150,
+            "cacheRead": 400,
+            "cacheWrite": 0,
+            "reasoning": 50
+          },
+          "cost": 0.0,
+          "messages": 1
+        }
+      ]
+    },
+    {
+      "date": "2026-11-19",
+      "totals": {
+        "tokens": 1440,
+        "cost": 0.0021,
+        "messages": 2,
+        "costProvenance": {
+          "kind": "unknown"
+        }
+      },
+      "intensity": 4,
+      "tokenBreakdown": {
+        "input": 1200,
+        "output": 230,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 10
+      },
+      "clients": [
+        {
+          "client": "hermes",
+          "modelId": "gpt-5.1",
+          "providerId": "openai",
+          "tokens": {
+            "input": 700,
+            "output": 140,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 0.0021,
+          "messages": 1
+        }
+      ]
+    }
+  ],
+  "timeMetrics": {
+    "totalActiveTimeMs": 0,
+    "longestContinuousMs": 0,
+    "maxConcurrentSessions": 1,
+    "sessionCount": 4
+  }
+}

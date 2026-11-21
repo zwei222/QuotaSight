@@ -1,0 +1,26 @@
+-- QuotaSight Usage API :: read access path (owner-scoped reads)
+--
+-- The read query joins usage_day to collectors and filters on `c.owner_id`.
+-- Without an index on the owner, SQLite drives that query from
+-- `usage_day_by_bucket_date`, so the work a single owner's request performs
+-- depends on how much data *every other owner* has inside the date window. The
+-- index below makes the owner the driving key, so a read is bounded by the
+-- caller's own collectors.
+--
+-- Evidence (local D1, 5000 rows for the owner, 5000 for a second owner,
+-- 366-day window, 20 iterations, measured with `EXPLAIN QUERY PLAN` plus
+-- wall-clock timing of the exact statement in `src/store.ts`):
+--
+--   before: SEARCH u USING INDEX usage_day_by_bucket_date (bucket_date>? AND ...)
+--           SEARCH c USING INDEX sqlite_autoindex_collectors_1 (id=?)
+--           725 ms total
+--   after:  SEARCH c USING INDEX collectors_by_owner (owner_id=?)
+--           SEARCH u USING PRIMARY KEY (collector_id=? AND generation=? AND ...)
+--           USE TEMP B-TREE FOR ORDER BY
+--           630 ms total
+--
+-- The plan therefore became owner-driven without regressing the measured
+-- latency, so `usage_day_by_bucket_date` is kept: it still serves the read
+-- without the owner hint and nothing measured gives a reason to drop it.
+
+CREATE INDEX collectors_by_owner ON collectors (owner_id, id);

@@ -1,0 +1,7 @@
+# Local only. Never commit build output, dependencies or local D1 state.
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+*.log

@@ -1,0 +1,966 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
+using Xunit;
+
+namespace QuotaSight.UI.Tests;
+
+/// <summary>
+/// Contract tests for the explicit HTTPS daily read adapter. Every test drives a
+/// fake peer (an <see cref="HttpMessageHandler"/>), so both the request that
+/// would hit the network and the response that would be parsed are observed
+/// exactly.
+/// </summary>
+public sealed class UsageHttpPortTests
+{
+    private static readonly Uri Origin = new("https://usage.test");
+    private const string Identity = "owner-a";
+
+    [Fact]
+    public async Task ReadSendsOneFixedOriginGetWithBearerAndReturnsVerifiedRows()
+    {
+        var peer = new FakePeer(_ => Json(Body(
+            "2026-11-01",
+            "2026-11-02",
+            1600,
+            Row("2026-11-01", "col-a1", 400),
+            Row("2026-11-02", "col-a1", 0),
+            Row("2026-11-02", "col-a2", 1200))));
+        using var harness = Harness.Create(peer, Credential("read-token"));
+
+        var usage = await harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1),
+            new DateOnly(2026, 11, 2),
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(new DateOnly(2026, 11, 1), usage.From);
+        Assert.Equal(new DateOnly(2026, 11, 2), usage.To);
+        Assert.Equal(1600L, usage.TotalTokens);
+        Assert.Collection(
+            usage.Days,
+            day => Assert.Equal(new UsageDay(new DateOnly(2026, 11, 1), "col-a1", 400), day),
+            // A measured zero is data and is preserved, never read as "no row".
+            day => Assert.Equal(new UsageDay(new DateOnly(2026, 11, 2), "col-a1", 0), day),
+            day => Assert.Equal(new UsageDay(new DateOnly(2026, 11, 2), "col-a2", 1200), day));
+
+        var request = Assert.Single(peer.Requests);
+        Assert.Equal("GET", request.Method);
+        Assert.Equal(
+            "https://usage.test/v1/usage/daily?from=2026-11-01&to=2026-11-02",
+            request.Uri);
+        Assert.Equal("Bearer read-token", request.Authorization);
+        Assert.Equal(new Uri("https://usage.test/v1/usage/daily"), harness.Port.Endpoint);
+    }
+
+    [Fact]
+    public async Task CollectorFilterIsSentAsExactlyOneQueryParameter()
+    {
+        var peer = new FakePeer(_ => Json(Body(
+            "2026-11-01",
+            "2026-11-01",
+            400,
+            Row("2026-11-01", "col-a1", 400))));
+        using var harness = Harness.Create(peer, Credential("read-token"));
+
+        var usage = await harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1),
+            new DateOnly(2026, 11, 1),
+            "col-a1",
+            CancellationToken.None);
+
+        Assert.Equal(400L, usage.TotalTokens);
+        Assert.Equal(
+            "https://usage.test/v1/usage/daily?from=2026-11-01&to=2026-11-01&collector=col-a1",
+            Assert.Single(peer.Requests).Uri);
+    }
+
+    [Fact]
+    public async Task CredentialIsReadPerRequestAndASecondIdentityNeverReusesTheFirstResponse()
+    {
+        var peer = new FakePeer(request =>
+        {
+            var authorization = request.Headers.TryGetValues("Authorization", out var values)
+                ? string.Join(",", values)
+                : null;
+            return authorization switch
+            {
+                "Bearer token-a" => Json(Body("2026-11-01", "2026-11-01", 10, Row("2026-11-01", "col-a1", 10))),
+                "Bearer token-b" => Json(Body("2026-11-01", "2026-11-01", 20, Row("2026-11-01", "col-a1", 20))),
+                _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            };
+        });
+        var credentials = new QueueCredentials(Credential("token-a"), Credential("token-b"));
+        using var client = new HttpClient(peer);
+        var port = new HttpUsageReadPort(client, Origin, Identity, credentials);
+
+        var first = await port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None);
+        var second = await port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None);
+
+        Assert.Equal(10L, first.TotalTokens);
+        // The second identity gets its own response: nothing is memoised by range.
+        Assert.Equal(20L, second.TotalTokens);
+        Assert.Equal(2, credentials.Calls);
+        Assert.Equal(2, peer.Requests.Count);
+        Assert.Equal("Bearer token-a", peer.Requests[0].Authorization);
+        Assert.Equal("Bearer token-b", peer.Requests[1].Authorization);
+        Assert.DoesNotContain("token-a", peer.Requests[1].Authorization, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RejectsNonHttpsOrigin()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+
+        Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
+            client, new Uri("http://usage.test"), Identity, new QueueCredentials(Credential("t"))));
+    }
+
+    [Theory]
+    [InlineData("https://usage.test/api")]
+    [InlineData("https://usage.test/?from=2026-01-01")]
+    [InlineData("https://user:pass@usage.test")]
+    public void RejectsOriginThatIsNotABareHttpsOrigin(string origin)
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+
+        Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
+            client, new Uri(origin), Identity, new QueueCredentials(Credential("t"))));
+    }
+
+    [Fact]
+    public void RejectsClientThatAlreadyCarriesADefaultAuthorizationHeader()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "stale-identity");
+
+        Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential("t"))));
+    }
+
+    [Theory]
+    [InlineData("COLLECTOR")]
+    [InlineData("col-a1&from=2026-01-01")]
+    [InlineData("col/a1")]
+    [InlineData("ab")]
+    public async Task RejectsInvalidCollectorFilterWithoutSending(string collectorId)
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer, Credential("t"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), collectorId, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.InvalidRequest, failure.Failure);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsRangeLongerThanTheQueryWindowWithoutSending()
+    {
+        var peer = new FakePeer(_ => Json(Body("2025-01-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer, Credential("t"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2025, 1, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.InvalidRequest, failure.Failure);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsInvertedRangeWithoutSending()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer, Credential("t"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 2), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.InvalidRequest, failure.Failure);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsMissingCredentialWithoutSending()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer);
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.CredentialUnavailable, failure.Failure);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsCredentialIssuedForAnotherIdentityWithoutSending()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer, new UsageCredential("owner-b", "token-b"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.IdentityMismatch, failure.Failure);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsResponseThatEchoesADifferentRange()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-03", 0)));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.RangeMismatch, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsRowOutsideTheRequestedRange()
+    {
+        var peer = new FakePeer(_ => Json(Body(
+            "2026-11-01", "2026-11-02", 400, Row("2026-11-05", "col-a1", 400))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer, new DateOnly(2026, 11, 2)));
+
+        Assert.Equal(UsageReadFailure.RangeMismatch, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsRowForAnotherCollectorWhenAFilterWasRequested()
+    {
+        var peer = new FakePeer(_ => Json(Body(
+            "2026-11-01", "2026-11-01", 400, Row("2026-11-01", "col-a2", 400))));
+        using var harness = Harness.Create(peer, Credential("t"));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), "col-a1", CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.FilterMismatch, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,\"extra\":1}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\"}],\"totalTokens\":0}")]
+    [InlineData("{\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":{},\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\"}")]
+    [InlineData("[]")]
+    [InlineData("not json")]
+    public async Task RejectsUnknownMissingOrMalformedFieldsInsteadOfDefaultingToZero(string body)
+    {
+        var peer = new FakePeer(_ => Json(body));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":1.5}],\"totalTokens\":1.5}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":\"12\"}],\"totalTokens\":12}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":-1}],\"totalTokens\":-1}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":true}],\"totalTokens\":1}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":9007199254740992}],\"totalTokens\":9007199254740992}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026/11/01\",\"collectorId\":\"col-a1\",\"totalTokens\":0}],\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-A1\",\"totalTokens\":0}],\"totalTokens\":0}")]
+    public async Task RejectsUnsafeOrNonIntegerNumbersAndNonCanonicalDates(string body)
+    {
+        var peer = new FakePeer(_ => Json(body));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsEchoedTotalThatDoesNotEqualTheDaySum()
+    {
+        var peer = new FakePeer(_ => Json(Body(
+            "2026-11-01", "2026-11-01", 999, Row("2026-11-01", "col-a1", 400))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.InconsistentTotal, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-02\",\"days\":[{\"date\":\"2026-11-02\",\"collectorId\":\"col-a1\",\"totalTokens\":1},{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":2}],\"totalTokens\":3}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-02\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":1},{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":1}],\"totalTokens\":2}")]
+    public async Task RejectsUnsortedOrDuplicatedRows(string body)
+    {
+        var peer = new FakePeer(_ => Json(body));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer, new DateOnly(2026, 11, 2)));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"days\":[]}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[]}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"collectorId\":\"col-a1\"}],\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\"}],\"totalTokens\":0}")]
+    [InlineData("{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[{\"date\":\"2026-11-01\",\"collectorId\":\"col-a1\",\"totalTokens\":0,\"totalTokens\":0}],\"totalTokens\":0}")]
+    public async Task RejectsRepeatedContractFieldsAsTypedMalformedResponses(string body)
+    {
+        var peer = new FakePeer(_ => Json(body));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.MalformedResponse, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsMoreRowsThanTheDailyReadBound()
+    {
+        var rows = new StringBuilder();
+        for (var index = 0; index <= HttpUsageReadPort.MaxRows; index++)
+        {
+            if (index > 0)
+            {
+                rows.Append(',');
+            }
+
+            rows.Append(Row("2026-11-01", "col-a1", 0));
+        }
+
+        var body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[" + rows + "],\"totalTokens\":0}";
+        var peer = new FakePeer(_ => Json(body));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.ResponseTooLarge, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsDeclaredOversizedContentLengthBeforeParsing()
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[HttpUsageReadPort.MaxResponseBytes + 1]),
+            };
+            response.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            return response;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.ResponseTooLarge, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsStreamedOversizedBodyWithNoContentLength()
+    {
+        var payload = new byte[HttpUsageReadPort.MaxResponseBytes + 64];
+        var peer = new FakePeer(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new NonSeekableStream(payload)),
+            };
+            response.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            return response;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.ResponseTooLarge, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsRedirectWithoutFollowingTheLocation()
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+            redirect.Headers.Location = new Uri("https://elsewhere.test/v1/usage/daily");
+            return redirect;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.RedirectRejected, failure.Failure);
+        Assert.Single(peer.Requests);
+    }
+
+    [Fact]
+    public async Task RejectsResponseThatReportsAPostRedirectRequestInsteadOfTheRequestedOne()
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var response = Json(Body("2026-11-01", "2026-11-01", 0));
+            response.RequestMessage = new HttpRequestMessage(
+                HttpMethod.Get,
+                "https://elsewhere.test/v1/usage/daily?from=2026-11-01&to=2026-11-01");
+            return response;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.RedirectRejected, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData("https://usage.test/v1/usage/daily?from=2026-11-01&to=2026-11-02")]
+    [InlineData("https://usage.test/v1/usage/daily?from=2026-11-01")]
+    [InlineData("https://usage.test/v1/usage/other?from=2026-11-01&to=2026-11-01")]
+    public async Task RejectsResponseThatReportsADifferentUriOnTheSameOrigin(string answered)
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var response = Json(Body("2026-11-01", "2026-11-01", 0));
+            response.RequestMessage = new HttpRequestMessage(HttpMethod.Get, answered);
+            return response;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.RedirectRejected, failure.Failure);
+    }
+
+    [Fact]
+    public async Task AcceptsAResponseThatReportsTheRequestedUri()
+    {
+        var peer = new FakePeer(request =>
+        {
+            var response = Json(Body("2026-11-01", "2026-11-01", 0));
+            response.RequestMessage = request;
+            return response;
+        });
+
+        var usage = await Read(peer);
+
+        Assert.Equal(0L, usage.TotalTokens);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, UsageReadFailure.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden, UsageReadFailure.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound, UsageReadFailure.NotFound)]
+    [InlineData(HttpStatusCode.InternalServerError, UsageReadFailure.UnexpectedStatus)]
+    public async Task MapsStatusFailuresAndNeverEchoesTheResponseBody(
+        HttpStatusCode status,
+        UsageReadFailure expected)
+    {
+        const string Secret = "response-body-secret";
+        var peer = new FakePeer(_ => new HttpResponseMessage(status)
+        {
+            Content = new StringContent("{\"error\":\"" + Secret + "\"}", Encoding.UTF8, "application/json"),
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(expected, failure.Failure);
+        Assert.Equal((int)status, failure.StatusCode);
+        Assert.DoesNotContain(Secret, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("usage.test", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectsNonJsonMediaType()
+    {
+        var peer = new FakePeer(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(Body("2026-11-01", "2026-11-01", 0), Encoding.UTF8, "text/plain"),
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.UnsupportedContent, failure.Failure);
+    }
+
+    [Fact]
+    public async Task RejectsCompressedResponseBecauseTheTransportNegotiatesNone()
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var response = Json(Body("2026-11-01", "2026-11-01", 0));
+            response.Content.Headers.ContentEncoding.Add("gzip");
+            return response;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.UnsupportedContent, failure.Failure);
+    }
+
+    [Fact]
+    public async Task ReportsTransportFailureWithoutEchoingTheInnerExceptionMessage()
+    {
+        const string Secret = "/home/someone/.config/secret";
+        var peer = new FakePeer(_ => throw new HttpRequestException("failed at " + Secret));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.TransportFailure, failure.Failure);
+        Assert.DoesNotContain(Secret, failure.Message, StringComparison.Ordinal);
+        Assert.IsType<HttpRequestException>(failure.InnerException);
+    }
+
+    [Fact]
+    public async Task PropagatesCallerCancellationInsteadOfReportingATransportFailure()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var harness = Harness.Create(peer, Credential("t"));
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var exception = await Record.ExceptionAsync(() => harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, cancellation.Token));
+
+        Assert.IsAssignableFrom<OperationCanceledException>(exception);
+        Assert.IsNotType<UsageReadException>(exception);
+        Assert.Empty(peer.Requests);
+    }
+
+    [Fact]
+    public async Task ClientTimeoutIsReportedAsTimeoutRatherThanCancellation()
+    {
+        var peer = new FakePeer(async (_, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return Json(Body("2026-11-01", "2026-11-01", 0));
+        });
+        using var client = new HttpClient(peer) { Timeout = TimeSpan.FromMilliseconds(50) };
+        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential("t")));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.Timeout, failure.Failure);
+    }
+
+    [Fact]
+    public async Task HeadersThatDoNotArriveWithinTheRequestDeadlineAreReportedAsTimeout()
+    {
+        var peer = new FakePeer(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            return Json(Body("2026-11-01", "2026-11-01", 0));
+        });
+        using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
+        var port = new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromMilliseconds(150));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.Timeout, failure.Failure);
+        Assert.IsAssignableFrom<OperationCanceledException>(failure.InnerException);
+    }
+
+    [Fact]
+    public async Task BodyThatArrivesAfterTheRequestDeadlineIsReportedAsTimeout()
+    {
+        // The headers arrive at once; only the body is slow. A client timeout alone
+        // stops applying once the headers are read, so the port must bound the body.
+        var payload = Encoding.UTF8.GetBytes(Body("2026-11-01", "2026-11-01", 0));
+        var peer = new FakePeer((_, _) => Task.FromResult(
+            JsonWithStream(new DelayedStream(payload, TimeSpan.FromSeconds(2)))));
+        using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
+        var port = new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromMilliseconds(150));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
+
+        Assert.Equal(UsageReadFailure.Timeout, failure.Failure);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BodyTransportFailureIsClassifiedInsteadOfEscapingThePort(bool httpFailure)
+    {
+        const string Secret = "/home/someone/.config/secret";
+        var peer = new FakePeer((_, _) => Task.FromResult(JsonWithStream(new ThrowingStream(
+            httpFailure
+                ? new HttpRequestException("body reset at " + Secret)
+                : new IOException("body broken at " + Secret)))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.TransportFailure, failure.Failure);
+        Assert.DoesNotContain(Secret, failure.Message, StringComparison.Ordinal);
+        Assert.IsType(httpFailure ? typeof(HttpRequestException) : typeof(IOException), failure.InnerException);
+    }
+
+    [Fact]
+    public async Task BodyThatFailsAfterAPartialReadIsReportedAsTransportFailure()
+    {
+        // A truncated body is a transport failure, never "malformed JSON": a parsed
+        // prefix must not be mistaken for a complete answer.
+        var prefix = Encoding.UTF8.GetBytes(Body("2026-11-01", "2026-11-01", 0));
+        var peer = new FakePeer((_, _) => Task.FromResult(JsonWithStream(new PrefixThenThrowStream(prefix))));
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.TransportFailure, failure.Failure);
+        Assert.IsType<IOException>(failure.InnerException);
+    }
+
+    [Fact]
+    public async Task PropagatesCallerCancellationWhileTheBodyIsBeingRead()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peer = new FakePeer((_, _) => Task.FromResult(JsonWithStream(new BlockingStream(started))));
+        using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
+        var port = new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromSeconds(30));
+        using var cancellation = new CancellationTokenSource();
+
+        var read = port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, cancellation.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await cancellation.CancelAsync();
+
+        var exception = await Record.ExceptionAsync(() => read);
+
+        Assert.IsAssignableFrom<OperationCanceledException>(exception);
+        Assert.IsNotType<UsageReadException>(exception);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void RejectsANonPositiveRequestDeadline(int milliseconds)
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HttpUsageReadPort(
+            client,
+            Origin,
+            Identity,
+            new QueueCredentials(Credential("t")),
+            TimeSpan.FromMilliseconds(milliseconds)));
+    }
+
+    [Fact]
+    public void RejectsAnUnboundedRequestDeadline()
+    {
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential("t")), Timeout.InfiniteTimeSpan));
+    }
+
+    [Fact]
+    public void DefaultRequestDeadlineIsFiniteAndPositive()
+    {
+        Assert.True(HttpUsageReadPort.DefaultRequestDeadline > TimeSpan.Zero);
+        Assert.NotEqual(Timeout.InfiniteTimeSpan, HttpUsageReadPort.DefaultRequestDeadline);
+
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential("t")));
+        Assert.Equal(HttpUsageReadPort.DefaultRequestDeadline, port.RequestDeadline);
+    }
+
+    [Fact]
+    public void TransportFactoryDisablesRedirectsCookiesAndDecompression()
+    {
+        using var handler = UsageReadTransport.CreateHandler();
+        Assert.False(handler.AllowAutoRedirect);
+        Assert.False(handler.UseCookies);
+        Assert.Equal(DecompressionMethods.None, handler.AutomaticDecompression);
+        Assert.True(handler.ConnectTimeout > TimeSpan.Zero);
+
+        using var client = UsageReadTransport.CreateClient(TimeSpan.FromSeconds(5));
+        Assert.Equal(TimeSpan.FromSeconds(5), client.Timeout);
+    }
+
+    [Fact]
+    public void CredentialOmitsTheTokenFromItsTextRepresentation()
+    {
+        var credential = new UsageCredential(Identity, "token-secret");
+
+        Assert.DoesNotContain("token-secret", credential.ToString(), StringComparison.Ordinal);
+        Assert.Contains(Identity, credential.ToString(), StringComparison.Ordinal);
+    }
+
+    private static async Task<DailyUsage> Read(FakePeer peer, DateOnly? to = null)
+    {
+        using var harness = Harness.Create(peer, Credential("t"));
+        return await harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1),
+            to ?? new DateOnly(2026, 11, 1),
+            null,
+            CancellationToken.None);
+    }
+
+    private static UsageCredential Credential(string token) => new(Identity, token);
+
+    private static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    /// <summary>A JSON response whose body is streamed, so its read can be observed and bounded.</summary>
+    private static HttpResponseMessage JsonWithStream(Stream body)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+        response.Content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        return response;
+    }
+
+    private static string Body(string from, string to, long totalTokens, params string[] rows) =>
+        "{\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[" + string.Join(",", rows)
+        + "],\"totalTokens\":" + totalTokens.ToString(CultureInfo.InvariantCulture) + "}";
+
+    private static string Row(string date, string collectorId, long totalTokens) =>
+        "{\"date\":\"" + date + "\",\"collectorId\":\"" + collectorId + "\",\"totalTokens\":"
+        + totalTokens.ToString(CultureInfo.InvariantCulture) + "}";
+
+    private sealed record RecordedRequest(string Method, string Uri, string? Authorization);
+
+    /// <summary>Owns the injected client so the fake peer is disposed with it.</summary>
+    private sealed class Harness : IDisposable
+    {
+        private Harness(HttpClient client, HttpUsageReadPort port)
+        {
+            Client = client;
+            Port = port;
+        }
+
+        public HttpClient Client { get; }
+
+        public HttpUsageReadPort Port { get; }
+
+        public static Harness Create(FakePeer peer, params UsageCredential?[] credentials)
+        {
+            var client = new HttpClient(peer);
+            return new Harness(client, new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(credentials)));
+        }
+
+        public void Dispose() => Client.Dispose();
+    }
+
+    private sealed class FakePeer : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _respond;
+
+        public FakePeer(Func<HttpRequestMessage, HttpResponseMessage> respond)
+            : this((request, _) => Task.FromResult(respond(request)))
+        {
+        }
+
+        public FakePeer(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond)
+        {
+            _respond = respond;
+        }
+
+        public List<RecordedRequest> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var authorization = request.Headers.TryGetValues("Authorization", out var values)
+                ? string.Join(",", values)
+                : null;
+            Requests.Add(new RecordedRequest(
+                request.Method.Method,
+                request.RequestUri?.AbsoluteUri ?? string.Empty,
+                authorization));
+
+            return _respond(request, cancellationToken);
+        }
+    }
+
+    private sealed class QueueCredentials(params UsageCredential?[] credentials) : IUsageCredentialProvider
+    {
+        private readonly Queue<UsageCredential?> _pending = new(credentials);
+
+        public int Calls { get; private set; }
+
+        public ValueTask<UsageCredential?> GetCredentialAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_pending.Count > 0 ? _pending.Dequeue() : null);
+        }
+    }
+
+    /// <summary>Boilerplate for a bounded, read-only body stream used as a fake peer body.</summary>
+    private abstract class ReadOnlyTestStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>Serves a fixed payload only after a delay that honours cancellation.</summary>
+    private sealed class DelayedStream(byte[] payload, TimeSpan delay) : ReadOnlyTestStream
+    {
+        private int _offset;
+        private bool _delayed;
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_delayed)
+            {
+                _delayed = true;
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+
+            return Copy(buffer.Span);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (!_delayed)
+            {
+                _delayed = true;
+                Thread.Sleep(delay);
+            }
+
+            return Copy(buffer.AsSpan(offset, count));
+        }
+
+        private int Copy(Span<byte> destination)
+        {
+            var count = Math.Min(destination.Length, payload.Length - _offset);
+            payload.AsSpan(_offset, count).CopyTo(destination);
+            _offset += count;
+            return count;
+        }
+    }
+
+    /// <summary>Fails the first body read with the given transport error.</summary>
+    private sealed class ThrowingStream(Exception failure) : ReadOnlyTestStream
+    {
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) => ValueTask.FromException<int>(failure);
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) => Task.FromException<int>(failure);
+
+        public override int Read(byte[] buffer, int offset, int count) => throw failure;
+    }
+
+    /// <summary>Serves one partial payload, then fails the next read like a truncated response.</summary>
+    private sealed class PrefixThenThrowStream(byte[] prefix) : ReadOnlyTestStream
+    {
+        private bool _served;
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_served)
+            {
+                return ValueTask.FromException<int>(
+                    new IOException("the connection dropped mid-body"));
+            }
+
+            _served = true;
+            return ValueTask.FromResult(Copy(buffer.Span));
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        private int Copy(Span<byte> destination)
+        {
+            var count = Math.Min(destination.Length, prefix.Length);
+            prefix.AsSpan(0, count).CopyTo(destination);
+            return count;
+        }
+    }
+
+    /// <summary>Never produces a body byte and only completes when cancelled.</summary>
+    private sealed class BlockingStream(TaskCompletionSource started) : ReadOnlyTestStream
+    {
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class NonSeekableStream(byte[] payload) : Stream
+    {
+        private readonly MemoryStream _inner = new(payload);
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+}

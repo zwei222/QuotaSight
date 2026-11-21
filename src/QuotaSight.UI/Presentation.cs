@@ -14,7 +14,7 @@ using QuotaSight.Infrastructure;
 
 namespace QuotaSight.UI;
 
-public enum AppPage { Dashboard, History, Settings }
+public enum AppPage { Dashboard, Usage, History, Settings }
 public enum ThemeMode { System, Light, Dark }
 public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
@@ -1647,6 +1647,13 @@ public sealed class UiProviderFacade : IProviderUiService
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly IDashboardSource source;
+    private readonly IUsageReadPort usageReadPort;
+    private CancellationTokenSource? usageRequest;
+    private long usageRequestId;
+    private string usageState = "Unconfigured";
+    private string usageTotal = string.Empty;
+    private IReadOnlyList<UsageDay> usageRows = [];
+    private Task usageLoadTask = Task.CompletedTask;
     private readonly HashSet<string> openCodeAccounts = new(StringComparer.Ordinal);
     private AppPage currentPage = AppPage.Dashboard;
     private UiLanguage language = UiLanguage.English;
@@ -1669,13 +1676,59 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public UiCopy CopyText => new(Language);
     public string NavDashboardText => CopyText.Dashboard;
+    public string NavUsageText => Language == UiLanguage.Japanese ? "利用量" : "Token usage";
     public string NavHistoryText => CopyText.History;
     public string NavSettingsText => CopyText.Settings;
     public string RefreshText => CopyText.Refresh;
     public string QuotaStatusText => IsQuotaDataBusy ? CopyText.QuotaRefreshing : string.Empty;
     public bool IsQuotaDataBusy => quotaDataBusy;
     public bool CanRefresh => !IsQuotaDataBusy;
-    public string HeaderTitle => CurrentPage switch { AppPage.History => CopyText.History, AppPage.Settings => CopyText.Settings, _ => CopyText.Dashboard };
+    public string HeaderTitle => CurrentPage switch { AppPage.Usage => NavUsageText, AppPage.History => CopyText.History, AppPage.Settings => CopyText.Settings, _ => CopyText.Dashboard };
+    public bool IsUsageVisible => CurrentPage == AppPage.Usage;
+    public string UsageStateText => new UiCopy(Language).UsageState(usageState);
+    public string UsageStatusText => UsageStateText;
+    public IReadOnlyList<UsageDay> UsageRows => usageRows;
+    public string UsageTotalText => usageTotal;
+    public bool IsUsageTotalVisible => usageState == "Ready" && usageRows.Count > 0;
+    public string UsageRangeText => usageState == "Unconfigured" ? string.Empty : $"{usageFrom:yyyy-MM-dd} – {usageTo:yyyy-MM-dd} · Asia/Tokyo";
+    public bool IsUsageRangeVisible => usageState != "Unconfigured";
+    public bool IsUsageLoading => usageState == "Loading";
+    public bool CanRefreshUsage => !IsUsageLoading;
+    public Task UsageLoadTask => usageLoadTask;
+    private DateOnly usageFrom, usageTo;
+    public void NavigateToUsage() { CurrentPage = AppPage.Usage; OnPropertyChanged(nameof(NavUsageText)); }
+    public Task RefreshUsageAsync() { if (CurrentPage == AppPage.Usage) usageLoadTask = LoadUsageAsync(); return usageLoadTask; }
+    private async Task LoadUsageAsync()
+    {
+        var id = Interlocked.Increment(ref usageRequestId);
+        usageRequest?.Cancel(); usageRequest?.Dispose();
+        usageRequest = new CancellationTokenSource(); var token = usageRequest.Token;
+        usageState = usageReadPort is UnconfiguredUsageReadPort ? "Unconfigured" : "Loading";
+        if (usageState != "Unconfigured")
+        {
+            usageRows = [];
+            usageTotal = string.Empty;
+            var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo")).DateTime);
+            usageFrom = today.AddDays(-29); usageTo = today;
+            OnPropertyChanged(nameof(UsageRangeText));
+            OnPropertyChanged(nameof(UsageRows));
+            OnPropertyChanged(nameof(UsageTotalText));
+        }
+        OnPropertyChanged(nameof(UsageRangeText));
+        OnPropertyChanged(nameof(IsUsageRangeVisible));
+        OnPropertyChanged(nameof(IsUsageTotalVisible));
+        OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading));
+        if (usageState == "Unconfigured") return;
+        try
+        {
+            var result = await usageReadPort.ReadDailyAsync(usageFrom, usageTo, null, token);
+            if (token.IsCancellationRequested || id != Volatile.Read(ref usageRequestId) || CurrentPage != AppPage.Usage) return;
+            usageRows = result.Days; usageTotal = $"{result.TotalTokens:N0}"; usageState = result.Days.Count == 0 ? "Empty" : "Ready";
+            OnPropertyChanged(nameof(UsageRows)); OnPropertyChanged(nameof(UsageTotalText)); OnPropertyChanged(nameof(IsUsageTotalVisible)); OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch { if (id == Volatile.Read(ref usageRequestId) && CurrentPage == AppPage.Usage) { usageState = "Error"; OnPropertyChanged(nameof(IsUsageTotalVisible)); OnPropertyChanged(nameof(UsageStateText)); OnPropertyChanged(nameof(UsageStatusText)); OnPropertyChanged(nameof(CanRefreshUsage)); OnPropertyChanged(nameof(IsUsageLoading)); } }
+    }
     public string SubtitleText => CopyText.Subtitle;
     public string EmptyStateText => CopyText.EmptyTitle;
     public string EmptyStateDescription => CopyText.EmptyDescription;
@@ -1755,7 +1808,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible) }) OnPropertyChanged(name);
     }
-    public AppPage CurrentPage { get => currentPage; private set => Set(ref currentPage, value); }
+    public AppPage CurrentPage { get => currentPage; private set { if (currentPage == value) return; var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value) && value == AppPage.Usage && !wasUsage) usageLoadTask = LoadUsageAsync(); } }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); NotifyLocalizedProperties(); } } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
     public PresentationState PresentationState { get => presentationState; set { if (Set(ref presentationState, value)) { OnPropertyChanged(nameof(IsLoading)); OnPropertyChanged(nameof(IsError)); OnPropertyChanged(nameof(IsOffline)); OnPropertyChanged(nameof(IsEmpty)); OnPropertyChanged(nameof(HasEmptyState)); OnPropertyChanged(nameof(IsNotificationVisible)); OnPropertyChanged(nameof(NotificationBannerText)); } } }
@@ -1796,11 +1849,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposedState, 1) != 0) return;
+        usageRequest?.Cancel(); usageRequest?.Dispose(); usageRequest = null;
         // RefreshAsync may still be waiting on or holding the gate; leave it undisposed to avoid a race.
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null) { this.source = source; this.usageReadPort = usageReadPort ?? new UnconfiguredUsageReadPort(); this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
@@ -2345,9 +2399,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices) }) OnPropertyChanged(name);
     }
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
+    private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)
     {
         if (IsDisposed) return;
