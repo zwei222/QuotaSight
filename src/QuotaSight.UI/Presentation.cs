@@ -423,6 +423,7 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
     public const int SparklineLimit = 64;
     private static readonly string[] PublishedPropertyNames = [nameof(Entries), nameof(FilteredEntries), nameof(DisplayedEntries), nameof(SparklinePoints), nameof(LoadError), nameof(PageCount), nameof(CurrentPage), nameof(HasPreviousPage), nameof(HasNextPage), nameof(PageStatus)];
     private readonly IQuotaHistory? persistentHistory;
+    private readonly TimeProvider clock;
     private readonly IUiDispatcher uiDispatcher;
     private readonly IHistoryProjectionScheduler projectionScheduler;
     private readonly System.Threading.Channels.Channel<Command> commands = System.Threading.Channels.Channel.CreateUnbounded<Command>(new() { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
@@ -517,9 +518,10 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
     internal Task PumpCompletedForTests => pump;
 
     public HistoryState(IQuotaHistory? history = null, IUiDispatcher? uiDispatcher = null) : this(history, uiDispatcher, null) { }
-    internal HistoryState(IQuotaHistory? history, IUiDispatcher? uiDispatcher, IHistoryProjectionScheduler? projectionScheduler)
+    internal HistoryState(IQuotaHistory? history, IUiDispatcher? uiDispatcher, IHistoryProjectionScheduler? projectionScheduler, TimeProvider? clock = null)
     {
         persistentHistory = history;
+        this.clock = clock ?? TimeProvider.System;
         this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher();
         this.projectionScheduler = projectionScheduler ?? new TaskRunHistoryProjectionScheduler();
         if (history is null)
@@ -1067,7 +1069,7 @@ public sealed class HistoryState : INotifyPropertyChanged, IDisposable
         {
             try
             {
-                foreach (var item in await persistentHistory!.ReadEventsAsync(DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-i)), token).ConfigureAwait(false))
+                foreach (var item in await persistentHistory!.ReadEventsAsync(DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime.AddDays(-i)), token).ConfigureAwait(false))
                     entries.Add(ToEntry(item.EventId, item.Snapshot));
             }
             catch (InvalidDataException) { error = "History data is damaged; showing available entries."; }
@@ -1566,7 +1568,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null) { this.source = source; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);
