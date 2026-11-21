@@ -29,15 +29,23 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.12" />
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+    <!-- The test projects reference this project. Keeping the Windows App SDK build assets private
+         stops its targets (the self-contained check, the generated auto-initializer source and the
+         payload copy) from running inside projects that only use this project's types and never
+         start the app. Compile and runtime assets still flow, so the managed projections stay
+         available to them. -->
+    <WindowsAppSdkPrivateAssets>build;buildtransitive;buildmultitargeting;contentfiles;analyzers</WindowsAppSdkPrivateAssets>
+  </PropertyGroup>
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
     <!-- Only the toast notification API is used (Microsoft.Windows.AppNotifications lives in
          Foundation). Referencing the Microsoft.WindowsAppSDK metapackage also pulled in
          WinUI, onnxruntime and DirectML, inflating the Windows ZIP with ~300 unused files. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
     <!-- Foundation 2.3.12 declares a dependency on InteractiveExperiences >= 2.1.8, but 2.1.8 was
          never published, so NuGet resolves 2.1.9 and raises NU1603. Pinning the version it
          actually resolves keeps warnings-as-errors enabled instead of suppressing NU1603. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
   <ItemGroup><AvaloniaResource Include="Assets/quotasight-icon.svg" /><AvaloniaResource Include="Assets/quotasight-*.png" /><AvaloniaResource Include="Assets/quotasight.ico" /></ItemGroup>

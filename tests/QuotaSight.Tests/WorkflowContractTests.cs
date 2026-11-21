@@ -9,7 +9,6 @@ public sealed class WorkflowContractTests
     private static readonly string Ci = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "ci.yml"));
     private static readonly string Release = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "release.yml"));
     private static readonly string UiProject = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "QuotaSight.UI.csproj"));
-    private static readonly string TestsDirectoryPropsPath = Path.Combine(Root, "tests", "Directory.Build.props");
     private static readonly string UiProgram = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "Program.cs"));
 
     [Fact]
@@ -272,31 +271,31 @@ public sealed class WorkflowContractTests
     }
 
     [Fact]
-    public void Test_projects_keep_windows_app_sdk_self_contained()
+    public void Ui_project_keeps_windows_app_sdk_build_assets_private_to_referencing_projects()
     {
-        // The test projects pull in Microsoft.WindowsAppSDK.Base's build assets through their
-        // reference to the UI project. Base defaults a non-library project to self-contained, but
-        // Microsoft.NET.Test.Sdk turns OutputType into Exe only after Base's targets are
-        // evaluated, so that default never applies and Base's "framework package dependent"
-        // check fails the Windows build. State the deployment model the tests need explicitly.
-        Assert.True(File.Exists(TestsDirectoryPropsPath), "tests/Directory.Build.props is missing.");
+        // The test projects reference the UI project. If the Windows App SDK build assets flow into
+        // them, Base's targets run there too: its self-contained check fails the Windows build (a
+        // test project is still a library when Base decides its default, because
+        // Microsoft.NET.Test.Sdk switches OutputType to Exe later), and the generated
+        // auto-initializer source collides with the copy compiled into the UI assembly. The tests
+        // only use the UI project's types, so the build assets stay private to it.
+        var document = XDocument.Parse(UiProject);
+        var properties = document.Descendants("WindowsAppSdkPrivateAssets").Single();
+        var assets = properties.Value.Split(';');
+        Assert.Contains("build", assets);
+        Assert.Contains("buildtransitive", assets);
+        Assert.DoesNotContain("all", assets);
+        Assert.DoesNotContain("compile", assets);
+        Assert.DoesNotContain("runtime", assets);
 
-        var props = File.ReadAllText(TestsDirectoryPropsPath);
-        var document = XDocument.Parse(props);
-        var selfContained = Assert.Single(document.Descendants("WindowsAppSDKSelfContained"));
-        Assert.Equal("true", selfContained.Value);
-        Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)selfContained.Parent?.Attribute("Condition"));
+        foreach (var name in new[] { "Microsoft.WindowsAppSDK.Foundation", "Microsoft.WindowsAppSDK.InteractiveExperiences" })
+        {
+            var reference = document.Descendants("PackageReference").Single(r => (string?)r.Attribute("Include") == name);
+            Assert.Equal("$(WindowsAppSdkPrivateAssets)", (string?)reference.Attribute("PrivateAssets"));
+        }
 
-        // A self-contained Windows App SDK project must name its native architecture, which Base
-        // reads from the runtime identifier under AnyCPU; without it the Windows build fails with
-        // "WindowsAppSDKSelfContained requires a supported Windows architecture".
-        var runtimeIdentifier = Assert.Single(document.Descendants("RuntimeIdentifier"));
-        Assert.Equal("win-x64", runtimeIdentifier.Value);
-        Assert.Same(selfContained.Parent, runtimeIdentifier.Parent);
-
-        // Directory.Build.props discovery stops at the nearest file, so the test-only settings
-        // must import the repository-wide defaults explicitly.
-        Assert.Contains("GetPathOfFileAbove('Directory.Build.props'", props);
+        Assert.False(File.Exists(Path.Combine(Root, "tests", "Directory.Build.props")),
+            "The test projects must not be turned into self-contained Windows App SDK apps.");
     }
 
     private static string FindRoot()
