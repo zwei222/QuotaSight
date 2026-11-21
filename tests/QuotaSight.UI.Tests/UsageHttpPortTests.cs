@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using Xunit;
 
@@ -17,7 +19,7 @@ public sealed class UsageHttpPortTests
     private const string Identity = "owner-a";
 
     [Fact]
-    public async Task ReadSendsOneFixedOriginGetWithBearerAndReturnsVerifiedRows()
+    public async Task ReadSendsOneFixedOriginGetWithAccessHeadersAndReturnsVerifiedRows()
     {
         var peer = new FakePeer(_ => Json(Body(
             "2026-11-01",
@@ -26,7 +28,7 @@ public sealed class UsageHttpPortTests
             Row("2026-11-01", "col-a1", 400),
             Row("2026-11-02", "col-a1", 0),
             Row("2026-11-02", "col-a2", 1200))));
-        using var harness = Harness.Create(peer, Credential("read-token"));
+        using var harness = Harness.Create(peer, Credential());
 
         var usage = await harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1),
@@ -49,8 +51,121 @@ public sealed class UsageHttpPortTests
         Assert.Equal(
             "https://usage.test/v1/usage/daily?from=2026-11-01&to=2026-11-02",
             request.Uri);
-        Assert.Equal("Bearer read-token", request.Authorization);
+        Assert.Equal("synthetic-id.access", request.AccessClientId);
+        Assert.Equal("synthetic-secret", request.AccessClientSecret);
+        Assert.Null(request.Authorization);
+        Assert.Null(request.Cookie);
         Assert.Equal(new Uri("https://usage.test/v1/usage/daily"), harness.Port.Endpoint);
+    }
+
+    [Fact]
+    public async Task ReadAttachesAccessServiceTokenHeadersOnceAndOmitsAuthorizationAndCookie()
+    {
+        const string clientId = "synthetic-id.access";
+        const string clientSecret = "synthetic-secret";
+        string? seenClientId = null;
+        string? seenClientSecret = null;
+        var clientIdCount = 0;
+        var clientSecretCount = 0;
+        var authorizationCount = 0;
+        var cookieCount = 0;
+        var peer = new FakePeer(request =>
+        {
+            clientIdCount = HeaderValueCount(request, "CF-Access-Client-Id");
+            clientSecretCount = HeaderValueCount(request, "CF-Access-Client-Secret");
+            authorizationCount = HeaderValueCount(request, "Authorization");
+            cookieCount = HeaderValueCount(request, "Cookie");
+            seenClientId = SingleHeaderOrNull(request, "CF-Access-Client-Id");
+            seenClientSecret = SingleHeaderOrNull(request, "CF-Access-Client-Secret");
+            return Json(Body("2026-11-01", "2026-11-01", 0));
+        });
+        using var harness = Harness.Create(
+            peer,
+            new UsageCredential(Identity, clientId, clientSecret));
+
+        var usage = await harness.Port.ReadDailyAsync(
+            new DateOnly(2026, 11, 1),
+            new DateOnly(2026, 11, 1),
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(0L, usage.TotalTokens);
+        Assert.Equal(1, clientIdCount);
+        Assert.Equal(1, clientSecretCount);
+        Assert.Equal(0, authorizationCount);
+        Assert.Equal(0, cookieCount);
+        Assert.Equal(clientId, seenClientId);
+        Assert.Equal(clientSecret, seenClientSecret);
+        Assert.False(harness.Client.DefaultRequestHeaders.Contains("CF-Access-Client-Id"));
+        Assert.False(harness.Client.DefaultRequestHeaders.Contains("CF-Access-Client-Secret"));
+        Assert.False(harness.Client.DefaultRequestHeaders.Contains("Authorization"));
+        Assert.False(harness.Client.DefaultRequestHeaders.Contains("Cookie"));
+        Assert.Null(harness.Client.DefaultRequestHeaders.Authorization);
+    }
+
+    [Theory]
+    [InlineData("", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-id.access", "", "clientSecret")]
+    [InlineData("synthetic-id.access\n", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-id.access", "synthetic-secret\r\n", "clientSecret")]
+    [InlineData("synthetic-id\u0001.access", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-id.access", "synthetic\u0007secret", "clientSecret")]
+    [InlineData("synthetic-id\u007f.access", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-idé.access", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-id.access", "synthetic-sécret", "clientSecret")]
+    [InlineData("synthetic id.access", "synthetic-secret", "clientId")]
+    [InlineData("synthetic-id.access", "synthetic secret", "clientSecret")]
+    [InlineData("\tsynthetic-id.access", "synthetic-secret", "clientId")]
+    public void RejectsUnsafeAccessServiceTokenMaterial(string clientId, string clientSecret, string parameter)
+    {
+        var failure = Assert.Throws<ArgumentException>(() => new UsageCredential(Identity, clientId, clientSecret));
+
+        Assert.Equal(parameter, failure.ParamName);
+        AssertSecretIsAbsent(failure, clientId);
+        AssertSecretIsAbsent(failure, clientSecret);
+    }
+
+    [Fact]
+    public void RejectsNullAccessServiceTokenMaterialWithoutEchoingIt()
+    {
+        var missingId = Assert.Throws<ArgumentException>(() => new UsageCredential(Identity, null!, "synthetic-secret"));
+        var missingSecret = Assert.Throws<ArgumentException>(() => new UsageCredential(Identity, "synthetic-id.access", null!));
+
+        Assert.Equal("clientId", missingId.ParamName);
+        Assert.Equal("clientSecret", missingSecret.ParamName);
+        Assert.DoesNotContain("synthetic-secret", missingId.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-id.access", missingSecret.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RejectsOverlongAccessServiceTokenMaterialWithoutEchoingIt()
+    {
+        var clientId = new string('a', 257);
+        var clientSecret = new string('b', 513);
+
+        var idFailure = Assert.Throws<ArgumentException>(() => new UsageCredential(Identity, clientId, "synthetic-secret"));
+        var secretFailure = Assert.Throws<ArgumentException>(() => new UsageCredential(Identity, "synthetic-id.access", clientSecret));
+
+        Assert.Equal("clientId", idFailure.ParamName);
+        Assert.Equal("clientSecret", secretFailure.ParamName);
+        AssertSecretIsAbsent(idFailure, clientId);
+        AssertSecretIsAbsent(idFailure, "synthetic-secret");
+        AssertSecretIsAbsent(secretFailure, clientSecret);
+        AssertSecretIsAbsent(secretFailure, "synthetic-id.access");
+    }
+
+    [Fact]
+    public void AcceptsAccessServiceTokenMaterialAtTheInclusiveLengthBounds()
+    {
+        var clientId = new string('a', 256);
+        var clientSecret = new string('b', 512);
+        var credential = new UsageCredential(Identity, clientId, clientSecret);
+        var shortest = new UsageCredential(Identity, "a", "b");
+
+        Assert.Equal(clientId, credential.ClientId);
+        Assert.Equal(clientSecret, credential.ClientSecret);
+        Assert.Equal("a", shortest.ClientId);
+        Assert.Equal("b", shortest.ClientSecret);
     }
 
     [Fact]
@@ -61,7 +176,7 @@ public sealed class UsageHttpPortTests
             "2026-11-01",
             400,
             Row("2026-11-01", "col-a1", 400))));
-        using var harness = Harness.Create(peer, Credential("read-token"));
+        using var harness = Harness.Create(peer, Credential());
 
         var usage = await harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1),
@@ -78,19 +193,25 @@ public sealed class UsageHttpPortTests
     [Fact]
     public async Task CredentialIsReadPerRequestAndASecondIdentityNeverReusesTheFirstResponse()
     {
+        const string firstId = "synthetic-id-a.access";
+        const string firstSecret = "synthetic-secret-a";
+        const string secondId = "synthetic-id-b.access";
+        const string secondSecret = "synthetic-secret-b";
         var peer = new FakePeer(request =>
         {
-            var authorization = request.Headers.TryGetValues("Authorization", out var values)
+            var clientId = request.Headers.TryGetValues("CF-Access-Client-Id", out var values)
                 ? string.Join(",", values)
                 : null;
-            return authorization switch
+            return clientId switch
             {
-                "Bearer token-a" => Json(Body("2026-11-01", "2026-11-01", 10, Row("2026-11-01", "col-a1", 10))),
-                "Bearer token-b" => Json(Body("2026-11-01", "2026-11-01", 20, Row("2026-11-01", "col-a1", 20))),
+                firstId => Json(Body("2026-11-01", "2026-11-01", 10, Row("2026-11-01", "col-a1", 10))),
+                secondId => Json(Body("2026-11-01", "2026-11-01", 20, Row("2026-11-01", "col-a1", 20))),
                 _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
             };
         });
-        var credentials = new QueueCredentials(Credential("token-a"), Credential("token-b"));
+        var credentials = new QueueCredentials(
+            new UsageCredential(Identity, firstId, firstSecret),
+            new UsageCredential(Identity, secondId, secondSecret));
         using var client = new HttpClient(peer);
         var port = new HttpUsageReadPort(client, Origin, Identity, credentials);
 
@@ -100,13 +221,23 @@ public sealed class UsageHttpPortTests
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None);
 
         Assert.Equal(10L, first.TotalTokens);
-        // The second identity gets its own response: nothing is memoised by range.
         Assert.Equal(20L, second.TotalTokens);
         Assert.Equal(2, credentials.Calls);
         Assert.Equal(2, peer.Requests.Count);
-        Assert.Equal("Bearer token-a", peer.Requests[0].Authorization);
-        Assert.Equal("Bearer token-b", peer.Requests[1].Authorization);
-        Assert.DoesNotContain("token-a", peer.Requests[1].Authorization, StringComparison.Ordinal);
+        Assert.Equal(firstId, peer.Requests[0].AccessClientId);
+        Assert.Equal(firstSecret, peer.Requests[0].AccessClientSecret);
+        Assert.Equal(secondId, peer.Requests[1].AccessClientId);
+        Assert.Equal(secondSecret, peer.Requests[1].AccessClientSecret);
+        Assert.DoesNotContain(firstSecret, peer.Requests[1].AccessClientSecret, StringComparison.Ordinal);
+        Assert.Null(peer.Requests[0].Authorization);
+        Assert.Null(peer.Requests[1].Authorization);
+        Assert.Null(peer.Requests[0].Cookie);
+        Assert.Null(peer.Requests[1].Cookie);
+        Assert.False(client.DefaultRequestHeaders.Contains("CF-Access-Client-Id"));
+        Assert.False(client.DefaultRequestHeaders.Contains("CF-Access-Client-Secret"));
+        Assert.False(client.DefaultRequestHeaders.Contains("Authorization"));
+        Assert.False(client.DefaultRequestHeaders.Contains("Cookie"));
+        Assert.Null(client.DefaultRequestHeaders.Authorization);
     }
 
     [Fact]
@@ -116,7 +247,7 @@ public sealed class UsageHttpPortTests
         using var client = new HttpClient(peer);
 
         Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
-            client, new Uri("http://usage.test"), Identity, new QueueCredentials(Credential("t"))));
+            client, new Uri("http://usage.test"), Identity, new QueueCredentials(Credential())));
     }
 
     [Theory]
@@ -129,7 +260,7 @@ public sealed class UsageHttpPortTests
         using var client = new HttpClient(peer);
 
         Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
-            client, new Uri(origin), Identity, new QueueCredentials(Credential("t"))));
+            client, new Uri(origin), Identity, new QueueCredentials(Credential())));
     }
 
     [Fact]
@@ -141,7 +272,7 @@ public sealed class UsageHttpPortTests
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "stale-identity");
 
         Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
-            client, Origin, Identity, new QueueCredentials(Credential("t"))));
+            client, Origin, Identity, new QueueCredentials(Credential())));
     }
 
     [Theory]
@@ -152,7 +283,7 @@ public sealed class UsageHttpPortTests
     public async Task RejectsInvalidCollectorFilterWithoutSending(string collectorId)
     {
         var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), collectorId, CancellationToken.None));
@@ -165,7 +296,7 @@ public sealed class UsageHttpPortTests
     public async Task RejectsRangeLongerThanTheQueryWindowWithoutSending()
     {
         var peer = new FakePeer(_ => Json(Body("2025-01-01", "2026-11-01", 0)));
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
             new DateOnly(2025, 1, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -178,7 +309,7 @@ public sealed class UsageHttpPortTests
     public async Task RejectsInvertedRangeWithoutSending()
     {
         var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 2), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -204,7 +335,7 @@ public sealed class UsageHttpPortTests
     public async Task RejectsCredentialIssuedForAnotherIdentityWithoutSending()
     {
         var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
-        using var harness = Harness.Create(peer, new UsageCredential("owner-b", "token-b"));
+        using var harness = Harness.Create(peer, new UsageCredential("owner-b", "synthetic-id.access", "synthetic-secret"));
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -239,7 +370,7 @@ public sealed class UsageHttpPortTests
     {
         var peer = new FakePeer(_ => Json(Body(
             "2026-11-01", "2026-11-01", 400, Row("2026-11-01", "col-a2", 400))));
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), "col-a1", CancellationToken.None));
@@ -515,7 +646,7 @@ public sealed class UsageHttpPortTests
     public async Task PropagatesCallerCancellationInsteadOfReportingATransportFailure()
     {
         var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
 
@@ -536,7 +667,7 @@ public sealed class UsageHttpPortTests
             return Json(Body("2026-11-01", "2026-11-01", 0));
         });
         using var client = new HttpClient(peer) { Timeout = TimeSpan.FromMilliseconds(50) };
-        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential("t")));
+        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential()));
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -554,7 +685,7 @@ public sealed class UsageHttpPortTests
         });
         using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
         var port = new HttpUsageReadPort(
-            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromMilliseconds(150));
+            client, Origin, Identity, new QueueCredentials(Credential()), TimeSpan.FromMilliseconds(150));
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -573,7 +704,7 @@ public sealed class UsageHttpPortTests
             JsonWithStream(new DelayedStream(payload, TimeSpan.FromSeconds(2)))));
         using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
         var port = new HttpUsageReadPort(
-            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromMilliseconds(150));
+            client, Origin, Identity, new QueueCredentials(Credential()), TimeSpan.FromMilliseconds(150));
 
         var failure = await Assert.ThrowsAsync<UsageReadException>(() => port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None));
@@ -620,7 +751,7 @@ public sealed class UsageHttpPortTests
         var peer = new FakePeer((_, _) => Task.FromResult(JsonWithStream(new BlockingStream(started))));
         using var client = new HttpClient(peer) { Timeout = Timeout.InfiniteTimeSpan };
         var port = new HttpUsageReadPort(
-            client, Origin, Identity, new QueueCredentials(Credential("t")), TimeSpan.FromSeconds(30));
+            client, Origin, Identity, new QueueCredentials(Credential()), TimeSpan.FromSeconds(30));
         using var cancellation = new CancellationTokenSource();
 
         var read = port.ReadDailyAsync(
@@ -646,7 +777,7 @@ public sealed class UsageHttpPortTests
             client,
             Origin,
             Identity,
-            new QueueCredentials(Credential("t")),
+            new QueueCredentials(Credential()),
             TimeSpan.FromMilliseconds(milliseconds)));
     }
 
@@ -657,7 +788,7 @@ public sealed class UsageHttpPortTests
         using var client = new HttpClient(peer);
 
         Assert.Throws<ArgumentOutOfRangeException>(() => new HttpUsageReadPort(
-            client, Origin, Identity, new QueueCredentials(Credential("t")), Timeout.InfiniteTimeSpan));
+            client, Origin, Identity, new QueueCredentials(Credential()), Timeout.InfiniteTimeSpan));
     }
 
     [Fact]
@@ -668,7 +799,7 @@ public sealed class UsageHttpPortTests
 
         var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
         using var client = new HttpClient(peer);
-        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential("t")));
+        var port = new HttpUsageReadPort(client, Origin, Identity, new QueueCredentials(Credential()));
         Assert.Equal(HttpUsageReadPort.DefaultRequestDeadline, port.RequestDeadline);
     }
 
@@ -688,15 +819,122 @@ public sealed class UsageHttpPortTests
     [Fact]
     public void CredentialOmitsTheTokenFromItsTextRepresentation()
     {
-        var credential = new UsageCredential(Identity, "token-secret");
+        var credential = new UsageCredential(Identity, "synthetic-id.access", "synthetic-secret");
 
-        Assert.DoesNotContain("token-secret", credential.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-id.access", credential.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-secret", credential.ToString(), StringComparison.Ordinal);
         Assert.Contains(Identity, credential.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CredentialDebugDisplayOmitsClientIdAndClientSecret()
+    {
+        var credential = new UsageCredential(Identity, "synthetic-id.access", "synthetic-secret");
+        var display = credential.GetType().GetCustomAttribute<DebuggerDisplayAttribute>();
+
+        Assert.NotNull(display);
+        Assert.DoesNotContain("ClientId", display.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClientSecret", display.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-id.access", display.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic-secret", display.Value, StringComparison.Ordinal);
+
+        foreach (var name in new[] { nameof(UsageCredential.ClientId), nameof(UsageCredential.ClientSecret) })
+        {
+            var browsable = typeof(UsageCredential).GetProperty(name)!.GetCustomAttribute<DebuggerBrowsableAttribute>();
+            Assert.NotNull(browsable);
+            Assert.Equal(DebuggerBrowsableState.Never, browsable.State);
+        }
+    }
+
+    [Theory]
+    [InlineData("authorization")]
+    [InlineData("Authorization")]
+    [InlineData("CF-Access-Client-Id")]
+    [InlineData("cf-access-client-id")]
+    [InlineData("Cf-Access-Client-Secret")]
+    [InlineData("CF-Access-Client-Secret")]
+    [InlineData("Cookie")]
+    [InlineData("cookie")]
+    [InlineData("COOKIE")]
+    public void RejectsClientThatAlreadyCarriesAForbiddenDefaultHeader(string headerName)
+    {
+        const string secret = "synthetic-secret";
+        var peer = new FakePeer(_ => Json(Body("2026-11-01", "2026-11-01", 0)));
+        using var client = new HttpClient(peer);
+        Assert.True(client.DefaultRequestHeaders.TryAddWithoutValidation(headerName, secret));
+
+        var failure = Assert.Throws<ArgumentException>(() => new HttpUsageReadPort(
+            client, Origin, Identity, new QueueCredentials(Credential())));
+
+        Assert.Equal("client", failure.ParamName);
+        Assert.DoesNotContain(secret, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, failure.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectsAccessLoginRedirectWithoutFollowingOrReadingTheBody()
+    {
+        var peer = new FakePeer(_ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+            redirect.Headers.Location = new Uri("https://usage.test/cdn-cgi/access/login");
+            redirect.Headers.TryAddWithoutValidation("Set-Cookie", "CF_Authorization=synthetic-session; Path=/");
+            redirect.Content = new StreamContent(new ThrowingStream(new InvalidOperationException("body was read")));
+            return redirect;
+        });
+
+        var failure = await Assert.ThrowsAsync<UsageReadException>(() => Read(peer));
+
+        Assert.Equal(UsageReadFailure.RedirectRejected, failure.Failure);
+        Assert.Equal(302, failure.StatusCode);
+        Assert.Single(peer.Requests);
+        Assert.Equal(
+            "https://usage.test/v1/usage/daily?from=2026-11-01&to=2026-11-01",
+            peer.Requests[0].Uri);
+        Assert.DoesNotContain("synthetic-session", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("cdn-cgi", failure.Message, StringComparison.Ordinal);
+        Assert.Null(peer.Requests[0].Cookie);
+    }
+
+    [Fact]
+    public async Task ClassifiesAuthUnavailableAsRetryableAndUnauthorizedAsUserAction()
+    {
+        const string secret = "synthetic-body-secret";
+        var unavailable = new FakePeer(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(
+                "{\"error\":{\"code\":\"auth_unavailable\",\"message\":\"" + secret + "\"}}",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        var unauthorized = new FakePeer(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                "{\"error\":{\"code\":\"unauthorized\",\"message\":\"" + secret + "\"}}",
+                Encoding.UTF8,
+                "application/json"),
+        });
+
+        var transient = await Assert.ThrowsAsync<UsageReadException>(() => Read(unavailable));
+        var rejected = await Assert.ThrowsAsync<UsageReadException>(() => Read(unauthorized));
+
+        Assert.Equal(UsageReadFailure.AuthUnavailable, transient.Failure);
+        Assert.Equal(503, transient.StatusCode);
+        Assert.True(transient.IsRetryable);
+        Assert.False(transient.RequiresUserAction);
+        Assert.DoesNotContain(secret, transient.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("auth_unavailable", transient.Message, StringComparison.Ordinal);
+
+        Assert.Equal(UsageReadFailure.Unauthorized, rejected.Failure);
+        Assert.Equal(401, rejected.StatusCode);
+        Assert.False(rejected.IsRetryable);
+        Assert.True(rejected.RequiresUserAction);
+        Assert.DoesNotContain(secret, rejected.Message, StringComparison.Ordinal);
     }
 
     private static async Task<DailyUsage> Read(FakePeer peer, DateOnly? to = null)
     {
-        using var harness = Harness.Create(peer, Credential("t"));
+        using var harness = Harness.Create(peer, Credential());
         return await harness.Port.ReadDailyAsync(
             new DateOnly(2026, 11, 1),
             to ?? new DateOnly(2026, 11, 1),
@@ -704,7 +942,24 @@ public sealed class UsageHttpPortTests
             CancellationToken.None);
     }
 
-    private static UsageCredential Credential(string token) => new(Identity, token);
+    private static UsageCredential Credential() => new(Identity, "synthetic-id.access", "synthetic-secret");
+
+    private static int HeaderValueCount(HttpRequestMessage request, string name) =>
+        request.Headers.TryGetValues(name, out var values) ? values.Count() : 0;
+
+    private static string? SingleHeaderOrNull(HttpRequestMessage request, string name) =>
+        request.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
+
+    private static void AssertSecretIsAbsent(Exception failure, string secret)
+    {
+        if (secret.Length == 0)
+        {
+            return;
+        }
+
+        Assert.DoesNotContain(secret, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, failure.ToString(), StringComparison.Ordinal);
+    }
 
     private static HttpResponseMessage Json(string body) =>
         new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
@@ -726,7 +981,13 @@ public sealed class UsageHttpPortTests
         "{\"date\":\"" + date + "\",\"collectorId\":\"" + collectorId + "\",\"totalTokens\":"
         + totalTokens.ToString(CultureInfo.InvariantCulture) + "}";
 
-    private sealed record RecordedRequest(string Method, string Uri, string? Authorization);
+    private sealed record RecordedRequest(
+        string Method,
+        string Uri,
+        string? Authorization,
+        string? AccessClientId,
+        string? AccessClientSecret,
+        string? Cookie);
 
     /// <summary>Owns the injected client so the fake peer is disposed with it.</summary>
     private sealed class Harness : IDisposable
@@ -776,7 +1037,10 @@ public sealed class UsageHttpPortTests
             Requests.Add(new RecordedRequest(
                 request.Method.Method,
                 request.RequestUri?.AbsoluteUri ?? string.Empty,
-                authorization));
+                authorization,
+                SingleHeaderOrNull(request, "CF-Access-Client-Id"),
+                SingleHeaderOrNull(request, "CF-Access-Client-Secret"),
+                SingleHeaderOrNull(request, "Cookie")));
 
             return _respond(request, cancellationToken);
         }

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
@@ -61,6 +62,13 @@ public enum UsageReadFailure
 
     /// <summary>The echoed total did not equal the safely recomputed total.</summary>
     InconsistentTotal,
+
+    /// <summary>
+    /// The service could not authenticate the request right now (HTTP 503,
+    /// auth_unavailable). This is a retryable transient failure, not a credential
+    /// rejection, and it is never inferred from the response body.
+    /// </summary>
+    AuthUnavailable,
 }
 
 /// <summary>
@@ -83,45 +91,75 @@ public sealed class UsageReadException : Exception
 
     /// <summary>HTTP status that caused the failure, when the failure is status-derived.</summary>
     public int? StatusCode { get; }
+
+    /// <summary>
+    /// True only for a transient authentication outage. The caller may retry without
+    /// user action. A credential rejection is never retryable.
+    /// </summary>
+    public bool IsRetryable => Failure == UsageReadFailure.AuthUnavailable;
+
+    /// <summary>
+    /// True when the credential was rejected. The caller must not retry until the
+    /// user replaces it.
+    /// </summary>
+    public bool RequiresUserAction => Failure == UsageReadFailure.Unauthorized;
 }
 
 /// <summary>
-/// A scoped read credential: the identity it belongs to plus the bearer token
-/// sent for exactly one request.
+/// A scoped read credential: the identity it belongs to plus the Cloudflare Access
+/// service-token pair sent for exactly one request. The client id and client secret
+/// are never included in text or debugger output.
 /// </summary>
+[DebuggerDisplay("UsageCredential(identity: {IdentityId})")]
 public sealed class UsageCredential
 {
-    /// <summary>Creates a credential after rejecting values that cannot be a header token.</summary>
-    public UsageCredential(string identityId, string accessToken)
+    private const int MaxClientIdLength = 256;
+    private const int MaxClientSecretLength = 512;
+
+    /// <summary>Creates a credential after rejecting values that cannot be header tokens.</summary>
+    public UsageCredential(string identityId, string clientId, string clientSecret)
     {
         if (string.IsNullOrWhiteSpace(identityId))
         {
             throw new ArgumentException("A credential identity is required.", nameof(identityId));
         }
 
-        if (!IsHeaderToken(accessToken))
+        if (!IsHeaderToken(clientId, MaxClientIdLength))
         {
             throw new ArgumentException(
-                "An access token must be a non-empty printable ASCII token without whitespace.",
-                nameof(accessToken));
+                "A client id must be a non-empty printable ASCII token without whitespace.",
+                nameof(clientId));
+        }
+
+        if (!IsHeaderToken(clientSecret, MaxClientSecretLength))
+        {
+            throw new ArgumentException(
+                "A client secret must be a non-empty printable ASCII token without whitespace.",
+                nameof(clientSecret));
         }
 
         IdentityId = identityId;
-        AccessToken = accessToken;
+        ClientId = clientId;
+        ClientSecret = clientSecret;
     }
 
     /// <summary>Stable identity this credential was issued for.</summary>
     public string IdentityId { get; }
 
-    /// <summary>Bearer token for this request only. Never log or persist this value.</summary>
-    public string AccessToken { get; }
+    /// <summary>Access service-token client id for this request only. Never log or persist this value.</summary>
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    public string ClientId { get; }
 
-    /// <summary>Deliberately omits the token.</summary>
+    /// <summary>Access service-token client secret for this request only. Never log or persist this value.</summary>
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    public string ClientSecret { get; }
+
+    /// <summary>Deliberately omits the client id and the client secret.</summary>
     public override string ToString() => $"UsageCredential(identity: {IdentityId})";
 
-    private static bool IsHeaderToken(string? value)
+    private static bool IsHeaderToken(string? value, int maxLength)
     {
-        if (value is null || value.Length is 0 or > 4096)
+        if (value is null || value.Length is 0 || value.Length > maxLength)
         {
             return false;
         }
@@ -188,7 +226,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     /// Creates the port for one fixed HTTPS origin and one expected identity,
     /// using <see cref="DefaultRequestDeadline"/>.
     /// </summary>
-    /// <param name="client">Injected client; it must not carry a default authorization header.</param>
+    /// <param name="client">Injected client; it must not carry a default Authorization, Access service-token, or Cookie header.</param>
     /// <param name="origin">Absolute <c>https</c> origin with no path, user info, query or fragment.</param>
     /// <param name="identityId">Identity this port is scoped to; a provider answer for another identity is refused.</param>
     /// <param name="credentials">Per-request credential provider.</param>
@@ -205,7 +243,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
     /// Creates the port for one fixed HTTPS origin and one expected identity with
     /// an explicit finite deadline for the whole exchange.
     /// </summary>
-    /// <param name="client">Injected client; it must not carry a default authorization header.</param>
+    /// <param name="client">Injected client; it must not carry a default Authorization, Access service-token, or Cookie header.</param>
     /// <param name="origin">Absolute <c>https</c> origin with no path, user info, query or fragment.</param>
     /// <param name="identityId">Identity this port is scoped to; a provider answer for another identity is refused.</param>
     /// <param name="credentials">Per-request credential provider.</param>
@@ -237,12 +275,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
         }
 
         _endpoint = BuildEndpoint(origin);
-        if (client.DefaultRequestHeaders.Authorization is not null)
-        {
-            throw new ArgumentException(
-                "The injected client must not carry a default Authorization header; the credential is applied per request.",
-                nameof(client));
-        }
+        RejectForbiddenDefaultHeaders(client);
 
         _client = client;
         _identityId = identityId;
@@ -304,8 +337,10 @@ public sealed class HttpUsageReadPort : IUsageReadPort
         var requestUri = BuildRequestUri(from, to, collectorId);
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         // Applied to this request only; never as a client default, so a second
-        // identity can never inherit the first one's header.
-        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + credential.AccessToken);
+        // identity can never inherit the first one's headers. Access is the gate:
+        // these two service-token headers replace Authorization.
+        request.Headers.TryAddWithoutValidation("CF-Access-Client-Id", credential.ClientId);
+        request.Headers.TryAddWithoutValidation("CF-Access-Client-Secret", credential.ClientSecret);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
 
         // A client timeout stops bounding the exchange once the response headers are
@@ -386,6 +421,44 @@ public sealed class HttpUsageReadPort : IUsageReadPort
 
     private static UsageReadException TimeoutFailure(string message, Exception innerException) =>
         new(UsageReadFailure.Timeout, message, innerException: innerException);
+
+    private static readonly string[] ForbiddenDefaultHeaders =
+    [
+        "Authorization",
+        "CF-Access-Client-Id",
+        "CF-Access-Client-Secret",
+        "Cookie",
+    ];
+
+    /// <summary>
+    /// Rejects a client that already carries a credential or cookie header. The
+    /// message is fixed and never includes the header value.
+    /// </summary>
+    private static void RejectForbiddenDefaultHeaders(HttpClient client)
+    {
+        if (client.DefaultRequestHeaders.Authorization is not null || HasForbiddenDefaultHeader(client))
+        {
+            throw new ArgumentException(
+                "The injected client must not carry a default Authorization, Access service-token, or Cookie header; credentials are applied per request.",
+                nameof(client));
+        }
+    }
+
+    private static bool HasForbiddenDefaultHeader(HttpClient client)
+    {
+        foreach (var header in client.DefaultRequestHeaders)
+        {
+            foreach (var forbidden in ForbiddenDefaultHeaders)
+            {
+                if (string.Equals(header.Key, forbidden, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Rejects an answer that reports a different request URI than the one this port
@@ -479,6 +552,13 @@ public sealed class HttpUsageReadPort : IUsageReadPort
                 throw new UsageReadException(
                     UsageReadFailure.NotFound,
                     "The usage service reported that the requested collector does not exist.",
+                    status);
+            case HttpStatusCode.ServiceUnavailable:
+                // 503 from this service is auth_unavailable: retryable, and classified
+                // from the status alone so the body is never read or echoed.
+                throw new UsageReadException(
+                    UsageReadFailure.AuthUnavailable,
+                    "The usage service could not authenticate the request right now.",
                     status);
         }
 
