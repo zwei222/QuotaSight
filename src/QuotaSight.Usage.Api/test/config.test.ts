@@ -76,6 +76,8 @@ describe('repository hygiene', () => {
     expect(readme).toContain('ACCESS_MAX_TOKEN_AGE_SECONDS');
     expect(readme).toContain('Cf-Access-Jwt-Assertion');
     expect(readme).toContain('auth_unavailable');
+    expect(readme).toContain('auth_unconfigured');
+    expect(readme).toContain('access_config_invalid');
     expect(readme).toContain('workers_dev');
     expect(readme).toContain('preview_urls');
     expect(readme).toMatch(/Service Binding/);

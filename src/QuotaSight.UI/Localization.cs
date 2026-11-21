@@ -112,13 +112,14 @@ public sealed class UiCopy
         (UsageConnectionError.TooLong, false) => "The endpoint is too long (256 characters at most).",
         (UsageConnectionError.InvalidCharacters, true) => "エンドポイントに空白や制御文字は使えません。",
         (UsageConnectionError.InvalidCharacters, false) => "The endpoint must not contain spaces or control characters.",
-        (UsageConnectionError.InvalidCredential, true) => "クライアント ID とクライアントシークレットは空白を含まない半角英数字で入力してください。",
+        (UsageConnectionError.InvalidCredential, true) => "クライアント ID とクライアントシークレットは、空白を含まない印字可能なASCII文字で入力してください。",
         (UsageConnectionError.InvalidCredential, false) => "Enter a client id and client secret with no spaces.",
         (UsageConnectionError.CredentialStoreUnavailable, true) => "資格情報ストアを利用できないため、保存していません。",
         (UsageConnectionError.CredentialStoreUnavailable, false) => "The credential store is unavailable, so nothing was saved.",
         _ => string.Empty
     };
     public string Dashboard => IsJapanese ? "ダッシュボード" : "Dashboard";
+    public string NavUsage => IsJapanese ? "利用量" : "Token usage";
     public string UsageOverview => IsJapanese ? "使用量" : "Usage";
     public string UsageTotalTokens => IsJapanese ? "合計トークン" : "Total tokens";
     public string AddProvider => IsJapanese ? "追加" : "Add provider";

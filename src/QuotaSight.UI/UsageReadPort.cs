@@ -87,7 +87,12 @@ public enum UsageFailureKind
     CredentialMissing,
 }
 
-/// <summary>Read-only seam for later HTTP integration; no runtime transport is configured in v1 UI.</summary>
+/// <summary>
+/// The daily read seam the usage page calls. The application wires
+/// <see cref="ReconfigurableUsageReadPort"/>, which installs an
+/// <see cref="HttpUsageReadPort"/> once an endpoint and a credential pair exist and
+/// answers "not configured" otherwise.
+/// </summary>
 public interface IUsageReadPort
 {
     Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken);

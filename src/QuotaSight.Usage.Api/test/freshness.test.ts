@@ -24,6 +24,7 @@ import {
   FIXTURE,
   json,
   resetData,
+  scalar,
   seedCollectors,
   snapshotBody,
   type Harness,
@@ -143,6 +144,38 @@ describe('GET /v1/usage/daily collector freshness', () => {
       generation: 2,
       lastReceivedAt: receipt.receivedAt,
     });
+  });
+
+  it('reads only the active generation: a raised generation empties the days but keeps the rows stored', async () => {
+    // The daily rows of a superseded generation are retained in `usage_day` (the
+    // table is keyed by generation on purpose), but the read API never returns
+    // them: every read joins on the collector's active generation. There is no
+    // endpoint that reads a past generation, so this is a documented limitation
+    // rather than a rotation feature.
+    const receipt = await put(1);
+    expect(receipt.status).toBe('applied');
+
+    await h.db
+      .prepare('UPDATE collectors SET active_generation = 2 WHERE id = ?')
+      .bind(FIXTURE.collectorA1)
+      .run();
+
+    const body = await readDaily();
+    expect(body.days).toEqual([]);
+    expect(body.totalTokens).toBe(0);
+    expect(body.collectors.find((item) => item.collectorId === FIXTURE.collectorA1)).toEqual({
+      collectorId: FIXTURE.collectorA1,
+      generation: 2,
+      lastReceivedAt: null,
+    });
+
+    // The old rows are still there; nothing was deleted, they are simply not read.
+    const retained = await scalar(
+      h.db,
+      'SELECT COUNT(*) AS value FROM usage_day WHERE collector_id = ? AND generation = 1',
+      FIXTURE.collectorA1,
+    );
+    expect(retained).toBe(1);
   });
 
   it('stays owner-scoped and honours the collector filter', async () => {

@@ -449,27 +449,6 @@ public sealed class UsageConnectionSettingsTests
     }
 
     [Fact]
-    public async Task ReplacedPortDisposesTheOldClientOnlyAfterTheInFlightReadFinishes()
-    {
-        var handler = new GatedHandler();
-        var client = new TrackedClient(handler);
-        using var port = new ReconfigurableUsageReadPort();
-        port.Configure(
-            new HttpUsageReadPort(client, new Uri(Endpoint), StoreUsageCredentialProvider.IdentityId, new StaticCredentials(ClientId, ClientSecret)),
-            client);
-
-        var read = port.ReadDailyAsync(new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, CancellationToken.None);
-        port.Configure(new UnconfiguredUsageReadPort());
-
-        Assert.False(client.Disposed);
-        Assert.False(port.IsConfigured);
-        handler.Release();
-        var usage = await read;
-        Assert.Equal(0L, usage.TotalTokens);
-        Assert.True(client.Disposed);
-    }
-
-    [Fact]
     public async Task UnconfiguredReconfigurablePortFailsTheRead()
     {
         using var port = new ReconfigurableUsageReadPort();
@@ -631,12 +610,6 @@ public sealed class UsageConnectionSettingsTests
         }
     }
 
-    private sealed class StaticCredentials(string clientId, string clientSecret) : IUsageCredentialProvider
-    {
-        public ValueTask<UsageCredential?> GetCredentialAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult<UsageCredential?>(new UsageCredential(StoreUsageCredentialProvider.IdentityId, clientId, clientSecret));
-    }
-
     private sealed class RecordingHandler : HttpMessageHandler
     {
         private readonly List<CapturedRequest> requests = [];
@@ -693,23 +666,6 @@ public sealed class UsageConnectionSettingsTests
         IReadOnlyList<string> AccessClientSecrets,
         bool HasAuthorization,
         bool HasCookie);
-
-    private sealed class GatedHandler : HttpMessageHandler
-    {
-        private readonly TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private const string Body = "{\"from\":\"2026-11-01\",\"to\":\"2026-11-01\",\"days\":[],\"totalTokens\":0,\"collectors\":[]}";
-
-        public void Release() => gate.TrySetResult();
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            await gate.Task.ConfigureAwait(false);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(Body, Encoding.UTF8, "application/json"),
-            };
-        }
-    }
 
     private sealed class TrackedClient(HttpMessageHandler handler) : HttpClient(handler, disposeHandler: false)
     {

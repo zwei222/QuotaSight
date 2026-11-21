@@ -8,6 +8,8 @@
  * and no fallback identity in this package.
  */
 
+import { ApiError } from './errors';
+
 export type Scope = 'usage:write' | 'usage:read';
 
 export interface Principal {
@@ -18,13 +20,30 @@ export interface Principal {
 }
 
 export interface Authenticator {
+  /**
+   * Resolves the caller, or `null` when the request is not authenticated (the app
+   * answers one fixed 401). A failure of the service itself — an unavailable key
+   * set, or a deployment with no Access configuration — is thrown as an ApiError
+   * with its own 503 code instead, so it is never mistaken for a bad credential.
+   */
   authenticate(request: Request): Promise<Principal | null>;
 }
 
-/** Default for an unconfigured deployment: deny everything. */
+/**
+ * Default for an unconfigured deployment: the whole API is unavailable, not the
+ * caller's credential.
+ *
+ * A 401 would tell a client its credential is wrong, and no client can repair a
+ * missing deployment configuration. This answers 503 `auth_unconfigured` instead:
+ * the retryable class, fixed body, no details and no configuration value.
+ */
 export class UnconfiguredAuthenticator implements Authenticator {
-  async authenticate(): Promise<null> {
-    return null;
+  async authenticate(): Promise<never> {
+    throw new ApiError(
+      503,
+      'auth_unconfigured',
+      'Authentication is not configured for this deployment.',
+    );
   }
 }
 

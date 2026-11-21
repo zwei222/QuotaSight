@@ -157,7 +157,10 @@ public partial class MainWindow : Window
 
         if (this.FindControl<Button>("UsageOpenSettingsButton") is { } settings)
         {
-            settings.IsVisible = failure is UsageFailureKind.Unauthorized or UsageFailureKind.Forbidden or UsageFailureKind.CredentialMissing;
+            // A redirect is reported as "check the endpoint", which is a settings-page
+            // action: the detour is offered for it exactly like a credential problem.
+            settings.IsVisible = failure is UsageFailureKind.Unauthorized or UsageFailureKind.Forbidden
+                or UsageFailureKind.Redirected or UsageFailureKind.CredentialMissing;
         }
     }
 
@@ -545,7 +548,11 @@ public partial class MainWindow : Window
     private void UsageSecretKeyDown(object? sender, KeyEventArgs e)
     {
         if (sender is not TextBox) return;
-        // Copy and cut would move the secret out of the masked field, so both are swallowed.
+        // Second line of defence only: PasswordChar already makes Avalonia report
+        // CanCopy/CanCut as false (pinned in UsageConnectionSettingsUiTests), so the
+        // commands and their gestures are already inert. This handler stays because its
+        // wiring is the KeyDown attribute in Views/MainWindow.axaml, which a non-visual
+        // change does not edit; dropping it here alone would break XAML loading.
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key is Key.C or Key.X or Key.Insert)
         {
             e.Handled = true;

@@ -20,15 +20,17 @@ beforeEach(async () => {
 });
 
 describe('unconfigured runtime', () => {
-  it('denies every request when no authenticator is configured', async () => {
+  it('answers 503 auth_unconfigured instead of a credential rejection', async () => {
     for (const token of ['write-a1', 'read-a1', 'unconfigured-probe']) {
+      // A missing deployment configuration is not the caller's fault: every
+      // request is in the retryable 503 class, and never 401 unauthorized.
       const write = await prod.putSnapshot({ revision: 1, body: snapshotBody(), token });
-      expect(write.status).toBe(401);
-      expect((await json(write)).error.code).toBe('unauthorized');
+      expect(write.status).toBe(503);
+      expect((await json(write)).error.code).toBe('auth_unconfigured');
 
       const read = await prod.getDaily('?from=2026-11-01&to=2026-11-30', token);
-      expect(read.status).toBe(401);
-      expect((await json(read)).error.code).toBe('unauthorized');
+      expect(read.status).toBe(503);
+      expect((await json(read)).error.code).toBe('auth_unconfigured');
     }
 
     expect(await scalar(prod.db, 'SELECT COUNT(*) AS value FROM snapshot_receipts')).toBe(0);

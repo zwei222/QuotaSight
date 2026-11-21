@@ -368,20 +368,40 @@ public sealed class StoreUsageCredentialProvider(ICredentialStore store) : IUsag
 }
 
 /// <summary>
-/// One read port whose inner port can be replaced at runtime.
+/// One read port whose target (origin and credential provider) can be replaced at runtime,
+/// over a single long-lived <see cref="HttpClient"/>.
 ///
-/// A read takes the configuration that was current when it started, so a replacement never
-/// moves an in-flight request to another origin. The client of a replaced configuration is
-/// disposed, but only once no read is still using it, which keeps an endpoint change from
-/// failing an outstanding read.
+/// A reconfigure swaps a reference; it never disposes the transport. That is what removes
+/// the race the previous ownership model had to fence: an in-flight read keeps the port it
+/// started with (and a client that stays alive), it completes under those settings, and a
+/// later read starts under the new ones. The client is created once for the application
+/// (or supplied by the caller) and is never disposed here, so nothing can be used after
+/// disposal and no memory fence is needed between a read and a swap.
 /// </summary>
 public sealed class ReconfigurableUsageReadPort : IUsageReadPort, IDisposable
 {
-    private readonly object gate = new();
-    private readonly Queue<HttpClient> retired = new();
+    /// <summary>Slack over one read's own deadline, so the port's deadline is what fires first.</summary>
+    private static readonly TimeSpan ClientTimeout =
+        HttpUsageReadPort.DefaultRequestDeadline + TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The client shared by every configuration for the lifetime of the process. It carries
+    /// no default header, follows no redirect and keeps no cookie (see
+    /// <see cref="UsageReadTransport"/>), and it is deliberately never disposed: replacing
+    /// a configuration must not invalidate a read that is still running.
+    /// </summary>
+    private static readonly HttpClient SharedClient = UsageReadTransport.CreateClient(ClientTimeout);
+
+    private readonly HttpClient client;
     private Configuration configuration = Configuration.Unconfigured;
-    private int activeReads;
-    private bool disposed;
+    private int disposed;
+
+    /// <summary>
+    /// Creates the adapter over <paramref name="client"/>, the transport every configuration
+    /// uses. When it is omitted the process-wide client is used and stays owned by this type;
+    /// a supplied client stays owned by the caller.
+    /// </summary>
+    public ReconfigurableUsageReadPort(HttpClient? client = null) => this.client = client ?? SharedClient;
 
     /// <summary>True when a real port is installed.</summary>
     public bool IsConfigured => Volatile.Read(ref configuration).IsConfigured;
@@ -390,106 +410,61 @@ public sealed class ReconfigurableUsageReadPort : IUsageReadPort, IDisposable
     public Uri? Endpoint => Volatile.Read(ref configuration).Endpoint;
 
     /// <summary>
-    /// Installs <paramref name="port"/>, taking ownership of <paramref name="ownedClient"/>
-    /// so it is disposed together with the configuration it belongs to.
+    /// Installs <paramref name="port"/> for subsequent reads. The port owns whatever client it
+    /// was built with; this adapter never disposes it, so the caller keeps the lifetime.
     /// </summary>
-    public void Configure(IUsageReadPort port, HttpClient? ownedClient = null)
+    public void Configure(IUsageReadPort port)
     {
         ArgumentNullException.ThrowIfNull(port);
-        Configuration previous;
-        lock (gate)
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            previous = configuration;
-            Volatile.Write(ref configuration, new Configuration(port, ownedClient));
-            if (previous.Client is null)
-            {
-                return;
-            }
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
+        Volatile.Write(ref configuration, new Configuration(port));
+    }
 
-            if (activeReads == 0)
-            {
-                previous.Client.Dispose();
-            }
-            else
-            {
-                retired.Enqueue(previous.Client);
-            }
-        }
+    /// <summary>
+    /// Installs a port for <paramref name="origin"/> over this adapter's own client. This is
+    /// the production path: the credential pair is read once per request by
+    /// <paramref name="credentials"/>, never captured in the request.
+    /// </summary>
+    public void Configure(Uri origin, string identityId, IUsageCredentialProvider credentials)
+    {
+        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(credentials);
+        Configure(new HttpUsageReadPort(client, origin, identityId, credentials));
     }
 
     /// <summary>Returns the port to the unconfigured state.</summary>
     public void Reset() => Configure(new UnconfiguredUsageReadPort());
 
     /// <inheritdoc />
-    public async Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken)
+    public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken)
     {
-        // Registered before the configuration is read, so a replacement that happens now
-        // cannot dispose the client this read is about to use.
-        Interlocked.Increment(ref activeReads);
-        try
-        {
-            var snapshot = Volatile.Read(ref configuration);
-            return await snapshot.Port.ReadDailyAsync(from, to, collectorId, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (Interlocked.Decrement(ref activeReads) == 0)
-            {
-                DrainRetired();
-            }
-        }
+        // One reference read decides the whole call: a reconfigure that happens now cannot
+        // move this read to another origin, and nothing it replaces is disposed underneath it.
+        var snapshot = Volatile.Read(ref configuration);
+        return snapshot.Port.ReadDailyAsync(from, to, collectorId, cancellationToken);
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Only the installed reference is dropped. No client is disposed, because none belongs to
+    /// a configuration: the shared client lives for the process and an injected one belongs to
+    /// its caller.
+    /// </remarks>
     public void Dispose()
     {
-        Configuration current;
-        HttpClient[] pending;
-        lock (gate)
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
-            if (disposed)
-            {
-                return;
-            }
-
-            disposed = true;
-            current = configuration;
-            configuration = Configuration.Unconfigured;
-            pending = [.. retired];
-            retired.Clear();
+            return;
         }
 
-        current.Client?.Dispose();
-        foreach (var client in pending)
-        {
-            client.Dispose();
-        }
+        Volatile.Write(ref configuration, Configuration.Unconfigured);
     }
 
-    private void DrainRetired()
+    private bool IsDisposed => Volatile.Read(ref disposed) != 0;
+
+    private sealed record Configuration(IUsageReadPort Port)
     {
-        HttpClient[] pending;
-        lock (gate)
-        {
-            if (retired.Count == 0)
-            {
-                return;
-            }
-
-            pending = [.. retired];
-            retired.Clear();
-        }
-
-        foreach (var client in pending)
-        {
-            client.Dispose();
-        }
-    }
-
-    private sealed record Configuration(IUsageReadPort Port, HttpClient? Client)
-    {
-        public static Configuration Unconfigured { get; } = new(new UnconfiguredUsageReadPort(), null);
+        public static Configuration Unconfigured { get; } = new(new UnconfiguredUsageReadPort());
 
         public bool IsConfigured => Port is not UnconfiguredUsageReadPort;
 

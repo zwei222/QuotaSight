@@ -1,5 +1,6 @@
 export type ApiErrorCode =
   | 'unauthorized'
+  | 'auth_unconfigured'
   | 'auth_unavailable'
   | 'forbidden_scope'
   | 'forbidden_collector'

@@ -72,7 +72,14 @@ async function assertDeniesAll(env: AccessEnv): Promise<void> {
     method: 'PUT',
     headers: { 'Cf-Access-Jwt-Assertion': writeToken },
   });
-  expect(await authenticator.authenticate(request)).toBeNull();
+  // An invalid configuration is not a credential rejection: it is answered in
+  // the retryable 503 class, and no key set is resolved for it.
+  await expect(authenticator.authenticate(request)).rejects.toMatchObject({
+    name: 'ApiError',
+    status: 503,
+    code: 'auth_unconfigured',
+    details: undefined,
+  });
   expect(resolved).toBe(false);
 }
 

@@ -7,6 +7,30 @@ namespace QuotaSight.UI.Tests;
 public sealed class LocalizationCopyTests
 {
     [Fact]
+    public void Navigation_copy_comes_from_the_single_copy_table_in_both_languages()
+    {
+        var japanese = new UiCopy(UiLanguage.Japanese);
+        var english = new UiCopy(UiLanguage.English);
+
+        // The usage navigation label is copy like every other nav item: it must not be
+        // built from a literal inside the view model, or a language switch relocalizes
+        // the other items and leaves this one behind.
+        Assert.Equal("利用量", japanese.NavUsage);
+        Assert.Equal("Token usage", english.NavUsage);
+
+        using var viewModel = new MainViewModel(new EmptyDashboardSource());
+        Assert.Equal(english.NavUsage, viewModel.NavUsageText);
+
+        viewModel.NavigateToUsage();
+        var raised = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => raised.Add(args.PropertyName);
+        viewModel.Language = UiLanguage.Japanese;
+        Assert.Equal(japanese.NavUsage, viewModel.NavUsageText);
+        Assert.Equal(japanese.NavUsage, viewModel.HeaderTitle);
+        Assert.Contains(nameof(MainViewModel.NavUsageText), raised);
+    }
+
+    [Fact]
     public void Integration_copy_describes_credential_storage_and_device_flow_requirements_in_both_languages()
     {
         var japanese = new UiCopy(UiLanguage.Japanese);

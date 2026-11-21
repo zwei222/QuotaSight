@@ -1652,7 +1652,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly StoreUsageCredentialProvider? usageCredentials;
     private readonly Func<string, TimeZoneInfo> timeZoneResolver;
     private readonly TimeZoneInfo localTimeZone;
-    private readonly Func<HttpClient>? usageHttpClientFactory;
     private string usageApiEndpoint = string.Empty;
     private bool hasUsageCredential;
     private UsageConnectionState usageConnectionState = UsageConnectionState.Unconfigured;
@@ -1691,7 +1690,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public UiCopy CopyText => new(Language);
     public string NavDashboardText => CopyText.Dashboard;
-    public string NavUsageText => Language == UiLanguage.Japanese ? "利用量" : "Token usage";
+    public string NavUsageText => CopyText.NavUsage;
     public string NavHistoryText => CopyText.History;
     public string NavSettingsText => CopyText.Settings;
     public string RefreshText => CopyText.Refresh;
@@ -2157,18 +2156,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void ConfigureUsageReadPort(string endpoint)
     {
         if (usageCredentials is null) return;
-        var origin = new Uri(endpoint, UriKind.Absolute);
-        var client = usageHttpClientFactory?.Invoke()
-            ?? UsageReadTransport.CreateClient(HttpUsageReadPort.DefaultRequestDeadline + TimeSpan.FromSeconds(15));
-        try
-        {
-            usageReadPort.Configure(new HttpUsageReadPort(client, origin, StoreUsageCredentialProvider.IdentityId, usageCredentials), client);
-        }
-        catch
-        {
-            client.Dispose();
-            throw;
-        }
+        // The port adapter owns the one long-lived client and swaps only the target, so a
+        // save or a removal can never dispose a transport an outstanding read is using.
+        usageReadPort.Configure(new Uri(endpoint, UriKind.Absolute), StoreUsageCredentialProvider.IdentityId, usageCredentials);
     }
 
     private async Task RestoreUsageCredentialPairAsync((string? ClientId, string? ClientSecret) previous, CancellationToken cancellationToken)
@@ -2340,7 +2330,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         History.Dispose();
         (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.usageHttpClientFactory = usageHttpClientFactory; this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById; this.localTimeZone = localTimeZone ?? TimeZoneInfo.Local; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
+    public MainViewModel(IDashboardSource source, IManualQuotaService? manualQuotaService = null, IQuotaHistory? quotaHistory = null, TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IGitHubClientFactory? githubFactory = null, IQuotaApplication? quotaApplication = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null) { this.source = source; this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(usageHttpClientFactory?.Invoke()); if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort); this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore); this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById; this.localTimeZone = localTimeZone ?? TimeZoneInfo.Local; this.manualQuotaService = manualQuotaService; this.quotaHistory = quotaHistory; this.timeProvider = timeProvider ?? TimeProvider.System; this.settingsStore = settingsStore; this.githubFactory = githubFactory; this.quotaApplication = quotaApplication; this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher(); this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler(); notificationService = new InAppNotificationService(desktopNotificationBackend); notificationDeduplicator = new NotificationDeduplicator(notificationService); notificationService.PropertyChanged += (_, _) => { OnPropertyChanged(nameof(NotificationBannerText)); OnPropertyChanged(nameof(IsNotificationVisible)); }; History = new HistoryState(quotaHistory, this.uiDispatcher, projectionScheduler: null, clock: this.timeProvider); LoadCards(); }
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         SetQuotaDataBusy(true);

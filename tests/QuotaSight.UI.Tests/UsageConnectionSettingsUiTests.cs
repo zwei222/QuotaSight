@@ -64,6 +64,27 @@ public sealed class UsageConnectionSettingsUiTests
     }
 
     [AvaloniaFact]
+    public void Masked_secret_field_has_no_copy_or_cut_command_of_its_own()
+    {
+        using var scope = Scope.Create();
+        var secret = scope.Window.FindControl<TextBox>("UsageClientSecretBox")!;
+        secret.Text = ClientSecret;
+        secret.SelectAll();
+
+        // Measured, not assumed: with PasswordChar set, Avalonia itself reports the copy
+        // and cut commands as unavailable, so Copy() transfers nothing even if the key
+        // handler never ran. The handler is therefore a second line of defence, and it
+        // stays because its wiring lives in Views/MainWindow.axaml, which this change
+        // does not touch; removing it would mean editing the XAML attribute too.
+        Assert.NotEqual(default, secret.PasswordChar);
+        Assert.False(secret.CanCopy, "A masked field must not offer a copy command.");
+        Assert.False(secret.CanCut, "A masked field must not offer a cut command.");
+
+        secret.Copy();
+        Assert.Equal(ClientSecret, secret.Text);
+    }
+
+    [AvaloniaFact]
     public async Task Successful_save_clears_the_credential_fields_and_shows_presence_only()
     {
         var store = new FakeCredentialStore();

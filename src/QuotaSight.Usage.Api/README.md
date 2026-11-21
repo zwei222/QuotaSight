@@ -55,6 +55,35 @@ collector it covers:
 - `collector` filtering narrows both `days` and `collectors`; another owner's
   collectors never appear, exactly like the day rows.
 
+### Only the active generation is readable
+
+Every read joins `usage_day` on the collector's **active** generation:
+
+```sql
+JOIN collectors c ON c.id = u.collector_id
+WHERE u.generation = c.active_generation
+```
+
+So after an operator raises a collector's `active_generation`, the read returns
+**no** day rows for that collector until it reports again in the new
+generation, and its freshness entry reads `lastReceivedAt: null` (verified by
+`test/freshness.test.ts`, which also asserts the old rows still exist).
+
+This is a deliberate limitation of this slice, not a rotation feature:
+
+- the rows of a superseded generation are **retained** in `usage_day` (the
+  table is keyed by `(collector_id, generation, bucket_date)` on purpose), but
+  no read path returns them;
+- there is no endpoint, query parameter or filter that reads a past generation,
+  so those retained rows are currently unreadable through the API;
+- generation rotation itself is still an operator database update (see
+  "Deliberately pending" below), so no client can produce this state on its own.
+
+The comment in `migrations/0001_initial.sql` that a superseded generation
+"keeps its history" describes storage only. It does not promise that history is
+readable: keeping the rows is what makes a future read-a-past-generation
+feature possible without a data loss step, and nothing here exposes it today.
+
 
 ## Snapshot contract (schema v1, narrow)
 
@@ -153,6 +182,13 @@ under-counted. A client that needs to know this happened reads
   client can fix a legitimate request.
 - **Duplicate query parameters are rejected** (`400 invalid_query`, reason
   `duplicate_parameter`) instead of silently using the first value.
+- **A malformed path segment reuses the query error code.** A `collectorId`
+  that fails its slug rule is `400 invalid_query` with
+  `details.field: "collectorId"` (it is validated by the same helper as the
+  query filter), while a malformed `revision` is `400 invalid_revision`. Both
+  are current behaviour: the transport is not re-shaped in this slice, and no
+  client branches on the difference — each is a `4xx` the Collector treats as a
+  rejected request.
 - **Reads are bounded end to end.** The list query asks for one row more than the
   documented maximum: `5000` rows are served, `5001` are `413 result_too_large`
   (reason `too_many_rows`). The aggregate is summed with a safe-integer check, so
@@ -184,9 +220,10 @@ an environment variable, no hardcoded secret and no fallback identity.
 
 `src/index.ts` reads configuration from the Worker environment once per isolate
 and keeps the JWKS cache for that isolate. If any required value is missing or
-invalid, it installs `UnconfiguredAuthenticator` and every request is denied.
-It does not fetch a key set in that case. A valid configuration installs
-`AccessJwtAuthenticator`, which:
+invalid, it installs `UnconfiguredAuthenticator`, emits one fixed
+`access_config_invalid` log line and answers every request with `503
+auth_unconfigured` (never `401`, never a 500). It does not fetch a key set in
+that case. A valid configuration installs `AccessJwtAuthenticator`, which:
 
 1. Reads the JWT only from the `Cf-Access-Jwt-Assertion` header. `Authorization`,
    cookies (including `CF_Authorization`) and `Cf-Access-Authenticated-User-Email`
@@ -245,10 +282,52 @@ broader permission.
 - **503 `auth_unavailable`** — the Access JWKS could not be used (fetch failure,
   timeout, malformed set, no matching key). Nothing is written. The body has no
   reason, token or client id.
+- **503 `auth_unconfigured`** — the deployment has no valid Access
+  configuration, so the API cannot authenticate anyone. This is not a rejected
+  credential and no client can fix it by changing its token: it is answered in
+  the retryable `5xx` class so a client keeps its state and retries later
+  instead of discarding a valid credential and its send state. The body is
+  always `{ "error": { "code": "auth_unconfigured", "message": "Authentication is not configured for this deployment." } }`,
+  with no `details`, no domain, no audience and no principal. Every path under
+  `/v1/*` answers this, including a request that carries a valid-looking token.
+
+```json
+{ "error": { "code": "auth_unconfigured", "message": "Authentication is not configured for this deployment." } }
+```
+
+Because the status is `503`, a client that classifies by status alone cannot
+tell `auth_unconfigured` from `auth_unavailable`; both mean "retry later", and
+neither means "your credential is wrong". Clients of this slice (the Collector
+and the desktop GUI) classify every `5xx` as temporary and retryable, and none
+of them reads the body to decide.
 
 Unexpected verifier failures are returned as 401 or 503, never as a 500 that
 might echo internal details. Responses and logs do not include the JWT, header
 values, client ids or key material.
+
+**Unverified:** whether Cloudflare Access itself answers a bad or missing
+service token with `403` or `302` (rather than letting the request reach this
+Worker) has not been tested against a real Access deployment. Because of that,
+the desktop client classifies a `403` as a credential/scope problem and a `3xx`
+as a redirect that is never followed, and offers the settings-page detour for
+both; neither path has been observed end-to-end against Access.
+
+### Operator signal for a missing configuration
+
+An isolate that starts without a usable Access configuration emits exactly one
+fixed line to the Worker log:
+
+```text
+access_config_invalid
+```
+
+It is written once per isolate (the app is built once per isolate), contains no
+secret, team domain, audience, principal or other configuration value, and is
+what an operator sees in `wrangler dev` / `wrangler tail`. `wrangler.toml`
+keeps `[observability] enabled = false`, so this line is **not** shipped to a
+retained log product; there is no log-based alerting for it in this slice, and
+`test/unconfigured.test.ts` pins that the token is emitted once and that no
+configuration value accompanies it.
 
 ### Access must front every path
 
@@ -263,8 +342,13 @@ that can reach the Worker:
 
 Tests inject fixture identities or synthetic keys. They do not call Cloudflare.
 
+The code list includes `auth_unconfigured`; `method_not_allowed` is declared in
+`src/errors.ts` but no route emits it — a method that a known path does not
+serve is answered by the Hono not-found handler as `404 not_found` (verified
+behaviour, not a planned `405`).
+
 Errors are JSON: `{ "error": { "code": "...", "message": "...", "details"?: {...} } }`
-with codes `unauthorized`, `auth_unavailable`, `forbidden_scope`, `forbidden_collector`,
+with codes `unauthorized`, `auth_unconfigured`, `auth_unavailable`, `forbidden_scope`, `forbidden_collector`,
 `collector_not_found`, `invalid_snapshot`, `invalid_revision`, `invalid_query`,
 `invalid_request`, `invalid_json`, `unsupported_media_type`, `payload_too_large`,
 `result_too_large`, `revision_conflict`, `stale_revision`, `generation_inactive`.
@@ -341,7 +425,9 @@ here; nothing in this slice pretends to cover them:
 - **Generation rotation.** `generation` is written and enforced against
   `collectors.active_generation`, but there is no operation that rotates it, so
   the only way to change it is a direct database update. Rotation needs its own
-  migration story and is deferred.
+  migration story and is deferred. There is also no read of a superseded
+  generation: raising `active_generation` makes the collector's earlier day
+  rows unreadable through this API even though they stay stored.
 - **Receipt high-water migration.** Revision ordering is currently enforced by a
   trigger that compares against the accepted receipts of
   (collector, generation). Replacing that scan with a stored high-water revision

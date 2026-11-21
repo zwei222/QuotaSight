@@ -341,7 +341,7 @@ describe('Access JWT through src/index.ts', () => {
     expect(await stored(bad)).toBe(0);
   });
 
-  it('denies every request when configuration is present but invalid', async () => {
+  it('answers 503 auth_unconfigured when configuration is present but invalid', async () => {
     const write = await token();
     const response = await invalidConfig.putSnapshot({
       revision: 1,
@@ -349,8 +349,15 @@ describe('Access JWT through src/index.ts', () => {
       token: null,
       headers: assertion(write),
     });
-    expect(response.status).toBe(401);
-    expect(await json(response)).toEqual(UNAUTHORIZED);
+    // Not a credential problem: the deployment itself is misconfigured, so the
+    // retryable 503 class answers and no configuration value is echoed.
+    expect(response.status).toBe(503);
+    expect(await json(response)).toEqual({
+      error: {
+        code: 'auth_unconfigured',
+        message: 'Authentication is not configured for this deployment.',
+      },
+    });
     expect(await stored(invalidConfig)).toBe(0);
   });
 });

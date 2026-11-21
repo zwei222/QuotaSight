@@ -64,9 +64,10 @@ public enum UsageReadFailure
     InconsistentTotal,
 
     /// <summary>
-    /// The service could not authenticate the request right now (HTTP 503,
-    /// auth_unavailable). This is a retryable transient failure, not a credential
-    /// rejection, and it is never inferred from the response body.
+    /// The service could not authenticate the request right now (HTTP 503:
+    /// `auth_unavailable` for a key-set outage, `auth_unconfigured` for a deployment
+    /// without Access configuration). This is a retryable transient failure, not a
+    /// credential rejection, and it is never inferred from the response body.
     /// </summary>
     AuthUnavailable,
 
@@ -203,8 +204,9 @@ public interface IUsageCredentialProvider
 /// reported as a classified failure instead of a guessed value. One read is
 /// bounded by a finite deadline covering the response headers and the body, and
 /// an answer that reports a different request URI than the one sent is refused.
-/// Nothing here is registered by the application: the port exists only where a
-/// caller constructs it with an explicit origin, client and credential provider.
+/// Nothing here registers itself: the application builds this port from a
+/// configured origin, the shared client and the credential provider, and keeps it
+/// behind <see cref="ReconfigurableUsageReadPort"/>.
 /// </summary>
 public sealed class HttpUsageReadPort : IUsageReadPort
 {
@@ -564,7 +566,7 @@ public sealed class HttpUsageReadPort : IUsageReadPort
             case HttpStatusCode.NotFound:
                 throw new UsageReadException(
                     UsageReadFailure.NotFound,
-                    "The usage service reported that the requested collector does not exist.",
+                    "The usage service reported that the requested resource does not exist.",
                     status);
             case HttpStatusCode.ServiceUnavailable:
                 // 503 from this service is auth_unavailable: retryable, and classified
@@ -1030,9 +1032,10 @@ public sealed class HttpUsageReadPort : IUsageReadPort
 }
 
 /// <summary>
-/// Encapsulated transport factory for a real deployment. It is not called by
-/// the application: it exists so that the one place a production handler is
-/// built has redirects and cookies disabled, and no implicit decompression.
+/// Encapsulated transport factory for the real deployment. It is the one place a
+/// production handler is built, so redirects and cookies are disabled and no
+/// content encoding is negotiated; <see cref="ReconfigurableUsageReadPort"/> owns
+/// the single long-lived client built from it.
 /// </summary>
 public static class UsageReadTransport
 {

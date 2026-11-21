@@ -199,7 +199,7 @@ public sealed class UsageStatusSurfaceTests
     [InlineData(UsageFailureKind.NotFound, false)]
     [InlineData(UsageFailureKind.InvalidResponse, false)]
     [InlineData(UsageFailureKind.Transient, false)]
-    [InlineData(UsageFailureKind.Redirected, false)]
+    [InlineData(UsageFailureKind.Redirected, true)]
     [InlineData(UsageFailureKind.CredentialMissing, true)]
     public async Task A_first_failure_names_its_class_and_routes_credential_problems_to_settings(
         UsageFailureKind kind, bool expectsSettingsDetour)
