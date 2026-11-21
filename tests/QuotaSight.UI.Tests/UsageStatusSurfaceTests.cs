@@ -387,6 +387,99 @@ public sealed class UsageStatusSurfaceTests
         }
     }
 
+    [AvaloniaFact]
+    public async Task The_error_status_line_stays_neutral_while_the_banner_names_the_problem()
+    {
+        // The status line is a state, not advice: "try again" would contradict a banner
+        // that says the credential must be reviewed in settings. The banner owns the fix.
+        var port = new ScriptedUsageReadPort(() => throw new UsageReadException(UsageReadFailure.Unauthorized, "classified"));
+        var window = await CreateStateAsync(SurfaceState.ErrorTransient, port);
+        try
+        {
+            Assert.Equal("Could not load usage.", window.FindControl<TextBlock>("UsageStatus")!.Text);
+            Assert.DoesNotContain("Try again", window.FindControl<TextBlock>("UsageStatus")!.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(new UiCopy(UiLanguage.English).UsageFailure(UsageFailureKind.Unauthorized),
+                window.FindControl<TextBlock>("UsageFailureTextBlock")!.Text);
+            Assert.True(window.FindControl<Button>("UsageRetryButton")!.IsVisible);
+
+            window.ViewModel.Language = UiLanguage.Japanese;
+            window.UpdateLayout();
+            Assert.Equal("利用量を読み込めませんでした。", window.FindControl<TextBlock>("UsageStatus")!.Text);
+            Assert.DoesNotContain("再試行", window.FindControl<TextBlock>("UsageStatus")!.Text, StringComparison.Ordinal);
+            Assert.Equal(new UiCopy(UiLanguage.Japanese).UsageFailure(UsageFailureKind.Unauthorized),
+                window.FindControl<TextBlock>("UsageFailureTextBlock")!.Text);
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Banner_icons_align_with_the_first_text_line_not_the_paragraph_middle()
+    {
+        var port = new ScriptedUsageReadPort(
+            () => Usage(17, Reported(Now.AddHours(-13))),
+            () => throw new UsageReadException(UsageReadFailure.Timeout, "offline"));
+        var window = await CreateStateAsync(SurfaceState.StaleAndDelayed, port, loadSecondRead: true);
+        try
+        {
+            window.ViewModel.Language = UiLanguage.Japanese;
+            window.UpdateLayout();
+
+            AssertFirstLineAligned(window, "UsageFailurePanel", "UsageFailureStaleIcon", "UsageFailureTextBlock");
+            AssertFirstLineAligned(window, "UsageDelayedBanner", "UsageDelayedIcon", "UsageDelayedTextBlock");
+            AssertEveryTextStaysInsideTheDailyCard(window);
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
+    }
+
+    private static void AssertFirstLineAligned(MainWindow window, string bannerName, string iconName, string textName)
+    {
+        var banner = window.FindControl<Border>(bannerName)!;
+        var icon = window.FindControl<PathIcon>(iconName)!;
+        var text = window.FindControl<TextBlock>(textName)!;
+        var iconTop = icon.TranslatePoint(default, banner)!.Value.Y;
+        var textTop = text.TranslatePoint(default, banner)!.Value.Y;
+        var firstLineHeight = text.TextLayout.TextLines[0].Height;
+        Assert.True(iconTop >= textTop - 1,
+            $"The '{iconName}' icon floats above the first text line by {textTop - iconTop:0.#}px.");
+        Assert.True(iconTop + icon.Bounds.Height <= textTop + firstLineHeight + 1,
+            $"The '{iconName}' icon ends at {iconTop + icon.Bounds.Height - textTop:0.#}px into the text, beyond the first line ({firstLineHeight:0.#}px): it drifts toward the paragraph middle.");
+    }
+
+    [AvaloniaFact]
+    public async Task The_settings_detour_reads_as_a_real_button_but_stays_secondary_to_retry()
+    {
+        var port = new ScriptedUsageReadPort(() => throw new UsageReadException(UsageReadFailure.CredentialUnavailable, "missing"));
+        var window = await CreateStateAsync(SurfaceState.ErrorTransient, port);
+        try
+        {
+            var retry = window.FindControl<Button>("UsageRetryButton")!;
+            var settings = window.FindControl<Button>("UsageOpenSettingsButton")!;
+
+            // Green text alone did not read as clickable: the detour carries a visible
+            // outline like a button, while staying visually quieter than the retry action.
+            Assert.True(settings.BorderThickness.Left >= 1, "The settings detour needs a visible border to read as a button.");
+            Assert.NotEqual(FontWeight.SemiBold, settings.FontWeight);
+            Assert.Equal(FontWeight.SemiBold, retry.FontWeight);
+
+            // Order in the row: the retry action leads, the detour follows it.
+            var actions = window.FindControl<WrapPanel>("UsageFailureActions")!;
+            Assert.True(actions.Children.IndexOf(retry) < actions.Children.IndexOf(settings));
+        }
+        finally
+        {
+            window.Close();
+            window.ViewModel.Dispose();
+        }
+    }
+
     private static void AssertSurface(SurfaceState state, UiLanguage language, MainWindow window)
     {
         var copy = new UiCopy(language);

@@ -18,8 +18,10 @@ public sealed class UiCopy
         ("Empty", false) => "No usage data for this period.",
         ("Ready", true) => "利用データを表示しています。",
         ("Ready", false) => "Usage data loaded.",
-        ("Error", true) => "利用データを読み込めませんでした。再試行してください。",
-        ("Error", false) => "Could not load usage. Try again.",
+        // Error is a neutral state sentence: the fix ("retry", "review the credential")
+        // belongs to the failure banner, so the two never contradict each other.
+        ("Error", true) => "利用量を読み込めませんでした。",
+        ("Error", false) => "Could not load usage.",
         ("Stale", true) => "前回の利用データを表示しています（更新に失敗しました）。",
         ("Stale", false) => "Showing the last loaded usage data; the refresh failed.",
         ("Unconfigured", true) => "利用量 API は未設定です。",
