@@ -2,6 +2,8 @@
 
 [English](github-app-setup.md) | [日本語](github-app-setup.ja.md)
 
+> **Historical document.** This describes the GitHub App Device Flow authentication and Copilot Billing Usage retrieval that earlier versions of QuotaSight offered. Current versions do not authenticate with GitHub and do not read Copilot billing data; they read observed token usage from a Usage API the operator configures. The steps below are kept unchanged as a record of that earlier design and do not apply to current builds.
+
 QuotaSight uses a GitHub App for authentication. Authentication is separate from Copilot Billing Usage retrieval. QuotaSight does not call an API-billing endpoint for personal cost tracking; it reads the documented Copilot AI-credit usage response when the required organization access is available.
 
 ## 1. Authentication only: create the App

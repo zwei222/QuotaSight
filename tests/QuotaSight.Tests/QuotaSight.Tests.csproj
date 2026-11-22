@@ -10,7 +10,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/QuotaSight.Core/QuotaSight.Core.csproj" />
     <ProjectReference Include="../../src/QuotaSight.Application/QuotaSight.Application.csproj" />
     <ProjectReference Include="../../src/QuotaSight.UI/QuotaSight.UI.csproj" />
     <ProjectReference Include="../../src/QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" />

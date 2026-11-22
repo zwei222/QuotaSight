@@ -2,59 +2,64 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-QuotaSight is a Windows/Linux desktop dashboard for subscription quotas. It is not an API billing, token-billing, or pay-as-you-go cost tracker. It shows observed values with source, confidence, freshness, and reporting limits; it does not turn estimates, stale data, manual entries, or experimental endpoints into authoritative real-time usage.
+QuotaSight is a Windows/Linux desktop dashboard for **observed AI token usage**. It does not fetch subscription quotas, does not call provider billing APIs, and is not an API-cost or token-billing tracker. The numbers it shows are observations: a machine's local CLI logs, aggregated by [TokScale](https://github.com/junhoyeo/tokscale) on that machine, sent to a Usage API the operator controls, and read back by the app. Every surface therefore states where a value came from, which period and collectors it covers, and how old it is.
 
 ## Current capabilities
 
-- Avalonia dashboard, history, settings, runtime English/Japanese switching, and narrow-width layout.
-- Thirty days of quota snapshots in daily JSONL history.
-- Windows Credential Manager and Linux Secret Service/`secret-tool`, with session-only storage when a secure store is unavailable.
-- No telemetry. Sensitive values are not written to settings, history, logs, exports, or UI; tokens may be retained in the OS secure credential store or session memory as described below.
-- Theme, refresh, notification, threshold, GitHub App Client ID, and GitHub organization slug settings.
-- Optional resident mode with a compact quota window and an explicit exit action.
+- Avalonia dashboard, usage page, settings, runtime English/Japanese switching, and a narrow-width layout.
+- Dashboard: observed-usage cards for the providers you add, with today's and the last seven days' token counts.
+- Usage page: daily token totals for a 30-day window (days bucketed in `Asia/Tokyo`) with per-collector rows and a freshness line, plus a separate usage breakdown grouped by client, provider, or model.
+- Missing, stale, delayed, unsupported, and failed reads are distinct, fixed states; a failed refresh keeps the previous values on screen and marks them stale instead of showing zero.
+- Theme, refresh interval, resident mode, and the Usage API connection (endpoint plus Access Client ID and Client Secret) settings.
+- Windows Credential Manager and Linux Secret Service/`secret-tool` for the Usage API credential, with session-only storage when a secure store is unavailable.
+- No telemetry.
+- Optional resident mode with a compact observed-usage window and an explicit exit action.
 
-### Notifications
+There are no quotas, rings, gauges, or thresholds anywhere in the current UI, and no local quota history or export. The app also does not scan a machine's logs itself: usage of a machine appears only when a Collector on that machine sends it (see [Collector setup on Linux](docs/collector-linux-setup.md)).
 
-The notification threshold defaults to 80%, and notifications can be turned off in Settings. Threshold notifications are checked during periodic refreshes only while QuotaSight is running. Manual percentage snapshots can trigger a notification when they first reach the threshold; stale or unknown observations and quantity-only Copilot usage do not trigger threshold notifications. Error and status banners are independent of the threshold-notification toggle.
+## Data path: sending and reading are separate
 
-Notifications are best-effort, not guaranteed delivery. On Linux, QuotaSight attempts to send an `org.freedesktop.Notifications` request over the session D-Bus; acceptance by D-Bus does not guarantee that a notification daemon displays it. On Windows x64, the Windows App SDK 2.7.0 backend attempts to send OS notifications in the portable Native AOT ZIP build. API acceptance and an on-screen popup are separate outcomes. CI verifies restore, format, Release build/tests, and Native AOT publish/smoke; Windows notification registration and visible delivery require separate manual verification on a non-elevated Windows 11 x64 desktop and have not been reported as successful. See the [Windows notification acceptance procedure](docs/windows-notification-acceptance.md). The in-app banner remains available on both operating systems as a fallback (it is not visible while the window is hidden). Normal application shutdown attempts to unregister Windows notification registration, including `UnregisterAll`; abnormal termination or cleanup failure may leave registration behind.
+| Stage | Where it runs | What it does | What it does not do |
+|---|---|---|---|
+| TokScale (upstream CLI) | The machine whose usage is counted | Aggregates that machine's local session logs into a `tokscale graph` document. | Does not know about quotas and does not talk to QuotaSight. |
+| QuotaSight Collector (Linux x64, optional) | The same machine | Reads **one** `tokscale graph` document from stdin, normalizes it, and **sends** (`PUT`) a snapshot to the Usage API. | Does not scan logs itself, does not read credentials from files other than the systemd credential directory, and does not read the app's settings. |
+| Usage API (your deployment) | Cloudflare Workers + D1, set up by the operator | Stores each collector's snapshots, enforces generation/revision monotonicity, and serves daily totals plus the breakdown. | Is not run by the app, and holds no prompt, response body, path, or account name. |
+| QuotaSight desktop app | Windows or Linux x64 | **Reads** (`GET`) daily totals and the breakdown from the Usage API origin you configure. | Never sends usage anywhere, never reads TokScale or local logs, and contacts no other host. |
 
-## Provider matrix and limits
+Sending is opt-in twice: a Collector has to be installed and scheduled, and `--send` is explicit (`--preview` is the default). The wire contract carries daily total tokens, and — only with `--wire-schema 2` — the normalized client/provider/model identifiers and five token components. Details are in [security](docs/security.md) and the [deployment runbook](docs/deployment.md).
 
-| Provider | Current method | What it does and does not promise |
-|---|---|---|
-| ChatGPT Codex | QuotaSight's OpenAI device OAuth and undocumented/experimental `wham/usage` endpoint | Covers one account's Codex allowance, not all ChatGPT Plus/Pro usage. It is never labeled Official; failures fall back to manual entry and the official subscription page. |
-| Claude Pro | Manual entry plus the official URL | The user enters quota and reset information. QuotaSight does not call a billing API. |
-| OpenCode Go | Explicit API key plus usage endpoint | Shows only the subscription quota returned by that endpoint; delayed or missing responses are stale/unknown. Internal OpenCode credential files are not read. |
-| GitHub Copilot | GitHub App Device Flow or `gh auth status` probe, then optional Billing Usage retrieval | Authentication and usage access are separate. A configured organization slug and an administrator token with `Administration: read` are required for `GET /organizations/{org}/settings/billing/ai_credit/usage`. The official `credits` quantity is shown as gross, discount, and net; percentage and individual remaining are not calculated. |
+## Dashboard: observed usage cards
 
-## Copilot authentication and Billing Usage
+- A card exists only for a provider you added from the catalog (pinned to TokScale 4.23.0). A provider the breakdown has not attributed anything to yet shows **"Not observed yet"**, never a zero reading.
+- A row that several providers served together arrives as one comma-joined provider value, and it feeds **every** card it names. Card totals therefore can overlap, and such a card says "Includes tokens shared with other providers". The section badge states the same limit: observed, no limit, no estimates, other devices excluded, cards may share amounts.
+- **Do not add card totals together.** The number on a card is "usage attributed through that provider", not a disjoint partition of your tokens.
+- Tokens are a count, not a share of any allowance: no card carries a percentage, a ring, or a threshold.
 
-Authentication only:
+## Usage page: daily totals and breakdown
 
-1. Create a GitHub App with Device Flow enabled.
-2. Put only its Client ID in Settings. QuotaSight does not ask the desktop user for a private key or client secret.
-3. Complete Device Flow, or use the safe `gh auth status` probe.
+- **Daily totals.** The page reads a 30-day window ending today. It shows the range, the total token count, one row per collector/day, and a freshness line taken from the **oldest** last-received time across the collectors the read covered — the total is only as fresh as the collector that reported least recently. Data older than 12 hours is labeled as delayed instead of current.
+- **Breakdown.** A second, independent read over the same connection, grouped by client, provider, or model. It shows the attributed totals, the share of the range's attributed total, the per-day coverage, an exact unclassified remainder (day total minus attributed), a "only some days have a breakdown" state, and — uncorrected — any day whose breakdown exceeds its day total. The card carries a fixed note: these are values TokScale aggregated from local logs, so log deletion (Claude Code keeps 30 days by default) and API or cache-type clients can leave gaps or delays.
+- The two reads keep separate states on purpose: the daily totals can work while the breakdown is unsupported or failing, and neither read stales the other. Switching the grouping key does not trigger a new read.
 
-Billing Usage retrieval is a separate, optional step:
+## Usage API connection, credentials, and failure states
 
-1. Set the target GitHub Organization slug in Settings.
-2. In the GitHub App settings, grant the `Administration: read` organization permission.
-3. Install the App in the target organization and obtain owner approval of the requested permission. This installation and approval are required for the Billing Usage path.
-4. Complete Device Flow with a user who has the required organization administration permission. QuotaSight uses the Device Flow token; there is no separate token input field.
-5. A general seat token may receive 403.
-6. QuotaSight calls `GET /organizations/{org}/settings/billing/ai_credit/usage` for the current reporting month.
+Settings stores the endpoint as an ordinary, non-secret setting and the Access Client ID/Client Secret in the OS credential store only. The endpoint must be an `https` origin: no path, query, user information, or fragment, at most 256 characters. After saving, the credential cannot be viewed or copied; only its presence is shown. If the credential store is unavailable or locked, the pair is kept for the current session only and must be entered again after a restart. Removing the connection deletes both stored values.
 
-Device Flow success does not prove usage permission. When GitHub returns a refresh token, QuotaSight stores the expiring user-token bundle in the OS credential store and refreshes it before the access token expires. Existing legacy access-token entries have no refresh token; after they expire, the user must explicitly authenticate again. If a secure credential store is unavailable, credentials are session-only and authentication must be repeated after restarting the app. Usage is associated with a shared billing-entity pool, not an individual remaining balance. GitHub may report usage after a delay, so the card shows the aggregation period, retrieval time, and unknown reporting delay; after refresh failures, previously observed values are identified as stale rather than current. If the slug, installation, owner approval, permission, or endpoint is unavailable, use the official Copilot page or manual fallback. Do not infer personal remaining from seats, metrics, or billing totals. See the [GitHub App setup guide](docs/github-app-setup.md).
+Read failures are classified and shown as fixed sentences: credential rejected (401/403), endpoint or response problem (404 and contract violations), a redirect (not followed), a missing credential, and transient failures (timeout, connection failure, 429, 5xx). The breakdown adds its own `not_found` (the server does not serve the breakdown yet) and `collector_not_found` states. Nothing in a failure message echoes a status code, URI, response body, or identifier.
 
-For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex credential files, and does not request or retain a client secret. Provider states remain distinguishable as Manual, Official, Delayed, or Experimental.
+## Notifications and status
+
+All alerts in the current UI are an **in-app banner**: connection state, read failures, stale values, tray-unavailable notices, and resident-mode save failures. There is no threshold notification, and no notification or threshold setting in the UI.
+
+The desktop notification backends are still in the build (Windows App SDK 2.7.0 `AppNotifications`; Linux `org.freedesktop.Notifications` over the session D-Bus), but **no current application flow calls them**, so this build does not send an OS notification. What remains executable is the Windows diagnostic `--notification-probe`, which checks the registration lifecycle and exits `0` on success; accepting a registration is not the same as displaying a popup, and visible delivery has never been confirmed on physical Windows hardware. The procedure and its record template are in the [Windows notification acceptance procedure](docs/windows-notification-acceptance.md).
 
 ## Requirements
 
-- .NET SDK 10.0.x.
+- .NET SDK 10.0.x to build from source; the release ZIP is self-contained.
 - Windows x64 or Linux x64.
-- On Linux, the GUI requires GTK. OS notification attempts require a session D-Bus and notification daemon, and daemon acceptance does not guarantee display; Secret Service is optional.
-- `gh` for an existing GitHub CLI status probe; a browser for Device Flow.
+- On Linux, the GUI requires GTK. Tray support needs a StatusNotifier host; Secret Service is optional (session-only credentials without it).
+- Network access to the Usage API origin you configure — the only host the app contacts.
+- To collect usage: Linux x86-64 with systemd 250+, Node.js (TokScale is distributed on npm), and a write-scoped Cloudflare Access service token. See [Collector setup on Linux](docs/collector-linux-setup.md).
 
 ## Distribution
 
@@ -74,24 +79,30 @@ dotnet run --project src/QuotaSight.UI/QuotaSight.UI.csproj -- --smoke-test
 
 ## Security and privacy
 
-QuotaSight is local-first and sends no telemetry. Provider CLI credential files are not read or parsed. Tokens, API keys, cookies, passwords, raw provider responses, and complete CLI output are not written to settings, history, logs, crash reports, exports, tests, or UI text. Persistent secrets use Windows Credential Manager or Linux Secret Service; if unavailable or locked, credentials stay in memory for the current session only. See [security details](docs/security.md).
+QuotaSight is local-first and sends no telemetry. Provider CLI credential files are not read or parsed, and the app keeps no usage data on disk: only settings are written, and they contain no secret. Tokens, API keys, cookies, passwords, raw provider responses, and complete CLI output never reach settings, logs, crash reports, or UI text. The single outbound destination is the Usage API origin you configure, authenticated with credentials held in Windows Credential Manager or Linux Secret Service; if that store is unavailable or locked, the credential stays in memory for the current session only. See [security details](docs/security.md).
 
-Quota windows remain separate. The representative window is the tightest known window; unrelated windows are not added together. Over-100% values are preserved, with only visual progress indicators clamped. Reset times, freshness, source confidence, and stale/manual/experimental states remain explicit.
+## Upgrading from versions with quota views
+
+The settings file is read name by name: a file written by an earlier version still loads, keeps every setting the current build uses, and drops the quota-era fields (thresholds, provider integration values, reference credits) on the next save. Earlier versions' provider credentials in the OS credential store and their 30-day quota-history files are **not read** by the current build and are **not deleted automatically** by the upgrade; they simply stop being used.
 
 ## Roadmap
 
-- More provider packages when a documented service contract and public quota endpoint are available.
-- Validate Windows OS notification display on physical Windows hardware; API acceptance does not establish that a popup was displayed.
-- Broader Copilot organization coverage only when GitHub exposes a documented permission and response contract.
+- Return a visible OS notification path, or remove the unused notification backends, and then validate display on physical Windows hardware.
+- Update the provider catalog deliberately when a TokScale release changes attribution ids.
+- Broader collector coverage only when the upstream tool documents a stable contract.
+
+## Historical documents
+
+The GitHub App guides are kept as a record of an earlier design: they describe Device Flow authentication and Copilot Billing Usage retrieval that current versions do not perform.
+
+- [GitHub App setup for QuotaSight](docs/github-app-setup.md) (historical)
+- [QuotaSightのGitHub Appセットアップ](docs/github-app-setup.ja.md) (historical)
 
 ## Official references
 
-- [Register a GitHub App](https://github.com/settings/apps/new)
-- [GitHub App user access tokens and Device Flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
-- [Refreshing GitHub App user access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
-- [Install a GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party)
-- [Control GitHub App installation in an organization](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/limiting-oauth-app-and-github-app-access-requests-and-installations)
-- [Billing usage REST API](https://docs.github.com/en/rest/billing/usage?apiVersion=2022-11-28)
-- [GitHub Copilot AI usage UI](https://github.com/settings/copilot)
+- [TokScale (upstream usage aggregator)](https://github.com/junhoyeo/tokscale)
+- [Cloudflare Access service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+- [.NET 10 downloads](https://dotnet.microsoft.com/download/dotnet/10.0)
 
-[日本語版](README.ja.md) · [GitHub App setup guide](docs/github-app-setup.md) · [日本語セットアップガイド](docs/github-app-setup.ja.md)
+[日本語版](README.ja.md) · [Collector setup on Linux](docs/collector-linux-setup.md) · [Deployment runbook](docs/deployment.md)

@@ -2,21 +2,23 @@
 
 ## プロダクト契約
 
-QuotaSightは、AIの**サブスクリプション利用枠**に対する消費率と残量率を可視化します。API料金、トークン課金、従量課金APIの支出を表示するものではありません。推定値、遅延データ、手動入力、実験的エンドポイントを、権威あるリアルタイム利用量として表示してはいけません。
+QuotaSightは、AIの**観測されたトークン使用量**を可視化します。サブスクリプションの利用枠は取得せず、API料金、トークン課金、従量課金APIの支出も表示しません。表示するのは、利用を記録した端末のローカルCLIログをTokScaleが集計し、運用者の利用量APIを経由して届いた観測値です。推定値、欠落、遅延データを、権威あるリアルタイム利用量や上限に対する割合として表示してはいけません。
 
-初期対応対象はWindows x64とLinux x64です。リリース成果物は自己完結型の.NET 10 Native AOT ZIPです。MSIX、deb、AppImageなどのパッケージ形式は、明示的に追加されるまで対象外です。
+初期対応対象はWindows x64とLinux x64です。リリース成果物は自己完結型の.NET 10 Native AOT ZIPです。CollectorはLinux x64向けにのみ配布します。MSIX、deb、AppImageなどのパッケージ形式は、明示的に追加されるまで対象外です。
 
 ## リポジトリ構成
 
-- `src/QuotaSight.Core`: 依存関係を持たない利用枠モデルと計算。
-- `src/QuotaSight.Application`: ユースケースと外部サービスの契約。
-- `src/QuotaSight.Infrastructure`: プロバイダーアダプター、永続化、スケジューリング、設定、OS資格情報サービス。
-- `src/QuotaSight.UI`: Avaloniaアプリケーション、プレゼンテーションロジック、ローカライズ、トレイ動作、composition root。
-- `tests/QuotaSight.Tests`: ドメイン、インフラストラクチャ、セキュリティ、workflowの契約テスト。
+- `src/QuotaSight.Application`: 資格情報ストアと更新スケジューラーの契約、インメモリ実装。
+- `src/QuotaSight.Infrastructure`: 設定ストア、OS資格情報ストア、スケジューリング、パス解決。
+- `src/QuotaSight.UI`: Avaloniaアプリケーション、プレゼンテーションロジック、利用量API読み取りポート、ローカライズ、トレイ動作、composition root。
+- `src/QuotaSight.Collector`: 標準入力の`tokscale graph`ドキュメントを正規化し、利用量APIへ送信する単体のNative AOT実行ファイル。
+- `src/QuotaSight.Usage.Api`: Cloudflare Workers + D1のTypeScriptパッケージ。.NETソリューションの外にあり、UIとはHTTP契約だけで結びつきます。
+- `tests/QuotaSight.Tests`: インフラストラクチャ、セキュリティ、workflowの契約テスト。
+- `tests/QuotaSight.Collector.Tests`: Collectorの正規化、wire契約、送信フロー、systemd連携のテスト。
 - `tests/QuotaSight.UI.Tests`: プレゼンテーションとAvalonia Headlessの動作テスト。
-- `docs`: アーキテクチャとセキュリティの決定事項。
+- `docs`: アーキテクチャ、セキュリティ、デプロイ、Collector、通知受け入れの決定事項。
 
-依存方向は `UI -> Application/Infrastructure`、`Infrastructure -> Application/Core`、`Application -> Core` を維持してください。CoreにはUI、ネットワーク、ファイルシステム、OS固有の依存関係を持ち込まないでください。
+依存方向は `UI -> Application`、`UI -> Infrastructure`、`Infrastructure -> Application` です。Applicationは他プロジェクトを参照しません。Collectorはどのプロジェクトも参照せず、UIからも参照されません。`QuotaSight.Core`は利用枠モデルとともに削除済みで、ドメイン層を新設する場合もUI、ネットワーク、ファイルシステム、OS固有の依存関係を持ち込まないでください。
 
 ## 必須ワークフロー
 
@@ -56,34 +58,34 @@ Windows Native AOTはWindows runner、Linux Native AOTはLinux runnerでpublish�
 - `InvariantGlobalization` を有効化しないでください。日本語UIと英語UIが必要です。
 - reflection主体のDIコンテナーより、明示的なconstructor compositionを優先してください。
 
-## 利用枠のセマンティクス
+## 使用量のセマンティクス
 
-- rolling、daily、weekly、monthly、customの各独立windowをすべて保持してください。
-- カードの代表値は、判明しているうち最も逼迫したwindowです。無関係なwindowを合算してはいけません。
-- 100%を超える値を保持してください。視覚的なprogress indicatorだけをclampし、残量0%と超過量を表示します。
-- プロバイダーのreset時刻は絶対時刻で保存し、ローカル時刻と相対時刻を併記してください。
-- freshnessとsource confidenceを分離してください。更新失敗時は、最後に成功した値と元の観測時刻を保持し、stale状態を明示します。
-- UIとexportでは `Official`、`Delayed`、`Manual`、`Experimental` を常に区別してください。
-- 上限不明、無制限プラン、未認証、権限不足、非対応プラン、rate limit、一時的失敗は、それぞれ異なる状態です。
+- 表示するのはトークン数であり、利用枠や上限ではありません。割合、リング、ゲージ、しきい値を導入しないでください。
+- 日次合計はCollectorと日付の組で保持してください。同じ日の複数Collectorの行を統合して一方だけを残してはいけません。
+- ダッシュボードのカードはプロバイダー別の観測値です。複数プロバイダーが関与した行はカンマ結合の1キーとして届き、関与するすべてのカードに加算されます。カード間で共有分が重複するため、カードの合計を足し合わせて全体として提示してはいけません。
+- 利用内訳は日次合計とは独立した読み取りです。片方の失敗が他方をstaleにしない状態機械を維持してください。
+- 内訳は `attributed ≤ total` を検証し、未分類分は正確に合計してください。過剰紐付けの日は補正せず、生の数値で示してください。
+- 空のキーは「不明」というデータであり、統合も破棄もしないでください。未知のIDは名称を発明せず、そのまま表示してください。
+- 鮮度はCollectorの最終受信時刻のうち最も古いものです。12時間を超えたら遅延として示してください。更新失敗時は、最後に成功した値と元の観測時刻を保持し、stale状態を明示してください。
+- 値がない場合は不明として扱い、ゼロに置き換えないでください。上限不明、未認証、権限不足、一時的失敗は、それぞれ異なる状態です。
 
-## プロバイダー境界
+## 送信と読み取りの境界
 
-- ChatGPT Plus/ProのCodex枠は、QuotaSight独自のOpenAI Codex device OAuthと`wham/usage`を使用できます。ただし第三者アプリ向けの公開安定契約と公式Client ID流用許諾は未確認のため、常に`Experimental`として表示し、実サービスでのlive login未検証を明記してください。ChatGPT全体の利用量と混同せず、取得失敗時は手動入力と公式ChatGPTサブスクリプションページへfallbackします。Hermes/Codexの資格情報ファイルは読み取らず、client secretを持たず、単一アカウントとして扱います。
-- Claude Proは、対応する公開契約が存在するまで、利用率/resetの手動入力と公式Usageページへのリンクを使用します。
-- OpenAI Codexのaccess/refresh/id tokenはOS資格情報ストアだけへ永続化し、利用不能時はsession-memoryに限定します。refresh token rotationは排他し、logout時に専用資格情報を削除してください。`used_percent`、`reset_at`、`limit_window_seconds`だけを写像し、`used`/`limit`を推測せず、primary/secondary windowと100%超の値を保持してください。
-- OpenCode Goは明示的に入力されたAPI keyとusage endpoint adapterを使用します。OpenCode内部の認証ファイルを読み取ってはいけません。
-- GitHub Copilot Businessでは、安全な `gh` status probeまたはQuotaSight用GitHub AppのDevice Flowを使用できます。権限を持つ組織管理者はBilling Usage APIからユーザー別AI Credits使用量を取得できますが、認証成功は参照権限を保証しません。1席あたり月1,900 AI Creditsは請求主体単位の共有プールであり、個人残量として計算してはいけません。取得できない場合は手動入力へfallbackします。
-- GitHub App Client IDは実行時設定です。App IDと混同せず、デスクトップアプリにclient secretやprivate keyを要求または埋め込んではいけません。
-- その他のプランはcapability detectionに基づくbest effort対応です。上限を推測せず、非対応状態を表示してください。
+- 送信するのはCollectorだけです。`tokscale graph`1ドキュメントを標準入力から読み、日次合計（既定のwire v1）と、`--wire-schema 2`を選んだ場合だけ正規化済み識別子と5成分の内訳を利用量APIへ`PUT`します。
+- デスクトップアプリは読み取り専用です。利用量APIの`GET /v1/usage/daily`と`GET /v1/usage/breakdown`だけを呼び、TokScaleやローカルログを読みません。新しい送信先や外部呼び出しを追加しないでください。
+- 送信内容に、プロンプト、応答本文、ファイルパス、プロジェクト名、セッション識別子、アカウント表示名、ホスト名、コスト・料金、メッセージ数を含めないでください。パスらしい値はモデル識別子として送らず、空文字に置き換えてください。
+- 利用量APIのエンドポイントはhttpsのオリジンのみを受け付けます。パス、クエリ、ユーザー情報、フラグメント、平文HTTPを許可しないでください。
+- 受信側の世代・revision・日次合計の単調性、active generationだけを読む規則、受理済みの値を下げない規則を変更しないでください。
 
 ## 秘密情報とプライバシー
 
 - プロバイダーCLI内部の資格情報ファイルを読み取ったり解析したりしないでください。
-- token、API key、cookie、password、生のprovider response、完全なCLI出力を、settings、history、log、crash report、export、test、UI textへ書き込まないでください。
+- token、API key、cookie、password、生のprovider response、完全なCLI出力を、settings、log、crash report、UI textへ書き込まないでください。
 - 秘密情報はWindows Credential ManagerまたはLinux Secret Serviceでのみ永続化します。secure storeが利用不能またはlockedなら、そのsession中だけメモリに保持します。平文ファイルへfallbackしてはいけません。
-- subprocessの引数は `ProcessStartInfo.ArgumentList` で渡してください。shellを起動したり、ユーザー入力をcommand stringへ埋め込んだりしないでください。
-- Linux Secret Serviceへ渡す値はcommand-line argumentではなくredirected standard inputを使用してください。
-- exportに含めてよいのはprovider、accountの表示名、quota window、値、source、confidence、timestampsです。internal IDとsecretは除外してください。
+- 利用量APIのエンドポイントだけが秘密ではない設定値です。client idとclient secretをsettings DTOへ追加しないでください。
+- Collectorは資格情報を`CREDENTIALS_DIRECTORY`の2ファイルからのみ読み、コマンドライン引数や環境変数では受け取りません。systemdの`LoadCredential`／`LoadCredentialEncrypted`を使う前提を崩さないでください。
+- subprocessを起動する場合、引数は `ProcessStartInfo.ArgumentList` で渡し、shellを起動したり、ユーザー入力をcommand stringへ埋め込んだりしないでください。Linux Secret Serviceへ渡す値はcommand-line argumentではなくredirected standard inputを使用してください。
+- ログ、stderr、UIに出すのは固定の理由クラスと表示名だけにしてください。内部IDとsecretを含めないでください。
 - QuotaSightはlocal-firstであり、telemetryを送信しません。
 
 ## UIとアクセシビリティ
@@ -102,13 +104,13 @@ Windows Native AOTはWindows runner、Linux Native AOTはLinux runnerでpublish�
 - close-to-tray動作と明示的なExit
 - native trayまたはnotificationが使えない場合の、正直なin-app fallback
 
-UIコピーは簡潔で自然な表現にし、プロバイダー対応範囲やデータ鮮度を誇張してはいけません。
+UIコピーは簡潔で自然な表現にし、観測範囲やデータ鮮度を誇張してはいけません。観測使用量を上限に対する割合として示唆する表現を追加しないでください。
 
 ## 永続化
 
-履歴はschema versionとevent IDを持つUTC日別JSONLで、30日間保持します。writerは1つに制限し、切り詰められた末尾行だけを回復対象とし、それ以前の破損行は報告してください。期限切れファイルと境界日の期限切れentryをpruneします。settingsとhistoryは実行ファイルの隣ではなく、OSのユーザー別データディレクトリに保存してください。
+アプリがディスクへ書くのは`settings.json`だけです。利用量の履歴、内訳、受信時刻を保存しないでください。旧版が書いた日別JSONL履歴は読み取りも削除もせず、そのまま残します。設定とCollectorの状態は実行ファイルの隣ではなく、OSのユーザー別データ領域／状態ディレクトリに保存してください。
 
-settingsにはtheme、language、refresh interval、notification preference、threshold、GitHub OAuth Client ID、GitHub Organization slug、Usage APIのエンドポイント（オリジンのみで秘密ではない）を保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。
+settingsにはtheme、language、refresh interval、通知の有効・無効（ファイル互換のため保持、現行UIに切り替えなし）、常駐モード、利用量APIのエンドポイント（オリジンのみで秘密ではない）、追加済みプロバイダー、旧クライアント一覧（保持のみ、カードの情報源にしない）を保存できます。settings DTOにsecretを保持するfieldを含めてはいけません。既存の設定項目名と型を変更しないでください。名前が変わると、既存ファイルの値が読み込み時に無言で既定値へ戻ります。
 
 ## Gitと配布
 

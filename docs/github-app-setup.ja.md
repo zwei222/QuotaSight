@@ -2,6 +2,8 @@
 
 [English](github-app-setup.md) | [日本語](github-app-setup.ja.md)
 
+> **歴史的文書。** この文書は、以前の版のQuotaSightが提供していたGitHub AppのDevice Flow認証とCopilot Billing Usageの取得を説明しています。現行版はGitHubで認証せず、Copilotの請求データも読み取りません。運用者が設定した利用量APIから観測使用量を読み取ります。以下の手順は当時の設計の記録としてそのまま残しており、現行のビルドには適用されません。
+
 QuotaSightは認証にGitHub Appを使います。認証とCopilot Billing Usageの取得は別の手順です。個人のAPI料金を追跡するのではなく、必要なorganization accessがある場合に、文書化されたCopilot AIクレジットの利用状況を読み取ります。
 
 ## 1. 認証だけの設定: Appを作成する

@@ -1,5 +1,3 @@
-using QuotaSight.Core;
-
 namespace QuotaSight.Application;
 
 public sealed class FallbackCredentialStore(ICredentialStore primary, ICredentialStore fallback) : ICredentialStore

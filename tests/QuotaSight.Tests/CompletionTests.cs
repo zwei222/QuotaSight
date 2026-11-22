@@ -4,7 +4,6 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
 
@@ -586,34 +585,12 @@ public sealed class CompletionTests
     }
 
     [Fact]
-    public async Task Gh_probe_distinguishes_available_authenticated_from_quota()
-    {
-        var result = await CreateExitProbe(0).ProbeAsync(default);
-        Assert.Equal(GhProbeStatus.AvailableAuthenticated, result.Status);
-        Assert.False(result.QuotaAvailable);
-    }
-
-    [Fact]
-    public async Task Gh_probe_distinguishes_unauthorized()
-    {
-        var result = await CreateExitProbe(1).ProbeAsync(default);
-        Assert.Equal(GhProbeStatus.Unauthorized, result.Status);
-    }
-
-    [Fact]
-    public async Task Gh_probe_distinguishes_missing_and_timeout()
-    {
-        Assert.Equal(GhProbeStatus.Missing, (await new GhCliProbe("/missing/gh").ProbeAsync(default)).Status);
-        Assert.Equal(GhProbeStatus.Timeout, (await CreateTimeoutProbe().ProbeAsync(default)).Status);
-    }
-
-    [Fact]
     public async Task Settings_store_save_async_roundtrips()
     {
         var store = new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        await store.SaveAsync(new AppSettingsDto(Theme: "Dark", Language: "Japanese", RefreshMinutes: 5, OverallThreshold: 70, NotificationsEnabled: false, GithubOAuthClientId: "id"));
+        await store.SaveAsync(new AppSettingsDto(Theme: "Dark", Language: "Japanese", RefreshMinutes: 5, NotificationsEnabled: false));
         var loaded = await store.LoadAsync();
-        Assert.Equal("Dark", loaded.Theme); Assert.Equal("id", loaded.GithubOAuthClientId);
+        Assert.Equal("Dark", loaded.Theme); Assert.Equal("Japanese", loaded.Language); Assert.Equal(5, loaded.RefreshMinutes);
     }
 
     [Fact]
@@ -644,7 +621,7 @@ public sealed class CompletionTests
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var stores = Enumerable.Range(0, 8).Select(_ => new AppSettingsStore(root)).ToArray();
         var settings = Enumerable.Range(0, 64)
-            .Select(i => new AppSettingsDto(Theme: $"theme-{i}", Language: $"language-{i}", GithubOAuthClientId: $"client-{i}"))
+            .Select(i => new AppSettingsDto(Theme: $"theme-{i}", Language: $"language-{i}", UsageApiEndpoint: $"https://usage-{i}.example.test"))
             .ToArray();
 
         var errors = await Record.ExceptionAsync(async () =>
@@ -661,8 +638,8 @@ public sealed class CompletionTests
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var asyncStore = new AppSettingsStore(root);
         var syncStore = new AppSettingsStore(root);
-        var asyncSettings = new AppSettingsDto(Theme: "async-theme", Language: "async-language", GithubOAuthClientId: "async-client");
-        var syncSettings = new AppSettingsDto(Theme: "sync-theme", Language: "sync-language", GithubOAuthClientId: "sync-client");
+        var asyncSettings = new AppSettingsDto(Theme: "async-theme", Language: "async-language");
+        var syncSettings = new AppSettingsDto(Theme: "sync-theme", Language: "sync-language");
 
         var errors = await Record.ExceptionAsync(async () =>
         {
@@ -689,57 +666,9 @@ public sealed class CompletionTests
     {
         var store = new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
         var vm = new MainViewModel(settingsStore: store);
-        vm.SetSettings(new AppSettingsDto(Theme: "Light", Language: "English", RefreshMinutes: 10, OverallThreshold: 80, NotificationsEnabled: true, GithubOAuthClientId: "changed"));
-        Assert.Equal("changed", (await store.LoadAsync()).GithubOAuthClientId);
+        vm.SetSettings(new AppSettingsDto(Theme: "Light", Language: "English", RefreshMinutes: 10, NotificationsEnabled: true));
+        Assert.Equal("Light", (await store.LoadAsync()).Theme);
     }
-
-    [Fact]
-    public async Task Refresh_prunes_history_at_thirty_days()
-    {
-        var history = new RecordingHistory(); var app = new QuotaApplication([], history, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero)));
-        await app.RefreshAsync(default); Assert.Equal(new DateOnly(2026, 8, 6), history.PrunedBefore);
-    }
-
-    [Fact]
-    public async Task Startup_prunes_history()
-    {
-        var history = new RecordingHistory(); var vm = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); await vm.InitializeAsync(); Assert.NotNull(history.PrunedBefore);
-    }
-
-    [Fact]
-    public async Task A_corrupt_history_day_notifies_the_banner_and_keeps_startup_alive()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
-        try
-        {
-            using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now));
-            var snapshot = new QuotaSnapshot(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(1)), 40, 100, null, "%", now, now, QuotaSource.Manual, QuotaConfidence.Manual, null);
-            await history.AppendAsync([snapshot], default);
-            await File.WriteAllTextAsync(Path.Combine(root, "2026-09-04.jsonl"), "not-json\n");
-
-            await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(new DateOnly(2026, 9, 4), default));
-
-            var viewModel = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(now));
-            await viewModel.InitializeAsync();
-
-            // The corrupted-history notification is the one quota-history surface the UI
-            // keeps: the banner names the damage without echoing the exception.
-            Assert.Contains("History data is damaged", viewModel.NotificationBannerText, StringComparison.Ordinal);
-            Assert.DoesNotContain("InvalidDataException", viewModel.NotificationBannerText, StringComparison.Ordinal);
-            // The damage did not stop startup: the observed-usage section came up.
-            Assert.True(viewModel.IsTokScaleSectionVisible);
-        }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    private static GhCliProbe CreateExitProbe(int exitCode) => OperatingSystem.IsWindows()
-        ? new GhCliProbe("cmd.exe", ["/c", $"exit {exitCode}"])
-        : new GhCliProbe("/bin/sh", ["-c", $"exit {exitCode}"]);
-
-    private static GhCliProbe CreateTimeoutProbe() => OperatingSystem.IsWindows()
-        ? new GhCliProbe("cmd.exe", ["/c", "ping -n 3 127.0.0.1 > nul"], TimeSpan.FromMilliseconds(10))
-        : new GhCliProbe("/bin/sh", ["-c", "sleep 2"], TimeSpan.FromMilliseconds(10));
 
     private sealed class FakeWindowsCredentialApi : IWindowsCredentialApi
     {
@@ -846,17 +775,5 @@ public sealed class CompletionTests
         public ValueTask SetAsync(string account, string secret, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public ValueTask RemoveAsync(string account, CancellationToken cancellationToken) { RemoveCalled = true; return ValueTask.CompletedTask; }
     }
-    private sealed class RecordingHistory : IQuotaHistory
-    {
-        public DateOnly? PrunedBefore;
-        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> s, CancellationToken c) => ValueTask.CompletedTask; public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]); public ValueTask PruneAsync(DateOnly b, CancellationToken c) { PrunedBefore = b; return ValueTask.CompletedTask; }
-        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]); public ValueTask DeleteEventAsync(Guid id, CancellationToken c) => ValueTask.CompletedTask; public ValueTask DeleteAsync(DateOnly? d, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportJsonAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportCsvAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask;
-    }
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
-    private sealed class NoDelay : IDeviceFlowDelay { public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => ValueTask.CompletedTask; }
-    private sealed class GitHubResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(response(request));
-    }
-    private static HttpResponseMessage JsonResponse(string content) => new(System.Net.HttpStatusCode.OK) { Content = new StringContent(content) };
 }

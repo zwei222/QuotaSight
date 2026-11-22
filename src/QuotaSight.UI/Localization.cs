@@ -1,6 +1,5 @@
 using System.Globalization;
 using QuotaSight.Application;
-using QuotaSight.Core;
 
 namespace QuotaSight.UI;
 
@@ -268,7 +267,6 @@ public sealed class UiCopy
     public string AddProvider => IsJapanese ? "追加" : "Add";
     public string ProviderPicker => IsJapanese ? "プロバイダーを選択" : "Choose a provider";
     public string Close => IsJapanese ? "閉じる" : "Close";
-    public string History => IsJapanese ? "履歴" : "History";
     public string Settings => IsJapanese ? "設定" : "Settings";
     public string Refresh => IsJapanese ? "更新" : "Refresh";
     public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
@@ -277,8 +275,6 @@ public sealed class UiCopy
         : "Observed token usage through the usage API, at a glance.";
     public string LocalFirst => "LOCAL-FIRST";
     public string NoSecretsLeave => IsJapanese ? "テレメトリーは送信しません。認証情報は連携先への認証に使用します。" : "No telemetry is sent. Credentials are used to authenticate with providers.";
-    public string HistoryNotificationTitle => History;
-    public string HistoryCorrupt => IsJapanese ? "履歴データが破損しています。読み込める項目を表示しています。" : "History data is damaged; showing available entries.";
     public string TrayUnavailableTitle => IsJapanese ? "トレイを利用できません" : "Tray unavailable";
     public string TrayUnavailable => IsJapanese ? "トレイを利用できません。アプリ内で操作してください。" : "Tray unavailable. Use the app window instead.";
     public string Appearance => IsJapanese ? "表示" : "Appearance";
