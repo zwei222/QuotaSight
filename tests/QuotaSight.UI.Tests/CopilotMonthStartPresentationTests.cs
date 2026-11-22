@@ -17,7 +17,7 @@ public sealed class CopilotMonthStartPresentationTests
         var snapshot = CopilotSnapshot("org/user", september, new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero));
         using var viewModel = CreateViewModel(new CopilotCardSource(snapshot), new NoDataApplication(Result(noData: [ProviderKind.Copilot], account: "org/user", period: October)));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         Assert.Equal("October 2026 · UTC", card.Windows.Single().WindowName);
@@ -37,7 +37,7 @@ public sealed class CopilotMonthStartPresentationTests
     {
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), new NoDataApplication(Result(noData: [ProviderKind.Copilot], account: "org/user", period: October)));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         var row = Assert.Single(card.Windows);
@@ -73,7 +73,7 @@ public sealed class CopilotMonthStartPresentationTests
         var result = Result(noData: [ProviderKind.Copilot], failures: [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)], account: "org/user", period: October);
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), new NoDataApplication(result));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         AssertCopilotPlaceholder(viewModel, "org/user", "October 2026 · UTC");
         Assert.Equal(PresentationState.Error, viewModel.PresentationState);
@@ -87,7 +87,7 @@ public sealed class CopilotMonthStartPresentationTests
         var result = Result(noData: [ProviderKind.Copilot], failures: [new(ProviderKind.Copilot, FetchStatus.TransientFailure)], account: "org/user", period: October);
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), new NoDataApplication(result));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(viewModel.Cards);
         Assert.Equal(PresentationState.Error, viewModel.PresentationState);
@@ -100,7 +100,7 @@ public sealed class CopilotMonthStartPresentationTests
         var result = Result(noData: [ProviderKind.Copilot, ProviderKind.OpenCode], account: "org/user", period: October);
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), new NoDataApplication(result));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         AssertCopilotPlaceholder(viewModel, "org/user", "October 2026 · UTC");
         Assert.Contains("OpenCode", viewModel.NotificationBannerText, StringComparison.Ordinal);
@@ -116,7 +116,7 @@ public sealed class CopilotMonthStartPresentationTests
         var result = Result(noData: [ProviderKind.Copilot], account: activeAccount, period: period);
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), new NoDataApplication(result));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(viewModel.Cards);
         Assert.Contains("Copilot", viewModel.NotificationBannerText, StringComparison.Ordinal);
@@ -128,7 +128,7 @@ public sealed class CopilotMonthStartPresentationTests
         var snapshot = CopilotSnapshot("org/user", new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), Now.AddDays(-1));
         using var viewModel = CreateViewModel(new CopilotCardSource(snapshot), new NoDataApplication(Result(noData: [ProviderKind.Copilot])));
 
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         Assert.Contains(card.Windows, row => row.Snapshot is not null && !row.IsCopilotNoData);
@@ -143,8 +143,8 @@ public sealed class CopilotMonthStartPresentationTests
             Result(noData: [ProviderKind.Copilot], account: "org/B", period: new(2026, 10, "org", "B")));
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), app);
 
-        await viewModel.RefreshAsync();
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         Assert.Equal("org/B", card.Account);
@@ -160,8 +160,8 @@ public sealed class CopilotMonthStartPresentationTests
             Result(snapshots: [CopilotSnapshot("org/B", Now.AddDays(-1), Now)]));
         using var viewModel = CreateViewModel(new EmptyDashboardSource(), app);
 
-        await viewModel.RefreshAsync();
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         Assert.Equal("org/B", card.Account);
@@ -179,8 +179,8 @@ public sealed class CopilotMonthStartPresentationTests
             Result(noData: [ProviderKind.Copilot], account: "org/B", period: new(2026, 10, "org", "B")));
         using var viewModel = CreateViewModel(new CopilotCardSource(manual), app);
 
-        await viewModel.RefreshAsync();
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var manualCard = Assert.Single(viewModel.Cards, card => card.Account == "org/A");
         Assert.Null(manualCard.CopilotNoDataPeriod);
@@ -199,8 +199,8 @@ public sealed class CopilotMonthStartPresentationTests
                 Result(noData: [ProviderKind.Copilot], account: "org/user", period: October),
                 Result(snapshots: [snapshot])));
 
-        await viewModel.RefreshAsync();
-        await viewModel.RefreshAsync();
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
+        await viewModel.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(viewModel.Cards);
         Assert.Equal("org/user", card.Account);

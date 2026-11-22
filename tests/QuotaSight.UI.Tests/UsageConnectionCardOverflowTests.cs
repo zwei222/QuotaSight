@@ -158,7 +158,7 @@ public sealed class UsageConnectionCardOverflowTests
         FillConnection(window, Endpoint);
 
         window.FindControl<Button>("UsageConnectionSaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await store.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await store.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var busy = window.FindControl<TextBlock>("UsageConnectionBusyText")!;
         Assert.True(busy.IsVisible);

@@ -19,7 +19,7 @@ public sealed class SettingsTransactionTests
             return ValueTask.FromException(new IOException("save failed"));
         };
 
-        await Assert.ThrowsAsync<IOException>(() => vm.SetLanguageAsync(UiLanguage.Japanese));
+        await Assert.ThrowsAsync<IOException>(() => vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken));
 
         Assert.Equal(UiLanguage.English, vm.Language);
         Assert.Equal(cardsBefore, vm.Cards);
@@ -63,9 +63,9 @@ public sealed class SettingsTransactionTests
             }
         };
 
-        var first = vm.SetThemeAsync(ThemeMode.Dark);
+        var first = vm.SetThemeAsync(ThemeMode.Dark, TestContext.Current.CancellationToken);
         await firstSaveEntered.Task;
-        var queued = vm.SetLanguageAsync(UiLanguage.Japanese);
+        var queued = vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
         vm.Dispose();
         releaseFirstSave.TrySetResult();
 
@@ -88,7 +88,7 @@ public sealed class SettingsTransactionTests
             await releaseSave.Task.WaitAsync(cancellationToken);
         };
 
-        var update = vm.SetLanguageAsync(UiLanguage.Japanese);
+        var update = vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
         await saveEntered.Task;
         vm.Dispose();
         releaseSave.TrySetResult();
@@ -118,15 +118,15 @@ public sealed class SettingsTransactionTests
                 await store.SaveAsync(settings, cancellationToken);
             };
 
-            var referenceSave = vm.SetCopilotReferenceAsync("2000");
+            var referenceSave = vm.SetCopilotReferenceAsync("2000", TestContext.Current.CancellationToken);
             await firstSaveEntered.Task;
-            var languageSave = vm.SetLanguageAsync(UiLanguage.Japanese);
+            var languageSave = vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
             releaseFirstSave.TrySetResult();
 
             Assert.True(await referenceSave);
             await languageSave;
 
-            var persisted = await store.LoadAsync();
+            var persisted = await store.LoadAsync(TestContext.Current.CancellationToken);
             Assert.Equal(2000m, persisted.CopilotReferenceCredits);
             Assert.Equal("Japanese", persisted.Language);
             Assert.Equal(2000m, vm.Settings.CopilotReferenceCredits);

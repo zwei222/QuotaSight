@@ -79,7 +79,7 @@ public sealed class PresentationTests
         var vm = new MainViewModel(new EmptyDashboardSource());
         var entry = new ManualQuotaEntry { Provider = ProviderKind.ChatGpt, AccountDisplayName = "Personal", UsedPercentText = "40" };
         Assert.True(entry.TryApply(out var snapshot));
-        await vm.ApplyManualSnapshotAsync(snapshot!);
+        await vm.ApplyManualSnapshotAsync(snapshot!, TestContext.Current.CancellationToken);
         Assert.Contains(vm.Cards, card => card.Account == "Personal");
         // Sync overload must not exist or must be private/internal; this test enforces async contract only
     }
@@ -88,7 +88,7 @@ public sealed class PresentationTests
     public async Task History_delete_all_is_explicitly_available()
     {
         using var history = new HistoryState(uiDispatcher: new ImmediateUiDispatcher());
-        await history.DeleteAllAsync();
+        await history.DeleteAllAsync(TestContext.Current.CancellationToken);
         Assert.Empty(history.Entries);
     }
 
@@ -97,20 +97,20 @@ public sealed class PresentationTests
     {
         var source = new InMemoryQuotaHistory(Enumerable.Range(0, 500).Select(index => HistorySnapshot(index % 2 == 0 ? "Personal" : "Work", index)).ToList());
         using var history = new HistoryState(source, new ImmediateUiDispatcher());
-        await history.InitializeAsync();
+        await history.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(50, history.DisplayedEntries.Count);
         Assert.Equal(10, history.PageCount);
         Assert.True(history.HasNextPage);
         history.NextPage();
-        await history.WaitForPublishedAsync();
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
         Assert.Equal(50, history.DisplayedEntries.Count);
         Assert.Equal(history.Entries[50].Id, history.DisplayedEntries[0].Id);
-        var csv = await history.ExportCsvAsync();
+        var csv = await history.ExportCsvAsync(TestContext.Current.CancellationToken);
         Assert.Equal(500, csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length - 1);
 
         history.AccountFilter = "Personal";
-        await history.WaitForPublishedAsync();
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
         Assert.Equal(0, history.CurrentPage);
         Assert.Equal(250, history.FilteredEntries.Count);
         Assert.True(history.HasNextPage);
@@ -118,8 +118,8 @@ public sealed class PresentationTests
         history.NextPage();
         history.NextPage();
         history.NextPage();
-        await history.WaitForPublishedAsync();
-        Assert.True(await history.DeleteAsync(history.DisplayedEntries[^1].Id));
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
+        Assert.True(await history.DeleteAsync(history.DisplayedEntries[^1].Id, TestContext.Current.CancellationToken));
         Assert.Equal(4, history.CurrentPage);
     }
 
@@ -128,7 +128,7 @@ public sealed class PresentationTests
     {
         var source = new InMemoryQuotaHistory(Enumerable.Range(0, 500).Select(index => HistorySnapshot("Personal", index)).ToList());
         using var history = new HistoryState(source, new ImmediateUiDispatcher());
-        await history.InitializeAsync();
+        await history.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.InRange(history.SparklinePoints.Count, 2, HistoryState.SparklineLimit);
         Assert.Equal(0, history.SparklinePoints[0]);
@@ -144,16 +144,16 @@ public sealed class PresentationTests
             HistorySnapshot("Account", 10, Now)
         ]);
         using var history = new HistoryState(source, new ImmediateUiDispatcher());
-        await history.InitializeAsync();
+        await history.InitializeAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal([10d, 20d], history.SparklinePoints);
         var filtered = history.FilteredEntries;
         var sparkline = history.SparklinePoints;
         Assert.Same(filtered, history.FilteredEntries);
         Assert.Same(sparkline, history.SparklinePoints);
-        await history.DeleteAllAsync();
+        await history.DeleteAllAsync(TestContext.Current.CancellationToken);
         Assert.Empty(history.SparklinePoints);
-        await history.AppendAndReloadAsync([HistorySnapshot("Account", 42, Now)]);
+        await history.AppendAndReloadAsync([HistorySnapshot("Account", 42, Now)], TestContext.Current.CancellationToken);
         Assert.Equal([42d], history.SparklinePoints);
     }
 
@@ -162,13 +162,13 @@ public sealed class PresentationTests
     {
         var source = new InMemoryQuotaHistory(Enumerable.Range(0, 101).Select(index => HistorySnapshot("Account", index)).ToList());
         using var history = new HistoryState(source, new ImmediateUiDispatcher());
-        await history.InitializeAsync();
+        await history.InitializeAsync(TestContext.Current.CancellationToken);
 
         history.NextPage();
         history.NextPage();
-        await history.WaitForPublishedAsync();
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, history.CurrentPage);
-        Assert.True(await history.DeleteAsync(history.Entries[^1].Id));
+        Assert.True(await history.DeleteAsync(history.Entries[^1].Id, TestContext.Current.CancellationToken));
 
         Assert.Equal(1, history.CurrentPage);
         Assert.NotEmpty(history.DisplayedEntries);

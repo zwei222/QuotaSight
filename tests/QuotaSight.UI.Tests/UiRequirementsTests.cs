@@ -988,15 +988,15 @@ public sealed class UiRequirementsTests
         using var history = new HistoryState(uiDispatcher: new ImmediateUiDispatcher());
         history.WindowFilter = "Weekly";
         history.SetLanguage(UiLanguage.Japanese);
-        await history.WaitForPublishedAsync();
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
 
         Assert.NotEmpty(history.FilteredEntries);
         Assert.All(history.FilteredEntries, entry => Assert.Equal("週次", entry.WindowDisplay));
         Assert.Equal("Weekly", history.WindowFilter);
-        Assert.Contains("Weekly", await history.ExportCsvAsync(), StringComparison.Ordinal);
+        Assert.Contains("Weekly", await history.ExportCsvAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
 
         history.SetLanguage(UiLanguage.English);
-        await history.WaitForPublishedAsync();
+        await history.WaitForPublishedAsync(TestContext.Current.CancellationToken);
         Assert.All(history.FilteredEntries, entry => Assert.Equal("Weekly", entry.WindowDisplay));
     }
 
@@ -1008,7 +1008,7 @@ public sealed class UiRequirementsTests
         var window = new MainWindow(vm);
         try
         {
-            await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             vm.Navigate(AppPage.History);
             window.Show();
 

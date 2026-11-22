@@ -73,7 +73,7 @@ public sealed class TrayAvailabilityTests
         var monitor = new LinuxStatusNotifierMonitor(() => Task.FromResult(values.Dequeue()), value => { changes.Add(value); firstChange.TrySetResult(); }, TimeSpan.FromMilliseconds(1));
 
         var running = monitor.RunAsync(cancel.Token);
-        await firstChange.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await firstChange.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         cancel.Cancel();
         await running;
 
@@ -102,10 +102,10 @@ public sealed class TrayAvailabilityTests
         }, value => { changes.Add(value); if (!value) thirdFailure.TrySetResult(); }, TimeSpan.FromMilliseconds(1));
 
         var running = monitor.RunAsync(cancel.Token);
-        await thirdFailure.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await thirdFailure.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         Assert.Equal([true, false], changes);
         recoveryGate.TrySetResult();
-        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         cancel.Cancel();
         await running;
 
@@ -130,9 +130,9 @@ public sealed class TrayAvailabilityTests
         }, changes.Add, TimeSpan.FromMilliseconds(1));
 
         var running = monitor.RunAsync(cancel.Token);
-        await secondFailure.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await secondFailure.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         cancel.Cancel();
-        await running.WaitAsync(TimeSpan.FromSeconds(2));
+        await running.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
         Assert.Equal([true], changes);
     }

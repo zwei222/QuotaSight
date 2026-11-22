@@ -54,15 +54,15 @@ public sealed class ConcurrencyContractTests
     {
         var history = new GatedMutationHistory([Snapshot(0), Snapshot(1), Snapshot(1), Snapshot(2)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         state.AccountFilter = "account-1";
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var target = history.Events.First(e => e.Snapshot.Account == "account-1").EventId;
-        var delete = state.DeleteAsync(target);
-        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var csvTask = state.ExportCsvAsync();
-        var jsonTask = state.ExportJsonAsync();
+        var delete = state.DeleteAsync(target, TestContext.Current.CancellationToken);
+        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csvTask = state.ExportCsvAsync(TestContext.Current.CancellationToken);
+        var jsonTask = state.ExportJsonAsync(TestContext.Current.CancellationToken);
 
         var localized = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         state.PropertyChanged += (_, e) =>
@@ -70,15 +70,15 @@ public sealed class ConcurrencyContractTests
             if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.Count > 0 && state.FilteredEntries.All(entry => entry.WindowDisplay == "ローリング")) localized.TrySetResult(true);
         };
         state.SetLanguage(UiLanguage.Japanese);
-        await localized.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await localized.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.False(delete.IsCompleted);
         Assert.False(csvTask.IsCompleted);
         Assert.False(jsonTask.IsCompleted);
 
         history.ReleaseMutation.TrySetResult(true);
-        Assert.True(await delete.WaitAsync(TimeSpan.FromSeconds(5)));
-        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(await delete.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Single(state.FilteredEntries);
         Assert.Equal(2, csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
         Assert.DoesNotContain("account-0", csv, StringComparison.Ordinal);
@@ -93,11 +93,11 @@ public sealed class ConcurrencyContractTests
     {
         var history = new GatedMutationHistory([Snapshot(0), Snapshot(1)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var deleteAll = state.DeleteAllAsync();
-        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var csvTask = state.ExportCsvAsync();
+        var deleteAll = state.DeleteAllAsync(TestContext.Current.CancellationToken);
+        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csvTask = state.ExportCsvAsync(TestContext.Current.CancellationToken);
 
         var filtered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         state.PropertyChanged += (_, e) =>
@@ -105,12 +105,12 @@ public sealed class ConcurrencyContractTests
             if (e.PropertyName == nameof(state.FilteredEntries) && state.FilteredEntries.All(entry => entry.Account == "account-1")) filtered.TrySetResult(true);
         };
         state.AccountFilter = "account-1";
-        await filtered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await filtered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.False(deleteAll.IsCompleted);
 
         history.ReleaseMutation.TrySetResult(true);
-        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5));
-        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Empty(state.Entries);
         Assert.Single(csv.Split('\n', StringSplitOptions.RemoveEmptyEntries));
     }
@@ -122,16 +122,16 @@ public sealed class ConcurrencyContractTests
         var history = new InMemoryQuotaHistory([Snapshot(1)]);
         var scheduler = new BlockingBuildScheduler(blockedCall: 2);
         var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         state.AccountFilter = "account-1";
-        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var deleteAll = state.DeleteAllAsync();
-        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var deleteAll = state.DeleteAllAsync(TestContext.Current.CancellationToken);
+        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Empty(state.Entries);
         Assert.Empty(state.FilteredEntries);
         Assert.Empty(state.DisplayedEntries);
@@ -142,12 +142,12 @@ public sealed class ConcurrencyContractTests
     {
         var history = new InMemoryQuotaHistory([Snapshot(1)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync();
-        var reload = state.RefreshAfterPersistAsync();
-        var delete = state.DeleteAsync(history.Events[0].EventId);
-        var deleteAll = state.DeleteAllAsync();
-        var append = state.AppendAndReloadAsync([Snapshot(2)]);
-        await Task.WhenAll(reload, delete, deleteAll, append).WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken);
+        var reload = state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken);
+        var delete = state.DeleteAsync(history.Events[0].EventId, TestContext.Current.CancellationToken);
+        var deleteAll = state.DeleteAllAsync(TestContext.Current.CancellationToken);
+        var append = state.AppendAndReloadAsync([Snapshot(2)], TestContext.Current.CancellationToken);
+        await Task.WhenAll(reload, delete, deleteAll, append).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.True(await delete);
         Assert.Equal(history.Events.Select(e => e.Snapshot.Account), state.Entries.Select(e => e.Account));
         Assert.Equal(state.FilteredEntries, state.DisplayedEntries);
@@ -162,15 +162,15 @@ public sealed class ConcurrencyContractTests
     {
         var history = new FaultOnceHistory(operation);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        if (operation == "delete") await state.InitializeAsync();
+        if (operation == "delete") await state.InitializeAsync(TestContext.Current.CancellationToken);
         var id = operation == "delete" ? history.Events[0].EventId : Guid.NewGuid();
         await Assert.ThrowsAnyAsync<Exception>(() => operation switch
         {
-            "read" => state.InitializeAsync(),
-            "delete" => state.DeleteAsync(id),
-            _ => state.AppendAndReloadAsync([Snapshot(1)])
+            "read" => state.InitializeAsync(TestContext.Current.CancellationToken),
+            "delete" => state.DeleteAsync(id, TestContext.Current.CancellationToken),
+            _ => state.AppendAndReloadAsync([Snapshot(1)], TestContext.Current.CancellationToken)
         });
-        await state.AppendAndReloadAsync([Snapshot(2)]).WaitAsync(TimeSpan.FromSeconds(5));
+        await state.AppendAndReloadAsync([Snapshot(2)], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.True(history.SuccessfulOperationObserved);
     }
 
@@ -180,20 +180,20 @@ public sealed class ConcurrencyContractTests
         var history = new InMemoryQuotaHistory([]);
         var dispatcher = new GatedPublishDispatcher();
         var state = new HistoryState(history, dispatcher);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         dispatcher.HoldNext();
         var replacement = Snapshot(99) with { Account = "new-account" };
-        var reload = state.AppendAndReloadAsync([replacement]);
-        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var reload = state.AppendAndReloadAsync([replacement], TestContext.Current.CancellationToken);
+        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var export = state.ExportCsvAsync();
+        var export = state.ExportCsvAsync(TestContext.Current.CancellationToken);
         await Task.Yield();
         Assert.False(export.IsCompleted);
 
         dispatcher.Release();
-        var csv = await export.WaitAsync(TimeSpan.FromSeconds(5));
-        await reload.WaitAsync(TimeSpan.FromSeconds(5));
+        var csv = await export.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await reload.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains("new-account", csv, StringComparison.Ordinal);
         Assert.DoesNotContain("account-1", csv, StringComparison.Ordinal);
     }
@@ -207,22 +207,22 @@ public sealed class ConcurrencyContractTests
         var history = new InMemoryQuotaHistory(Enumerable.Range(0, 180).Select(Snapshot).ToList());
         var scheduler = new BlockingBuildScheduler(blockedCall: 2);
         var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync();
+        await state.InitializeAsync(TestContext.Current.CancellationToken);
 
         state.AccountFilter = "account-1";
-        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var csvTask = state.ExportCsvAsync();
-        var jsonTask = state.ExportJsonAsync();
+        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csvTask = state.ExportCsvAsync(TestContext.Current.CancellationToken);
+        var jsonTask = state.ExportJsonAsync(TestContext.Current.CancellationToken);
         Assert.False(csvTask.IsCompleted);
         Assert.False(jsonTask.IsCompleted);
 
         state.AccountFilter = "account-2";
-        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var rows = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.True(rows.Length > HistoryState.PageSize + 1);
@@ -242,25 +242,25 @@ public sealed class ConcurrencyContractTests
     {
         var history = new InMemoryQuotaHistory(Enumerable.Range(0, 250).Select(i => Snapshot(i) with { Account = "acct" }).ToList());
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(5, state.PageCount);
 
         state.NextPage();
         state.NextPage();
         state.NextPage();
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(3, state.CurrentPage);
         Assert.Equal(3, state.RequestedPage);
 
         state.PreviousPage();
         state.AccountFilter = "acct";
         state.NextPage();
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(1, state.CurrentPage);
         Assert.Equal(1, state.RequestedPage);
 
         for (var i = 0; i < 10; i++) state.NextPage();
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(4, state.CurrentPage);
         Assert.Equal(4, state.RequestedPage);
         Assert.False(state.HasNextPage);
@@ -273,13 +273,13 @@ public sealed class ConcurrencyContractTests
     public async Task Projection_scheduler_fault_is_observable_and_queue_recovers()
     {
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), new ImmediateUiDispatcher(), new FaultOnSecondProjectionScheduler());
-        await state.InitializeAsync();
+        await state.InitializeAsync(TestContext.Current.CancellationToken);
 
         state.AccountFilter = "account-1";
-        await Assert.ThrowsAsync<InvalidOperationException>(() => state.WaitForPublishedAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => state.WaitForPublishedAsync(TestContext.Current.CancellationToken));
 
         state.AccountFilter = "All accounts";
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Single(state.FilteredEntries);
     }
 
@@ -289,12 +289,12 @@ public sealed class ConcurrencyContractTests
     {
         var dispatcher = new FaultOnceDispatcher();
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), dispatcher);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         dispatcher.FaultNext = true;
-        await Assert.ThrowsAsync<InvalidOperationException>(() => state.RefreshAfterPersistAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken));
 
-        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "recovered" }]).WaitAsync(TimeSpan.FromSeconds(5));
+        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "recovered" }], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains(state.Entries, entry => entry.Account == "recovered");
     }
 
@@ -304,7 +304,7 @@ public sealed class ConcurrencyContractTests
     public async Task Notification_subscriber_exception_faults_request_records_load_error_and_recovers()
     {
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var thrown = false;
         state.PropertyChanged += (_, e) =>
@@ -315,14 +315,14 @@ public sealed class ConcurrencyContractTests
                 throw new InvalidOperationException("subscriber failed");
             }
         };
-        var reload = state.RefreshAfterPersistAsync();
+        var reload = state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken);
         var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => reload);
         Assert.Equal("subscriber failed", observed.Message);
 
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal("subscriber failed", state.LoadError);
 
-        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "after-fault" }]).WaitAsync(TimeSpan.FromSeconds(5));
+        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "after-fault" }], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains(state.Entries, entry => entry.Account == "after-fault");
         Assert.Null(state.LoadError);
     }
@@ -335,14 +335,14 @@ public sealed class ConcurrencyContractTests
         var history = new InMemoryQuotaHistory([Snapshot(1)]);
         var dispatcher = new GatedPublishDispatcher();
         var state = new HistoryState(history, dispatcher);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         dispatcher.HoldNext();
         state.AccountFilter = "account-1";
-        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var delete = state.DeleteAsync(history.Events[0].EventId);
-        var barrier = state.WaitForPublishedAsync();
-        var export = state.ExportCsvAsync();
+        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var delete = state.DeleteAsync(history.Events[0].EventId, TestContext.Current.CancellationToken);
+        var barrier = state.WaitForPublishedAsync(TestContext.Current.CancellationToken);
+        var export = state.ExportCsvAsync(TestContext.Current.CancellationToken);
 
         var notifications = 0;
         state.PropertyChanged += (_, _) => notifications++;
@@ -350,9 +350,9 @@ public sealed class ConcurrencyContractTests
         state.Dispose();
         dispatcher.Release();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => barrier.WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => export.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => barrier.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => export.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         Assert.Equal(0, notifications);
         Assert.Same(displayedBefore, state.DisplayedEntries);
     }
@@ -364,21 +364,21 @@ public sealed class ConcurrencyContractTests
     {
         var history = new GatedMutationHistory([Snapshot(1)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         var target = history.Events[0].EventId;
 
         using var cancellation = new CancellationTokenSource();
         var delete = state.DeleteAsync(target, cancellation.Token);
-        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var append = state.AppendAndReloadAsync([Snapshot(2) with { Account = "later" }]);
+        await history.MutationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var append = state.AppendAndReloadAsync([Snapshot(2) with { Account = "later" }], TestContext.Current.CancellationToken);
 
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
-        await append.WaitAsync(TimeSpan.FromSeconds(5));
+        await append.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains(state.Entries, entry => entry.Id == target);
         Assert.Contains(state.Entries, entry => entry.Account == "later");
-        var csv = await state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var csv = await state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains("later", csv, StringComparison.Ordinal);
     }
 
@@ -387,18 +387,18 @@ public sealed class ConcurrencyContractTests
     {
         var application = new GatedApplication(new QuotaRefreshResult([], []));
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        var manual = vm.RefreshAsync(RefreshOrigin.Manual);
-        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var scheduled = vm.RefreshAsync(RefreshOrigin.Scheduled);
+        var manual = vm.RefreshAsync(RefreshOrigin.Manual, TestContext.Current.CancellationToken);
+        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var scheduled = vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         await Task.WhenAll(scheduled, Task.CompletedTask);
         Assert.Equal(1, application.Calls);
         application.Release.TrySetResult(true);
         await manual;
 
         application.Reset();
-        var scheduledOwner = vm.RefreshAsync(RefreshOrigin.Scheduled);
-        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var manualWaiter = vm.RefreshAsync(RefreshOrigin.Manual);
+        var scheduledOwner = vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
+        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var manualWaiter = vm.RefreshAsync(RefreshOrigin.Manual, TestContext.Current.CancellationToken);
         Assert.False(manualWaiter.IsCompleted);
         application.Release.TrySetResult(true);
         await Task.WhenAll(scheduledOwner, manualWaiter);
@@ -413,10 +413,10 @@ public sealed class ConcurrencyContractTests
     {
         var application = new FaultThenSuccessApplication(cancel);
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.RefreshAsync(RefreshOrigin.Manual));
-        else await vm.RefreshAsync(RefreshOrigin.Manual);
+        if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.RefreshAsync(RefreshOrigin.Manual, TestContext.Current.CancellationToken));
+        else await vm.RefreshAsync(RefreshOrigin.Manual, TestContext.Current.CancellationToken);
         if (cancel) Assert.True(application.FirstCancellationObserved);
-        await vm.RefreshAsync(RefreshOrigin.Manual);
+        await vm.RefreshAsync(RefreshOrigin.Manual, TestContext.Current.CancellationToken);
         Assert.Equal(2, application.Calls);
     }
 
@@ -440,7 +440,7 @@ public sealed class ConcurrencyContractTests
             return value;
         }, results.Add, TimeSpan.Zero);
         var run = monitor.RunAsync(stop.Token);
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal([true, false, true], results);
     }
 
@@ -608,26 +608,26 @@ public sealed class ConcurrencyContractAvaloniaTests
         var uiNotifications = new List<bool>();
         state.PropertyChanged += (_, _) => uiNotifications.Add(Dispatcher.UIThread.CheckAccess());
 
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         scheduler.HoldNext();
         state.SetLanguage(UiLanguage.Japanese);
-        await scheduler.HeldStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.HeldStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         var sentinel = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         Dispatcher.UIThread.Post(() => sentinel.TrySetResult(true));
-        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         scheduler.Release();
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.All(state.FilteredEntries.Take(10), entry => Assert.Equal("ローリング", entry.WindowDisplay));
 
-        Assert.True(await state.DeleteAsync(history.Events[0].EventId).WaitAsync(TimeSpan.FromSeconds(10)));
-        await state.AppendAndReloadAsync([Snapshot(7)]).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(await state.DeleteAsync(history.Events[0].EventId).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        await state.AppendAndReloadAsync([Snapshot(7)]).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         var export = state.ExportCsvAsync();
         var exportSentinel = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         Dispatcher.UIThread.Post(() => exportSentinel.TrySetResult(true));
-        await exportSentinel.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var csv = await export.WaitAsync(TimeSpan.FromSeconds(10));
+        await exportSentinel.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csv = await export.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.True(history.ReadEventsOffUi);
         Assert.True(history.AppendOffUi);
@@ -656,10 +656,10 @@ public sealed class ConcurrencyContractAvaloniaTests
         vm.Notify("threshold", "notice");
 
         var refresh = vm.RefreshAsync(RefreshOrigin.Scheduled);
-        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.False(vm.IsQuotaDataBusy);
         application.Release.TrySetResult(true);
-        await refresh.WaitAsync(TimeSpan.FromSeconds(10));
+        await refresh.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.NotEmpty(vm.Cards);
         Assert.NotEmpty(threads);

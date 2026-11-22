@@ -79,14 +79,14 @@ public sealed class CopilotDeviceFlowUiTests
         var tokenSession = new GitHubUserTokenSession(store, () => configuredClientId,
             (_, _) => throw new InvalidOperationException("refresh is not expected"));
         var facade = new UiProviderFacade(github: github, credentialStore: store, githubTokenSession: tokenSession);
-        var start = await facade.StartGitHubDeviceFlowAsync(default);
+        var start = await facade.StartGitHubDeviceFlowAsync(TestContext.Current.CancellationToken);
         Assert.True(start.IsSuccess);
 
-        var result = await facade.PollGitHubDeviceFlowAsync(start.Value!, default);
+        var result = await facade.PollGitHubDeviceFlowAsync(start.Value!, TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
         Assert.Equal(FetchStatus.ConfigurationError, result.Status);
-        Assert.Null(await store.GetAsync("github", default));
+        Assert.Null(await store.GetAsync("github", TestContext.Current.CancellationToken));
     }
 
     [AvaloniaFact]
@@ -112,8 +112,8 @@ public sealed class CopilotDeviceFlowUiTests
         var window = CreateWindow(provider);
 
         window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
         Assert.Equal(1, provider.StartCalls);
         Assert.Equal(1, provider.PollCalls);
@@ -137,7 +137,7 @@ public sealed class CopilotDeviceFlowUiTests
         var window = CreateWindow(provider, launcher);
 
         window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
         Assert.Single(launcher.LaunchedUris);
         Assert.Equal(new Uri("https://github.com/login/device"), launcher.LaunchedUris[0]);
@@ -156,7 +156,7 @@ public sealed class CopilotDeviceFlowUiTests
 
         var start = window.FindControl<Button>("CopilotStartButton")!;
         start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await Task.Delay(50);
 
@@ -166,7 +166,7 @@ public sealed class CopilotDeviceFlowUiTests
         Assert.Contains("waiting", window.ViewModel.CopilotDeviceResult, StringComparison.OrdinalIgnoreCase);
 
         provider.PollRelease.TrySetResult(true);
-        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
     }
 
     [AvaloniaFact]
@@ -181,7 +181,7 @@ public sealed class CopilotDeviceFlowUiTests
         var window = CreateWindow(provider);
 
         window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
         var progress = window.FindControl<ProgressBar>("CopilotFlowProgressBar");
         Assert.True(window.ViewModel.IsCopilotFlowActive);
@@ -191,7 +191,7 @@ public sealed class CopilotDeviceFlowUiTests
         Assert.Contains("waiting", window.FindControl<TextBlock>("CopilotFlowWaitingText")!.Text, StringComparison.OrdinalIgnoreCase);
 
         provider.PollRelease.TrySetResult(true);
-        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await provider.Completed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
     }
 
     [AvaloniaFact]
@@ -212,11 +212,11 @@ public sealed class CopilotDeviceFlowUiTests
         try
         {
             window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await provider.PollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
-            await provider.PollCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await provider.PollCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             Assert.False(window.ViewModel.IsCopilotFlowActive);
             Assert.NotEqual(CopilotUiState.Completed, window.ViewModel.CopilotState);

@@ -145,7 +145,7 @@ public sealed class UsageStatusSurfaceTests
 
             // The retry button wires to the same refresh path and clears the stale marker.
             retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await window.ViewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await window.ViewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             Assert.False(panel.IsVisible);
             Assert.Equal(UsageFailureKind.None, window.ViewModel.UsageFailure);
             Assert.Equal(3, port.Calls);
@@ -280,7 +280,7 @@ public sealed class UsageStatusSurfaceTests
         var port = new GatedUsageReadPort(() => Usage(17, Reported(Now.AddHours(-1))));
         using var viewModel = CreateViewModel(port, UiLanguage.English, out _);
         viewModel.NavigateToUsage();
-        await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         var window = ShowWindow(viewModel);
         try
         {
@@ -299,7 +299,7 @@ public sealed class UsageStatusSurfaceTests
             Assert.False(window.FindControl<Border>("UsageFailurePanel")!.IsVisible);
 
             port.Release(() => Usage(17, Reported(Now.AddHours(-1))));
-            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             window.UpdateLayout();
             Assert.False(viewModel.IsUsageLoading);
             Assert.True(window.FindControl<TextBlock>("UsageTotal")!.IsVisible);
@@ -308,7 +308,7 @@ public sealed class UsageStatusSurfaceTests
         {
             window.Close();
             port.Release(() => Usage(17, Reported(Now.AddHours(-1))));
-            try { await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5)); } catch { /* already completed */ }
+            try { await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken); } catch { /* already completed */ }
             viewModel.Dispose();
         }
     }
@@ -345,7 +345,7 @@ public sealed class UsageStatusSurfaceTests
             var gated = new GatedUsageReadPort(() => Usage(17, Reported(Now.AddHours(-1))));
             var viewModel = CreateViewModel(gated, language, out _);
             viewModel.NavigateToUsage();
-            await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             window = ShowWindow(viewModel);
             var refresh = viewModel.RefreshUsageAsync();
             try
@@ -357,7 +357,7 @@ public sealed class UsageStatusSurfaceTests
             {
                 window.Close();
                 gated.Release(() => Usage(17, Reported(Now.AddHours(-1))));
-                try { await refresh.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+                try { await refresh.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken); } catch { }
                 viewModel.Dispose();
             }
             return;
@@ -371,7 +371,7 @@ public sealed class UsageStatusSurfaceTests
         {
             window = await CreateStateAsync(state, scripted!, language: language);
             if (state is SurfaceState.Stale or SurfaceState.StaleAndDelayed)
-                await window.ViewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                await window.ViewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         }
 
         try
@@ -564,9 +564,9 @@ public sealed class UsageStatusSurfaceTests
     {
         var viewModel = CreateViewModel(port, language, out _);
         viewModel.NavigateToUsage();
-        await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await viewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         if (loadSecondRead)
-            await viewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await viewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         return ShowWindow(viewModel);
     }
 

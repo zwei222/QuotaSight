@@ -8,10 +8,15 @@ public static class LinuxStatusNotifierAvailability
     public const string WatcherName = "org.kde.StatusNotifierWatcher";
     public const string WatcherPath = "/StatusNotifierWatcher";
     public const string WatcherInterface = "org.kde.StatusNotifierWatcher";
+    // Tmds.DBus.Protocol 0.9x removed the Connection.DBus* constants; the bus peer service
+    // values (org.freedesktop.DBus at /org/freedesktop/DBus) are stable DBus conventions.
+    private const string DBusServiceName = "org.freedesktop.DBus";
+    private const string DBusObjectPath = "/org/freedesktop/DBus";
+    private const string DBusInterface = "org.freedesktop.DBus";
 
     public static MessageBuffer BuildNameHasOwnerMessage(MessageWriter writer)
     {
-        writer.WriteMethodCallHeader(Connection.DBusServiceName, Connection.DBusObjectPath, Connection.DBusInterface, "NameHasOwner", "s");
+        writer.WriteMethodCallHeader(DBusServiceName, DBusObjectPath, DBusInterface, "NameHasOwner", "s", MessageFlags.None);
         writer.WriteString(WatcherName);
         return writer.CreateMessage();
     }
@@ -39,9 +44,9 @@ public static class LinuxStatusNotifierAvailability
 
     public static async Task<bool> IsAvailableAsync(TrayIcon tray, CancellationToken cancellationToken = default)
     {
-        if (tray.NativeMenuExporter is null || Address.Session is null) return false;
+        if (tray.NativeMenuExporter is null || DBusAddress.Session is null) return false;
 
-        using var connection = new Connection(Address.Session);
+        using var connection = new DBusConnection(new DBusConnectionOptions(DBusAddress.Session) { AutoConnect = false });
         try
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);

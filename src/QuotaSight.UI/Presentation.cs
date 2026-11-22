@@ -589,7 +589,11 @@ public interface IUiDispatcher
 }
 public sealed class AvaloniaUiDispatcher : IUiDispatcher
 {
-    public bool CheckAccess() => Dispatcher.UIThread.CheckAccess();
+    // Avalonia 12 wires CheckAccess() to the thread that first touched Dispatcher.UIThread.
+    // Without an initialized Avalonia application (plain unit-test hosts), that dispatcher is
+    // lazily created and never pumped, so queued UI work would hang forever; treat every
+    // thread as the UI thread there - the behavior Avalonia 11's NullDispatcherImpl provided.
+    public bool CheckAccess() => Avalonia.Application.Current is null || Dispatcher.UIThread.CheckAccess();
     public Task InvokeAsync(Action action) => CheckAccess() ? InvokeInline(action) : Dispatcher.UIThread.InvokeAsync(action).GetTask();
     public Task InvokeAsync(Func<Task> action) => CheckAccess() ? action() : Dispatcher.UIThread.InvokeAsync(action);
     private static Task InvokeInline(Action action) { action(); return Task.CompletedTask; }

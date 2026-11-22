@@ -44,7 +44,7 @@ public sealed class UsageFreshnessTests
     private static async Task LoadAsync(MainViewModel viewModel)
     {
         viewModel.NavigateToUsage();
-        await viewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await viewModel.RefreshUsageAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
     }
 
     [Fact]

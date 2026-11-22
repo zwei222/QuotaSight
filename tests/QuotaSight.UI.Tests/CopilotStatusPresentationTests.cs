@@ -16,7 +16,7 @@ public sealed class CopilotStatusPresentationTests
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new FailureApplication(FetchStatus.ConfigurationError), uiDispatcher: uiDispatcher);
         vm.Language = language;
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(expected, vm.NotificationBannerText, StringComparison.Ordinal);
         Assert.DoesNotContain("token", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
@@ -40,7 +40,7 @@ public sealed class CopilotStatusPresentationTests
             using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new FailureApplication(status), uiDispatcher: uiDispatcher);
             vm.Language = language;
 
-            await vm.RefreshAsync();
+            await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
             Assert.Contains(expected, vm.NotificationBannerText, StringComparison.Ordinal);
         }
@@ -48,7 +48,7 @@ public sealed class CopilotStatusPresentationTests
         using var unsupportedVm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new FailureApplication(FetchStatus.Unsupported), uiDispatcher: uiDispatcher);
         unsupportedVm.Language = language;
 
-        await unsupportedVm.RefreshAsync();
+        await unsupportedVm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(expectedMessage, unsupportedVm.NotificationBannerText, StringComparison.Ordinal);
         Assert.Contains(organizationHint, unsupportedVm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
