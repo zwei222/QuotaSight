@@ -176,7 +176,7 @@ public sealed class LocalizationCopyTests
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleBadge));
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleToday));
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleWeek));
-            foreach (var state in new[] { "Loading", "Ready", "Empty", "Stale", "Error" })
+            foreach (var state in new[] { "Unconfigured", "Loading", "Ready", "Empty", "Stale", "Error" })
             {
                 Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleState(state)));
             }
@@ -219,10 +219,20 @@ public sealed class LocalizationCopyTests
 
         foreach (var state in new[] { "Loading", "Ready", "Empty", "Stale", "Error" })
         {
-            // "Unconfigured" is not a TokScale state: without a connection the whole section hides.
             pairs.Add((japanese.UsageBreakdownState(state), english.UsageBreakdownState(state), $"breakdown state {state}"));
+        }
+
+        // "Unconfigured" is a TokScale state now: without a connection the section stays
+        // visible with an empty state instead of hiding itself.
+        foreach (var state in new[] { "Unconfigured", "Loading", "Ready", "Empty", "Stale", "Error" })
+        {
             pairs.Add((japanese.TokScaleState(state), english.TokScaleState(state), $"TokScale state {state}"));
         }
+
+        pairs.Add((japanese.TokScaleEmptyTitle, english.TokScaleEmptyTitle, nameof(UiCopy.TokScaleEmptyTitle)));
+        pairs.Add((japanese.TokScaleEmptyBodyUnconfigured, english.TokScaleEmptyBodyUnconfigured, nameof(UiCopy.TokScaleEmptyBodyUnconfigured)));
+        pairs.Add((japanese.TokScaleEmptyBody, english.TokScaleEmptyBody, nameof(UiCopy.TokScaleEmptyBody)));
+        pairs.Add((japanese.TokScaleOpenSettings, english.TokScaleOpenSettings, nameof(UiCopy.TokScaleOpenSettings)));
 
         foreach (var component in new (Func<string> Japanese, Func<string> English, string Name)[]
         {

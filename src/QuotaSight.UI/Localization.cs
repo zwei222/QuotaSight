@@ -158,8 +158,18 @@ public sealed class UiCopy
     public string TokScalePanelNotTracked => IsJapanese
         ? "このクライアントのカードはまだ追加されていません。"
         : "This client's card is not added yet.";
+    public string TokScaleEmptyTitle => IsJapanese ? "まだ観測されたデータはありません" : "Nothing observed yet";
+    public string TokScaleEmptyBodyUnconfigured => IsJapanese
+        ? "利用量 API を設定して、プロバイダーを追加しましょう。"
+        : "Set up the usage API, then add a provider.";
+    public string TokScaleEmptyBody => IsJapanese
+        ? "プロバイダーを追加するか、Collector がデータを送るのを待ちましょう。"
+        : "Add a provider, or wait for a collector to send data.";
+    public string TokScaleOpenSettings => IsJapanese ? "設定を開く" : "Open settings";
     public string TokScaleState(string state) => (state, IsJapanese) switch
     {
+        ("Unconfigured", true) => "利用量 API に未接続",
+        ("Unconfigured", false) => "Not connected to the usage API",
         ("Loading", true) => "観測使用量を読み込み中…",
         ("Loading", false) => "Loading observed usage…",
         ("Ready", true) => "観測使用量を表示しています。",

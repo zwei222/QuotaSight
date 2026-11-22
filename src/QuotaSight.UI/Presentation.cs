@@ -2174,12 +2174,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string TokScaleState => tokScaleState;
 
-    /// <summary>The section exists only while a usage API is configured and has been looked at.</summary>
-    public bool IsTokScaleSectionVisible => usageReadPort.IsConfigured && tokScaleState != "Hidden";
+    /// <summary>
+    /// The section exists once it has been looked at; a missing usage connection shows an
+    /// empty state with a settings shortcut instead of hiding the added cards.
+    /// </summary>
+    public bool IsTokScaleSectionVisible => tokScaleState != "Hidden";
 
     public bool IsTokScaleLoading => tokScaleState == "Loading";
 
     public bool IsTokScaleStale => isTokScaleStale;
+
+    /// <summary>True while no usage API connection exists: no read is attempted.</summary>
+    public bool IsTokScaleUnconfigured => tokScaleState == "Unconfigured";
+
+    /// <summary>
+    /// The empty state replaces the status sentence when there are no cards: a title and
+    /// a body that name the next step for this exact situation.
+    /// </summary>
+    public bool IsTokScaleEmptyStateVisible => !IsTokScaleCardsVisible && tokScaleState is "Unconfigured" or "Empty";
+
+    public string TokScaleEmptyTitleText => CopyText.TokScaleEmptyTitle;
+
+    public string TokScaleEmptyBodyText => IsTokScaleUnconfigured
+        ? CopyText.TokScaleEmptyBodyUnconfigured
+        : CopyText.TokScaleEmptyBody;
+
+    public string TokScaleOpenSettingsText => CopyText.TokScaleOpenSettings;
 
     public string TokScaleStateText => new UiCopy(Language).TokScaleState(tokScaleState);
 
@@ -2189,8 +2209,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool IsTokScaleCardsVisible => tokScaleCards.Count > 0;
 
-    /// <summary>The state sentence shows whenever the section has no cards to show.</summary>
-    public bool IsTokScaleStatusVisible => !IsTokScaleCardsVisible;
+    /// <summary>The state sentence shows whenever the section has no cards to show, or
+    /// whenever the connection is missing — the cards never hide that.</summary>
+    public bool IsTokScaleStatusVisible =>
+        (!IsTokScaleCardsVisible && !IsTokScaleEmptyStateVisible) || tokScaleState == "Unconfigured";
 
     public string TokScaleTitleText => CopyText.TokScaleSectionTitle;
 
@@ -2261,9 +2283,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (!usageReadPort.IsConfigured)
         {
-            // The connection is gone: drop the section entirely.
-            tokScaleState = "Hidden";
-            tokScaleCards = [];
+            // No connection yet: the section stays, added clients show their "not observed
+            // yet" cards, and no read is attempted, so no observation data can appear.
+            tokScaleState = "Unconfigured";
+            var empty = EmptyBreakdown();
+            tokScaleTodayBreakdown = empty;
+            tokScaleWeekBreakdown = empty;
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(empty, empty, trackedTokScaleClients, Language);
             tokScaleCollectors = [];
             hasTokScaleValues = false;
             tokScaleFailure = UsageFailureKind.None;
@@ -2333,11 +2359,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         NotifyTokScaleSurface();
     }
 
+    /// <summary>A read with nothing in it, used when no connection exists. It is never displayed.</summary>
+    private static UsageBreakdown EmptyBreakdown() => new(default, default, [], [], []);
+
     /// <summary>Rebuilds the stored cards in the current language: the numbers are the
-    /// observation, only their labels change with the switch.</summary>
+    /// observation, only their labels change with the switch. The unconfigured state also
+    /// carries the empty reads, so the added cards follow the switch there too.</summary>
     private void RelocalizeTokScale()
     {
-        if (hasTokScaleValues && tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
+        if (tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
         {
             RebuildTokScaleCards(today, week);
         }
@@ -2360,6 +2390,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsTokScaleSectionVisible));
         OnPropertyChanged(nameof(IsTokScaleLoading));
         OnPropertyChanged(nameof(IsTokScaleStale));
+        OnPropertyChanged(nameof(IsTokScaleUnconfigured));
+        OnPropertyChanged(nameof(IsTokScaleEmptyStateVisible));
+        OnPropertyChanged(nameof(TokScaleEmptyTitleText));
+        OnPropertyChanged(nameof(TokScaleEmptyBodyText));
+        OnPropertyChanged(nameof(TokScaleOpenSettingsText));
         OnPropertyChanged(nameof(TokScaleStateText));
         OnPropertyChanged(nameof(TokScaleFailureText));
         OnPropertyChanged(nameof(TokScaleTitleText));
@@ -2556,8 +2591,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             breakdownFailure = UsageFailureKind.None;
             isBreakdownStale = false;
             breakdownState = "Unconfigured";
-            tokScaleState = "Hidden";
-            tokScaleCards = [];
+            // Observed values drop with the credential they were read with, but the section
+            // itself stays: added clients keep a "not observed yet" card and the empty state
+            // points at settings until a connection exists again.
+            tokScaleState = "Unconfigured";
+            var emptyBreakdown = EmptyBreakdown();
+            tokScaleTodayBreakdown = emptyBreakdown;
+            tokScaleWeekBreakdown = emptyBreakdown;
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(emptyBreakdown, emptyBreakdown, trackedTokScaleClients, Language);
             tokScaleCollectors = [];
             hasTokScaleValues = false;
             tokScaleFailure = UsageFailureKind.None;
@@ -2784,7 +2825,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         trackedTokScaleClients = TokScaleTrackedList(trackedTokScaleClients, clientId, track);
         Settings.TokScaleClients = trackedTokScaleClients;
-        if (hasTokScaleValues && tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
+        // The unconfigured state also carries the empty reads, so adding a client builds
+        // its "not observed yet" card even before any connection exists.
+        if (tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
         {
             RebuildTokScaleCards(today, week);
         }

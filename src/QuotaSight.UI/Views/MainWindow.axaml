@@ -118,6 +118,11 @@
                 </Grid>
                 <TextBlock x:Name="TokScaleStatus" Classes="muted" Text="{Binding TokScaleStateText}" IsVisible="{Binding IsTokScaleStatusVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleStateText}"/>
                 <ProgressBar x:Name="TokScaleLoadingBar" IsIndeterminate="True" IsVisible="{Binding IsTokScaleLoading}" MinHeight="8"/>
+                <StackPanel x:Name="TokScaleEmptyState" Spacing="6" IsVisible="{Binding IsTokScaleEmptyStateVisible}">
+                  <TextBlock x:Name="TokScaleEmptyTitle" Text="{Binding TokScaleEmptyTitleText}" FontWeight="SemiBold" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleEmptyTitleText}"/>
+                  <TextBlock x:Name="TokScaleEmptyBody" Classes="muted" Text="{Binding TokScaleEmptyBodyText}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleEmptyBodyText}"/>
+                  <Button x:Name="TokScaleOpenSettingsButton" Classes="usage-link" Content="{Binding TokScaleOpenSettingsText}" Click="UsageOpenSettingsClick" HorizontalAlignment="Left" IsVisible="{Binding IsTokScaleUnconfigured}" AutomationProperties.Name="{Binding TokScaleOpenSettingsText}"/>
+                </StackPanel>
                 <TextBlock x:Name="TokScaleFreshness" Classes="muted" Text="{Binding TokScaleFreshnessText}" IsVisible="{Binding IsTokScaleFreshnessVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleFreshnessText}"/>
                 <ItemsControl x:Name="TokScaleCards" ItemsSource="{Binding TokScaleCards}" AutomationProperties.Name="{Binding TokScaleTitleText}">
                   <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel ItemSpacing="8" LineSpacing="8"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>

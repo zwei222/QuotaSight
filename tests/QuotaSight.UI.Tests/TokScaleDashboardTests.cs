@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.Interactivity;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
 using Xunit;
@@ -10,39 +11,81 @@ namespace QuotaSight.UI.Tests;
 
 /// <summary>
 /// The dashboard's "observed usage (TokScale)" section: small per-client cards fed by the
-/// breakdown read port, shown only while a usage API is configured, refreshed on a longer
-/// interval than the usage page, and never dressed up as a remaining-quota gauge.
+/// breakdown read port, visible even without a usage connection (an empty state with a
+/// settings shortcut takes its place), refreshed on a longer interval than the usage page,
+/// and never dressed up as a remaining-quota gauge.
 /// </summary>
 public sealed class TokScaleDashboardTests
 {
     private static readonly DateTimeOffset Now = new(2026, 11, 22, 3, 0, 0, TimeSpan.Zero);
     private static readonly DateOnly Today = new(2026, 11, 22);
 
-    // ---------- hidden when unconfigured ----------
+    // ---------- visible even without a usage connection ----------
 
     [AvaloniaFact]
-    public async Task WithoutAUsageConnectionTheSectionIsAbsent()
+    public async Task WithoutAUsageConnectionTheSectionStaysVisibleWithAnEmptyState()
     {
         using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedNow(Now));
         await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
 
-        Assert.False(viewModel.IsTokScaleSectionVisible);
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Equal("Unconfigured", viewModel.TokScaleState);
+        Assert.True(viewModel.IsTokScaleUnconfigured);
         Assert.Empty(viewModel.TokScaleCards);
+        Assert.True(viewModel.IsTokScaleEmptyStateVisible);
+        // The status sentence names the missing connection, and the empty body's next
+        // step is to set it up.
+        Assert.Contains("usage API", viewModel.TokScaleStateText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("usage API", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+        // Nothing was read and nothing may be claimed: no freshness, no observation data.
+        Assert.False(viewModel.IsTokScaleFreshnessVisible);
     }
 
     [AvaloniaFact]
-    public async Task WhenTheConnectionIsRemovedTheSectionIsDroppedAgain()
+    public async Task AnAddedClientShowsItsNotObservedCardWithoutAUsageConnection()
+    {
+        using var viewModel = new MainViewModel(
+            new EmptyDashboardSource(), timeProvider: new FixedNow(Now), settingsStore: TemporarySettingsStore());
+        await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
+
+        await viewModel.AddTokScaleClientAsync("cursor");
+        await viewModel.TokScaleLoadTask;
+
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Equal("Unconfigured", viewModel.TokScaleState);
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("cursor", card.ClientId);
+        Assert.False(card.Observed);
+        Assert.Contains("Not observed yet", card.SummaryText, StringComparison.Ordinal);
+        // The cards do not hide that the connection is missing: the status line stays.
+        Assert.True(viewModel.IsTokScaleStatusVisible);
+        Assert.Contains("usage API", viewModel.TokScaleStateText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [AvaloniaFact]
+    public async Task RemovingTheConnectionDropsTheObservedDataButKeepsTheSectionAndTrackedCards()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 60, 0, 0, 0, 0)], [Cov(60, 60)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port);
+        using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
+        await viewModel.AddTokScaleClientAsync("cursor");
         Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Equal(2, viewModel.TokScaleCards.Count);
 
         await viewModel.ClearUsageConnectionAsync();
 
-        Assert.False(viewModel.IsTokScaleSectionVisible);
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Equal("Unconfigured", viewModel.TokScaleState);
+        // The observed data card is gone with the credential it was read with; the added
+        // card survives as a "not observed yet" card and the section itself stays put.
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("cursor", card.ClientId);
+        Assert.False(card.Observed);
     }
 
     // ---------- cards ----------
@@ -104,6 +147,12 @@ public sealed class TokScaleDashboardTests
         Assert.True(viewModel.IsTokScaleSectionVisible);
         Assert.Empty(viewModel.TokScaleCards);
         Assert.Equal("Empty", viewModel.TokScaleState);
+        // Connected but without data: the empty state names the next step (add a provider
+        // or wait for a collector), and there is no settings shortcut to push.
+        Assert.True(viewModel.IsTokScaleEmptyStateVisible);
+        Assert.False(viewModel.IsTokScaleUnconfigured);
+        Assert.Contains("provider", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("collector", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------- refresh interval ----------
@@ -230,7 +279,7 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task WithoutAUsageConnectionTheSectionIsCollapsedOnTheWindow()
+    public async Task WithoutAUsageConnectionTheSectionShowsTheEmptyStateAndASettingsShortcut()
     {
         using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedNow(Now));
         var window = new MainWindow(viewModel);
@@ -238,8 +287,16 @@ public sealed class TokScaleDashboardTests
         {
             window.Show();
             await viewModel.InitializeAsync();
+            await viewModel.TokScaleLoadTask;
             window.UpdateLayout();
-            Assert.False(window.FindControl<Border>("TokScaleSection")!.IsVisible);
+
+            Assert.True(window.FindControl<Border>("TokScaleSection")!.IsVisible);
+            Assert.True(window.FindControl<StackPanel>("TokScaleEmptyState")!.IsVisible);
+            var openSettings = window.FindControl<Button>("TokScaleOpenSettingsButton")!;
+            Assert.True(openSettings.IsVisible);
+
+            openSettings.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(AppPage.Settings, viewModel.CurrentPage);
         }
         finally { window.Close(); }
     }
