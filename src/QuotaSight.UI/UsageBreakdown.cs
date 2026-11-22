@@ -56,13 +56,34 @@ public sealed record TokScaleUsageCard(
     string SummaryText,
     bool Observed = true,
     bool IsMultiProvider = false,
-    string MultiProviderText = "")
+    string MultiProviderText = "",
+    string TodayLabelText = "",
+    string WeekLabelText = "",
+    string BarsName = "",
+    long ComparisonTop = 0)
 {
     /// <summary>Today's tokens, formatted with grouping and never rounded.</summary>
     public string TodayText => TodayTokens.ToString("N0", CultureInfo.InvariantCulture);
 
     /// <summary>The seven-day total, formatted the same way.</summary>
     public string WeekText => WeekTokens.ToString("N0", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// True when the card draws its two comparison bars: the card is observed and the
+    /// board has a common top to measure against. An all-zero board has no bars, and an
+    /// unobserved card is never drawn with the same shape as a zero observation.
+    /// </summary>
+    public bool HasComparisonBars => Observed && ComparisonTop > 0;
+
+    /// <summary>Today's observed tokens as a share of the common top — a bar length on a shared token scale, never a quota ratio.</summary>
+    public double TodayBarRatio => BarRatio(TodayTokens);
+
+    /// <summary>The seven-day total on the same shared scale.</summary>
+    public double WeekBarRatio => BarRatio(WeekTokens);
+
+    private double BarRatio(long tokens) => ComparisonTop > 0
+        ? Math.Clamp(tokens / (double)ComparisonTop, 0d, 1d)
+        : 0d;
 }
 
 /// <summary>
@@ -189,6 +210,7 @@ public static class UsageBreakdownAggregation
         var tracked = new HashSet<string>(trackedProviders ?? [], StringComparer.Ordinal);
         var totals = new Dictionary<string, (long Today, long Week)>(StringComparer.Ordinal);
         var shared = new HashSet<string>(StringComparer.Ordinal);
+        var observed = new HashSet<string>(StringComparer.Ordinal);
         AddLane(today.Parts, todayLane: true);
         AddLane(week.Parts, todayLane: false);
 
@@ -201,6 +223,7 @@ public static class UsageBreakdownAggregation
                     if (!tracked.Contains(provider)) continue;
                     if (!totals.TryGetValue(provider, out var seen)) seen = (Today: 0L, Week: 0L);
                     totals[provider] = todayLane ? (seen.Today + part.Total, seen.Week) : (seen.Today, seen.Week + part.Total);
+                    observed.Add(provider);
                     if (IsCombination(part.Provider)) shared.Add(provider);
                 }
             }
@@ -213,26 +236,42 @@ public static class UsageBreakdownAggregation
             if (TokScaleProviderCatalog.Find(id) is not null && !totals.ContainsKey(id)) totals[id] = (0, 0);
         }
 
+        // The bars' common top is the largest observed amount of either period across the
+        // cards on screen: unobserved cards carry no observation and never stretch the
+        // scale. An all-zero board keeps the top at zero, so no bar and no invented
+        // ceiling appears anywhere.
+        var comparisonTop = 0L;
+        foreach (var (key, amount) in totals)
+        {
+            if (observed.Contains(key))
+            {
+                comparisonTop = Math.Max(comparisonTop, Math.Max(amount.Today, amount.Week));
+            }
+        }
+
         return [.. totals
             .Select(pair =>
             {
                 // Presence in either read's parts is the observation; absence is "not
                 // observed yet", even for a tracked provider. A zero-token part is a real
                 // observation, not the not-observed state.
-                var observed = today.Parts.Any(part => ProviderKeysOf(part.Provider).Contains(pair.Key))
-                    || week.Parts.Any(part => ProviderKeysOf(part.Provider).Contains(pair.Key));
+                var isObserved = observed.Contains(pair.Key);
                 var includesShared = shared.Contains(pair.Key);
                 return new TokScaleUsageCard(
                     pair.Key,
                     TokScaleProviderCatalog.DisplayNameOf(pair.Key),
                     pair.Value.Today,
                     pair.Value.Week,
-                    observed
+                    isObserved
                         ? $"{copy.TokScaleToday} {pair.Value.Today:N0} · {copy.TokScaleWeek} {pair.Value.Week:N0}"
                         : copy.TokScaleNotObserved,
-                    observed,
+                    isObserved,
                     includesShared,
-                    includesShared ? copy.TokScaleSharedNotice : string.Empty);
+                    includesShared ? copy.TokScaleSharedNotice : string.Empty,
+                    copy.TokScaleToday,
+                    copy.TokScaleWeek,
+                    isObserved && comparisonTop > 0 ? copy.TokScaleBarsName(pair.Value.Today, pair.Value.Week) : string.Empty,
+                    comparisonTop);
             })
             .OrderByDescending(card => card.WeekTokens)
             .ThenBy(card => card.ProviderKey, StringComparer.Ordinal)];

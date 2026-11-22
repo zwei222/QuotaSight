@@ -653,6 +653,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string TokScaleWeekLabel => CopyText.TokScaleWeek;
 
     /// <summary>
+    /// The comparison bars' common scale, shown once above the cards as a token amount:
+    /// the largest observed amount of either period on the board. Hidden whenever no
+    /// card draws bars, so an all-zero board never shows an invented ceiling.
+    /// </summary>
+    public bool IsTokScaleScaleVisible => tokScaleCards.Any(card => card.HasComparisonBars);
+
+    public string TokScaleScaleText => CopyText.TokScaleScaleTop(tokScaleCards.FirstOrDefault()?.ComparisonTop ?? 0);
+
+    /// <summary>
     /// Freshness of the section: the oldest reception time across the collectors the
     /// last weekly read covered, formatted in the user's local zone. Empty before any read.
     /// </summary>
@@ -834,6 +843,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(TokScaleBadgeText));
         OnPropertyChanged(nameof(TokScaleTodayLabel));
         OnPropertyChanged(nameof(TokScaleWeekLabel));
+        OnPropertyChanged(nameof(IsTokScaleScaleVisible));
+        OnPropertyChanged(nameof(TokScaleScaleText));
         OnPropertyChanged(nameof(TokScaleCards));
         OnPropertyChanged(nameof(IsTokScaleCardsVisible));
         OnPropertyChanged(nameof(IsTokScaleStatusVisible));

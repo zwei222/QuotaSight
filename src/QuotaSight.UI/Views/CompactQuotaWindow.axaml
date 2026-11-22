@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:vm="using:QuotaSight.UI" x:Class="QuotaSight.UI.CompactQuotaWindow" x:DataType="vm:MainViewModel" Icon="avares://QuotaSight.UI/Assets/quotasight.ico" Title="QuotaSight" Width="410" MinWidth="380" MaxWidth="430" Height="620" MaxHeight="700" ShowInTaskbar="False">
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:vm="using:QuotaSight.UI" xmlns:ui="using:QuotaSight.UI.Controls" x:Class="QuotaSight.UI.CompactQuotaWindow" x:DataType="vm:MainViewModel" Icon="avares://QuotaSight.UI/Assets/quotasight.ico" Title="QuotaSight" Width="410" MinWidth="380" MaxWidth="430" Height="620" MaxHeight="700" ShowInTaskbar="False">
   <Window.Styles>
     <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/></Style>
     <Style Selector="Border.tokscale"><Setter Property="Background" Value="{DynamicResource CardBrush}"/><Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="12"/></Style>
@@ -19,6 +19,8 @@
       <StackPanel>
         <Border x:Name="CompactTokScaleEmptyState" Classes="tokscale" IsVisible="{Binding IsTokScaleEmptyStateVisible}" AutomationProperties.Name="{Binding TokScaleEmptyTitleText}"><StackPanel Spacing="6"><TextBlock x:Name="CompactTokScaleEmptyTitle" Text="{Binding TokScaleEmptyTitleText}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleEmptyTitleText}"/><TextBlock x:Name="CompactTokScaleEmptyBody" Text="{Binding TokScaleEmptyBodyText}" Classes="muted" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleEmptyBodyText}"/></StackPanel></Border>
         <TextBlock x:Name="CompactTokScaleStatus" Classes="muted" Text="{Binding TokScaleStateText}" IsVisible="{Binding IsTokScaleStatusVisible}" Margin="2,4" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleStateText}"/>
+        <!-- The comparison bars' common scale as a token amount, shown once above the cards. -->
+        <TextBlock x:Name="CompactTokScaleScaleLabel" Classes="muted" FontSize="11" Margin="2,4" Text="{Binding TokScaleScaleText}" IsVisible="{Binding IsTokScaleScaleVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleScaleText}"/>
         <ItemsControl x:Name="CompactTokScaleCards" ItemsSource="{Binding TokScaleCards}" IsVisible="{Binding IsTokScaleCardsVisible}" AutomationProperties.Name="{Binding TokScaleTitleText}">
           <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Spacing="7"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
@@ -28,6 +30,23 @@
                   <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2" TextTrimming="None" AutomationProperties.Name="{Binding DisplayName}"/>
                   <TextBlock Classes="muted" FontSize="12" Text="{Binding SummaryText}" TextWrapping="Wrap" AutomationProperties.Name="{Binding SummaryText}"/>
                   <TextBlock Classes="muted" FontSize="10" Text="{Binding MultiProviderText}" IsVisible="{Binding IsMultiProvider}" TextWrapping="Wrap" AutomationProperties.Name="{Binding MultiProviderText}"/>
+                  <!-- The same two comparison rows as the dashboard cards: today on top,
+                       the seven-day row below, both measured on the card-crossing common
+                       token scale. No rows on an unobserved card or an all-zero board. -->
+                  <StackPanel Spacing="3" Height="30" AutomationProperties.Name="{Binding BarsName}">
+                    <Grid ColumnDefinitions="40,160" ColumnSpacing="6" IsVisible="{Binding HasComparisonBars}">
+                      <TextBlock Classes="muted" FontSize="10" LineHeight="12" Text="{Binding TodayLabelText}" VerticalAlignment="Center"/>
+                      <Grid Grid.Column="1" Width="160" Height="6" VerticalAlignment="Center">
+                        <ui:TokScaleBarFill Classes="tokscale-bar" Ratio="{Binding TodayBarRatio}"><Border CornerRadius="3" Background="{DynamicResource AccentBrush}"/></ui:TokScaleBarFill>
+                      </Grid>
+                    </Grid>
+                    <Grid ColumnDefinitions="40,160" ColumnSpacing="6" IsVisible="{Binding HasComparisonBars}">
+                      <TextBlock Classes="muted" FontSize="10" LineHeight="12" Text="{Binding WeekLabelText}" VerticalAlignment="Center"/>
+                      <Grid Grid.Column="1" Width="160" Height="6" VerticalAlignment="Center">
+                        <ui:TokScaleBarFill Classes="tokscale-bar" Ratio="{Binding WeekBarRatio}"><Border CornerRadius="3" Background="{DynamicResource AccentBrush}"/></ui:TokScaleBarFill>
+                      </Grid>
+                    </Grid>
+                  </StackPanel>
                 </StackPanel>
               </Border>
             </DataTemplate>
