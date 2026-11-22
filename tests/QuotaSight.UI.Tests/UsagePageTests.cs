@@ -11,7 +11,7 @@ public sealed class UsagePageTests
     [AvaloniaFact]
     public async Task UnconfiguredUsageHidesTheUnavailableDateRange()
     {
-        using var viewModel = new MainViewModel(new EmptyDashboardSource());
+        using var viewModel = new MainViewModel();
         var window = new MainWindow(viewModel);
         try
         {
@@ -30,7 +30,7 @@ public sealed class UsagePageTests
     [AvaloniaFact]
     public async Task EmptyUsageShowsStatusWithoutMisleadingZeroTotal()
     {
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), usageReadPort: new EmptyUsageReadPort());
+        using var viewModel = new MainViewModel(usageReadPort: new EmptyUsageReadPort());
         viewModel.Language = UiLanguage.Japanese;
         var window = new MainWindow(viewModel);
         try
@@ -52,7 +52,7 @@ public sealed class UsagePageTests
     {
         var now = new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero);
         var port = new FakeUsageReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedTimeProvider(now), usageReadPort: port);
+        using var viewModel = new MainViewModel(timeProvider: new FixedTimeProvider(now), usageReadPort: port);
         var window = new MainWindow(viewModel);
         try
         {
@@ -83,7 +83,7 @@ public sealed class UsagePageTests
     public async Task LeavingUsageIgnoresLateReadAndReturningStartsLatestRead()
     {
         var port = new DeferredUsageReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), usageReadPort: port);
+        using var viewModel = new MainViewModel(usageReadPort: port);
         var window = new MainWindow(viewModel);
         try
         {
@@ -106,7 +106,7 @@ public sealed class UsagePageTests
     {
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 11, 20, 14, 59, 0, TimeSpan.Zero));
         var port = new PeriodBoundaryUsageReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: clock, usageReadPort: port);
+        using var viewModel = new MainViewModel(timeProvider: clock, usageReadPort: port);
         var window = new MainWindow(viewModel);
         try
         {
@@ -146,7 +146,6 @@ public sealed class UsagePageTests
     {
         var port = new FakeUsageReadPort();
         using var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             usageReadPort: port,
             timeZoneResolver: _ => missingZone ? throw new TimeZoneNotFoundException() : throw new InvalidTimeZoneException());
         var window = new MainWindow(viewModel);

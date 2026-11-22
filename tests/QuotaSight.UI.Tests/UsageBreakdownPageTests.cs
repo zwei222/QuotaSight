@@ -21,7 +21,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheCardRendersRowsTheSwitcherAndTheFixedNote()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads are consumed by the dashboard's startup refresh (today, week); the
         // third is the usage page's own breakdown read.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -61,7 +61,7 @@ public sealed class UsageBreakdownPageTests
     public async Task ExpandingARowRevealsTheFiveComponents()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         port.Breakdown.Enqueue(() => Breakdown(
             [Part("claude", "anthropic", "claude-sonnet-5-5[1m]", 10, 20, 5, 3, 2)],
             [Cov(40, 40)],
@@ -99,7 +99,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheLoadingStateShowsProgressAndDisablesTheSwitcher()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         port.Daily.Enqueue(() => new DailyUsage(From, To, [], 0));
         var window = new MainWindow(viewModel);
         try
@@ -129,7 +129,7 @@ public sealed class UsageBreakdownPageTests
     public async Task AnUnknownCollectorShowsAFailureBannerWithTheSettingsDetour()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         port.Daily.Enqueue(() => new DailyUsage(From, To, [], 0));
         port.Breakdown.Enqueue(() => throw new UsageReadException(UsageReadFailure.CollectorNotFound, "classified"));
         var window = new MainWindow(viewModel);
@@ -153,7 +153,7 @@ public sealed class UsageBreakdownPageTests
     public async Task ServerWithoutBreakdownSupportGetsNoSettingsDetour()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         port.Daily.Enqueue(() => new DailyUsage(From, To, [], 0));
         port.Breakdown.Enqueue(() => throw new UsageReadException(UsageReadFailure.NotFound, "classified"));
         var window = new MainWindow(viewModel);
@@ -179,7 +179,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheObservationNoteWrapsInsideANarrowWindow()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, null)]));
         var window = new MainWindow(viewModel);
         try
@@ -204,7 +204,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheDimensionSwitcherShowsTheSelectedDimensionOffersThreeChoicesAndIsNamed()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -235,7 +235,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheDimensionSwitcherFollowsTheLanguageOnTheWindow()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -264,7 +264,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheDimensionSwitcherSupportsKeyboardSelection()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -308,7 +308,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheRowHeaderSeparatesTheShareFromTheTotal()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -338,7 +338,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheBreakdownRowsInheritTheCardSurfacesNotTheFluentChrome()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
@@ -393,7 +393,7 @@ public sealed class UsageBreakdownPageTests
     public async Task TheBreakdownNoteAndStatusFollowTheLanguageOnTheWindow()
     {
         var port = new ScriptedDualReadPort();
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
+        using var viewModel = new MainViewModel(uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port);
         // Two reads feed the dashboard startup (today and week); the third is the usage page.
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));
         port.Breakdown.Enqueue(() => Breakdown([], [], [Col("col-a", 1, null)]));

@@ -1,22 +1,23 @@
 using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
-using Avalonia.Media;
-using Avalonia.Styling;
 using Avalonia.VisualTree;
-using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.UI;
 using Xunit;
 
 namespace QuotaSight.UI.Tests;
 
+/// <summary>
+/// Visual contracts of the compact window after the quota-UI removal: the tray host-loss
+/// recovery is unchanged, and the compact window's own surfaces are the observed-usage
+/// empty state and its localized accessibility names.
+/// </summary>
 public sealed class ResidentModeVisualTests
 {
     [AvaloniaFact]
     public void Host_loss_recovers_hidden_resident_window_and_disables_close_to_tray()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         var window = new MainWindow(vm);
         var compact = new CompactQuotaWindow(vm);
         try
@@ -41,7 +42,7 @@ public sealed class ResidentModeVisualTests
     [AvaloniaFact]
     public void Host_loss_preserves_an_already_visible_minimized_window()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         var window = new MainWindow(vm);
         var compact = new CompactQuotaWindow(vm);
         try
@@ -63,7 +64,7 @@ public sealed class ResidentModeVisualTests
     [AvaloniaFact]
     public void Fallback_does_not_activate_or_change_existing_window_state_but_full_show_does()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         var window = new MainWindow(vm);
         try
         {
@@ -82,158 +83,45 @@ public sealed class ResidentModeVisualTests
     }
 
     [AvaloniaFact]
-    public async Task Empty_compact_window_shows_localized_empty_state_instead_of_a_blank_card_list()
+    public async Task Compact_window_without_selection_shows_localized_empty_state_instead_of_a_blank_card_list()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         var window = new CompactQuotaWindow(vm);
         try
         {
             window.Show();
-            await vm.RefreshAsync();
-            var empty = window.FindControl<Border>("CompactEmptyState")!;
+            await vm.RefreshTokScaleAsync();
+            var empty = window.FindControl<Border>("CompactTokScaleEmptyState")!;
 
             Assert.True(empty.IsVisible);
-            Assert.Equal(vm.EmptyStateText, window.FindControl<TextBlock>("CompactEmptyStateText")!.Text);
-            Assert.Equal(vm.EmptyStateDescription, window.FindControl<TextBlock>("CompactEmptyStateDescription")!.Text);
+            Assert.Equal(vm.TokScaleEmptyTitleText, window.FindControl<TextBlock>("CompactTokScaleEmptyTitle")!.Text);
+            Assert.Equal(vm.TokScaleEmptyBodyText, window.FindControl<TextBlock>("CompactTokScaleEmptyBody")!.Text);
         }
         finally
         {
             window.Close();
             vm.Dispose();
         }
-    }
-
-    [AvaloniaFact]
-    public async Task Failure_banner_stays_visible_after_busy_completes_while_cached_cards_remain()
-    {
-        var vm = new MainViewModel(new DemoDashboardSource(), quotaApplication: new FailedRefreshApplication());
-        var window = new CompactQuotaWindow(vm);
-        try
-        {
-            window.Show();
-            var cards = window.FindControl<ItemsControl>("CompactProviderCards")!;
-            Assert.True(cards.IsVisible);
-
-            await vm.RefreshAsync();
-
-            var banner = window.FindControl<Border>("CompactNotificationBanner")!;
-            Assert.False(vm.IsQuotaDataBusy);
-            Assert.True(vm.IsNotificationVisible);
-            Assert.True(banner.IsVisible);
-            Assert.Contains("Temporary fetch failure", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
-            Assert.NotEmpty(vm.Cards);
-            Assert.Equal(vm.NotificationBannerText, AutomationProperties.GetName(banner));
-        }
-        finally
-        {
-            window.Close();
-            vm.Dispose();
-        }
-    }
-
-    [AvaloniaFact]
-    public async Task Compact_quantity_rows_hide_gauge_and_percent_text()
-    {
-        var now = DateTimeOffset.UtcNow;
-        var snapshot = new QuotaSnapshot(ProviderKind.Copilot, "org/user", "AI credits",
-            new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)), 1950, null, null,
-            "credits", now, now, QuotaSource.Delayed, QuotaConfidence.Official, now.AddHours(1),
-            "GitHub Copilot", new(1950, 1200, 750));
-        var vm = new MainViewModel(new SingleCardSource([QuotaPresentationFormatter.Format(snapshot, now)]));
-        var window = new CompactQuotaWindow(vm);
-        try
-        {
-            window.Show();
-            window.UpdateLayout();
-            var card = window.FindControl<ItemsControl>("CompactProviderCards")!;
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Gross 1,950 credits");
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Included 1,200 credits");
-            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.IsVisible && text.Text == "Additional 750 credits");
-            Assert.DoesNotContain(card.GetVisualDescendants().OfType<ProgressBar>(), gauge => gauge.IsVisible);
-            var compositionText = card.GetVisualDescendants().OfType<TextBlock>().Where(text => text.IsVisible).Select(text => text.Text ?? string.Empty).ToArray();
-            Assert.Contains(compositionText, text => text.Contains("Included", StringComparison.Ordinal));
-            Assert.Contains(compositionText, text => text.Contains("Additional", StringComparison.Ordinal));
-            Assert.Contains(compositionText, text => text.Contains("Reference only", StringComparison.Ordinal));
-            Assert.Contains(compositionText, text => text.Contains("not remaining", StringComparison.OrdinalIgnoreCase));
-        }
-        finally { window.Close(); vm.Dispose(); }
     }
 
     [AvaloniaFact]
     public void Compact_accessibility_names_follow_localized_copy()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         var window = new CompactQuotaWindow(vm);
         try
         {
             window.Show();
-            var providers = window.FindControl<ItemsControl>("CompactProviderCards")!;
-            Assert.Equal("Quota providers", AutomationProperties.GetName(providers));
+            var providers = window.FindControl<ItemsControl>("CompactTokScaleCards")!;
+            Assert.Equal("Observed usage (TokScale)", AutomationProperties.GetName(providers));
 
             vm.Language = UiLanguage.Japanese;
-            Assert.Equal("プロバイダー", AutomationProperties.GetName(providers));
-            Assert.NotEqual("Quota providers", AutomationProperties.GetName(providers));
+            Assert.Equal("観測使用量（TokScale）", AutomationProperties.GetName(providers));
         }
         finally
         {
             window.Close();
             vm.Dispose();
         }
-    }
-
-    [AvaloniaFact]
-    public void Compact_rings_resolve_normal_attention_danger_and_over_limit_brushes_in_light_and_dark()
-    {
-        var app = Assert.IsType<App>(Avalonia.Application.Current);
-        var previous = UiSettings.AppliedTheme;
-        var rows = new[] { UsageBand.Normal, UsageBand.Attention, UsageBand.Danger, UsageBand.OverLimit }
-            .Select((band, index) => DemoData.Create(DateTimeOffset.Now)[0].Windows[0] with
-            {
-                Band = band,
-                VisualPercent = index == 3 ? 100 : 50 + index * 10
-            }).ToArray();
-        var source = new SingleCardSource(rows);
-        var window = new CompactQuotaWindow(new MainViewModel(source));
-        try
-        {
-            window.Show();
-            foreach (var variant in new[] { ThemeVariant.Light, ThemeVariant.Dark })
-            {
-                window.RequestedThemeVariant = variant;
-                window.UpdateLayout();
-                var theme = (ResourceDictionary)app.Resources.ThemeDictionaries.First(pair => pair.Key?.ToString() == (variant == ThemeVariant.Light ? "Light" : "Dark")).Value!;
-                var rings = window.FindControl<ItemsControl>("CompactProviderCards")!.GetVisualDescendants().OfType<QuotaRingControl>().ToArray();
-
-                Assert.Single(rings);
-                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeNormalBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].NormalBrush).Color);
-                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeAttentionBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].AttentionBrush).Color);
-                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeDangerBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].DangerBrush).Color);
-                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(theme["GaugeOverBrush"]).Color, Assert.IsAssignableFrom<ISolidColorBrush>(rings[0].OverLimitBrush).Color);
-            }
-        }
-        finally
-        {
-            window.Close();
-            window.ViewModel.Dispose();
-            UiSettings.ApplyTheme(previous switch
-            {
-                var theme when theme == ThemeVariant.Light => ThemeMode.Light,
-                var theme when theme == ThemeVariant.Dark => ThemeMode.Dark,
-                _ => ThemeMode.System
-            });
-        }
-    }
-
-    private sealed class FailedRefreshApplication : IQuotaApplication
-    {
-        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new QuotaRefreshResult([], [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)]));
-    }
-
-    private sealed class SingleCardSource(IReadOnlyList<QuotaRowViewModel> rows) : IDashboardSource
-    {
-        public bool IsDemo => false;
-        public IReadOnlyList<ProviderCardViewModel> Load() =>
-            [new(ProviderKind.OpenCode, "OpenCode Go", "Test account", "#5ED6C0", "Test", false, rows)];
     }
 }

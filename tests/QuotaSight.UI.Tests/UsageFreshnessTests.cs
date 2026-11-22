@@ -34,7 +34,6 @@ public sealed class UsageFreshnessTests
     {
         clock = new MutableTimeProvider(now);
         return new MainViewModel(
-            new EmptyDashboardSource(),
             timeProvider: clock,
             uiDispatcher: new ImmediateUiDispatcher(),
             usageReadPort: port,
@@ -268,7 +267,6 @@ public sealed class UsageFreshnessTests
         };
         var connection = new ReconfigurableUsageReadPort();
         using var configured = new MainViewModel(
-            new EmptyDashboardSource(),
             timeProvider: new MutableTimeProvider(new DateTimeOffset(2026, 11, 20, 5, 0, 0, TimeSpan.Zero)),
             uiDispatcher: new ImmediateUiDispatcher(),
             usageConnectionPort: connection,

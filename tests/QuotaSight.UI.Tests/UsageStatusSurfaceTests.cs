@@ -574,8 +574,8 @@ public sealed class UsageStatusSurfaceTests
     {
         clock = new MutableTimeProvider(Now);
         var viewModel = port is null
-            ? new MainViewModel(new EmptyDashboardSource(), timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), localTimeZone: Tokyo)
-            : new MainViewModel(new EmptyDashboardSource(), timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port, localTimeZone: Tokyo);
+            ? new MainViewModel(timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), localTimeZone: Tokyo)
+            : new MainViewModel(timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), usageReadPort: port, localTimeZone: Tokyo);
         viewModel.Language = language;
         return viewModel;
     }

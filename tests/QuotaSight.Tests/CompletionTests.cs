@@ -540,63 +540,6 @@ public sealed class CompletionTests
     }
 
     [Fact]
-    public async Task Ui_provider_facade_stores_successful_github_device_flow_token_under_github_key()
-    {
-        const string token = "github-access-token";
-        var credentials = new InMemoryCredentialStore();
-        var github = new GitHubDeviceFlowClient(
-            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"access_token\":\"github-access-token\"}"))),
-            "client-id",
-            delay: new NoDelay());
-        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
-        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
-
-        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(token, await credentials.GetAsync("github", default));
-    }
-
-    [Fact]
-    public async Task Ui_provider_facade_does_not_store_failed_github_device_flow_token_or_expose_it()
-    {
-        const string token = "github-access-token-secret";
-        var credentials = new InMemoryCredentialStore();
-        var github = new GitHubDeviceFlowClient(
-            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"error\":\"access_denied\",\"error_description\":\"github-access-token-secret\"}"))),
-            "client-id",
-            delay: new NoDelay());
-        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
-        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
-
-        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
-
-        Assert.False(result.IsSuccess);
-        Assert.Null(await credentials.GetAsync("github", default));
-        Assert.DoesNotContain(token, result.Error ?? string.Empty, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Ui_provider_facade_uses_session_fallback_when_github_secure_store_is_unavailable()
-    {
-        const string token = "github-access-token";
-        var fallback = new InMemoryCredentialStore();
-        var credentials = new FallbackCredentialStore(new FailingCredentialStore(), fallback);
-        var github = new GitHubDeviceFlowClient(
-            new HttpClient(new GitHubResponseHandler(_ => JsonResponse("{\"access_token\":\"github-access-token\"}"))),
-            "client-id",
-            delay: new NoDelay());
-        var facade = new UiProviderFacade(github: github, credentialStore: credentials);
-        var authorization = new DeviceAuthorizationStart("device-code", "user-code", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(1), TimeSpan.Zero);
-
-        var result = await facade.PollGitHubDeviceFlowAsync(authorization, default);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(token, await fallback.GetAsync("github", default));
-        Assert.Equal(CredentialStoreAvailability.Unavailable, credentials.Availability);
-    }
-
-    [Fact]
     public async Task Fallback_get_prefers_session_value_and_primary_success_removes_stale_value()
     {
         var primary = new InMemoryCredentialStore();
@@ -643,18 +586,6 @@ public sealed class CompletionTests
     }
 
     [Fact]
-    public void Ui_composition_root_selects_linux_secret_service_store_on_linux()
-    {
-        if (!OperatingSystem.IsLinux()) return;
-
-        var facade = Assert.IsType<UiProviderFacade>(CompositionRoot.CreateProviderFacade(clientId: "test"));
-        var field = typeof(UiProviderFacade).GetField("credentialStore", BindingFlags.Instance | BindingFlags.NonPublic);
-        var store = field?.GetValue(facade);
-
-        Assert.IsType<FallbackCredentialStore>(store);
-    }
-
-    [Fact]
     public async Task Gh_probe_distinguishes_available_authenticated_from_quota()
     {
         var result = await CreateExitProbe(0).ProbeAsync(default);
@@ -674,14 +605,6 @@ public sealed class CompletionTests
     {
         Assert.Equal(GhProbeStatus.Missing, (await new GhCliProbe("/missing/gh").ProbeAsync(default)).Status);
         Assert.Equal(GhProbeStatus.Timeout, (await CreateTimeoutProbe().ProbeAsync(default)).Status);
-    }
-
-    [Fact]
-    public async Task Provider_facade_exposes_gh_probe_status_without_output()
-    {
-        var result = await new UiProviderFacade(ghProbe: CreateExitProbe(0)).ProbeGitHubCliAsync(default);
-        Assert.Contains("authenticated", result, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("stdout", result, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -765,16 +688,9 @@ public sealed class CompletionTests
     public async Task Settings_changes_are_enabled_and_saved_by_view_model()
     {
         var store = new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
-        var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
+        var vm = new MainViewModel(settingsStore: store);
         vm.SetSettings(new AppSettingsDto(Theme: "Light", Language: "English", RefreshMinutes: 10, OverallThreshold: 80, NotificationsEnabled: true, GithubOAuthClientId: "changed"));
         Assert.Equal("changed", (await store.LoadAsync()).GithubOAuthClientId);
-    }
-
-    [Fact]
-    public async Task Settings_save_recreates_github_factory_with_current_client_id()
-    {
-        var factory = new RecordingGitHubFactory(); var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))), githubFactory: factory);
-        vm.SetSettings(new AppSettingsDto(GithubOAuthClientId: "current")); await Task.Delay(20); Assert.Equal("current", factory.LastClientId);
     }
 
     [Fact]
@@ -787,11 +703,11 @@ public sealed class CompletionTests
     [Fact]
     public async Task Startup_prunes_history()
     {
-        var history = new RecordingHistory(); var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); await vm.InitializeAsync(); Assert.NotNull(history.PrunedBefore);
+        var history = new RecordingHistory(); var vm = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); await vm.InitializeAsync(); Assert.NotNull(history.PrunedBefore);
     }
 
     [Fact]
-    public async Task Startup_keeps_valid_history_available_when_another_day_is_corrupt()
+    public async Task A_corrupt_history_day_notifies_the_banner_and_keeps_startup_alive()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
@@ -804,26 +720,17 @@ public sealed class CompletionTests
 
             await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(new DateOnly(2026, 9, 4), default));
 
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now));
+            var viewModel = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(now));
             await viewModel.InitializeAsync();
 
-            Assert.Contains(viewModel.History.Entries, entry => entry.Account == "acct");
-            Assert.Contains(viewModel.Cards, card => card.Account == "acct");
-            Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
-
-            await viewModel.History.DeleteAllAsync();
-            Assert.True(Directory.Exists(root));
-            Assert.Empty(Directory.EnumerateFiles(root, "*.jsonl"));
+            // The corrupted-history notification is the one quota-history surface the UI
+            // keeps: the banner names the damage without echoing the exception.
+            Assert.Contains("History data is damaged", viewModel.NotificationBannerText, StringComparison.Ordinal);
+            Assert.DoesNotContain("InvalidDataException", viewModel.NotificationBannerText, StringComparison.Ordinal);
+            // The damage did not stop startup: the observed-usage section came up.
+            Assert.True(viewModel.IsTokScaleSectionVisible);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public async Task Manual_add_reloads_jsonl_into_dashboard_and_history()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")); using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero)));
-        var snapshot = new QuotaSnapshot(ProviderKind.ChatGpt, "acct", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1)), 40, 100, null, "%", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, null);
-        await vm.ApplyManualSnapshotAsync(snapshot); await Task.Delay(30); var reloaded = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(new(2026, 9, 5, 12, 0, 0, TimeSpan.Zero))); await reloaded.InitializeAsync(); Assert.Contains(reloaded.Cards, c => c.Account == "acct"); Assert.Contains(reloaded.History.Entries, e => e.Account == "acct");
     }
 
     private static GhCliProbe CreateExitProbe(int exitCode) => OperatingSystem.IsWindows()
@@ -946,7 +853,6 @@ public sealed class CompletionTests
         public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly d, CancellationToken c) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]); public ValueTask DeleteEventAsync(Guid id, CancellationToken c) => ValueTask.CompletedTask; public ValueTask DeleteAsync(DateOnly? d, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportJsonAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask; public ValueTask ExportCsvAsync(Stream o, CancellationToken c) => ValueTask.CompletedTask;
     }
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
-    private sealed class RecordingGitHubFactory : IGitHubClientFactory { public string? LastClientId; public GitHubDeviceFlowClient Create(string clientId) { LastClientId = clientId; return null!; } }
     private sealed class NoDelay : IDeviceFlowDelay { public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken) => ValueTask.CompletedTask; }
     private sealed class GitHubResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
     {

@@ -354,8 +354,8 @@ public sealed class UsageConnectionSettingsUiTests
         public static Scope Create(FakeCredentialStore? store = null)
         {
             var viewModel = store is null
-                ? new MainViewModel(new EmptyDashboardSource())
-                : new MainViewModel(new EmptyDashboardSource(), usageCredentialStore: store);
+                ? new MainViewModel()
+                : new MainViewModel(usageCredentialStore: store);
             return new Scope(new MainWindow(viewModel));
         }
 

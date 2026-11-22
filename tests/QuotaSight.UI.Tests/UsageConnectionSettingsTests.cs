@@ -410,12 +410,10 @@ public sealed class UsageConnectionSettingsTests
         using var harness = Harness.Create();
         await harness.ViewModel.SaveUsageConnectionAsync(Endpoint, ClientId, ClientSecret, CancellationToken.None);
 
-        await harness.ViewModel.SetThresholdAsync(70m, CancellationToken.None);
         await harness.ViewModel.SetThemeAsync(ThemeMode.Dark, CancellationToken.None);
 
         var reloaded = harness.Settings.Load();
         Assert.Equal(Endpoint, reloaded.UsageApiEndpoint);
-        Assert.Equal(70m, reloaded.OverallThreshold);
         Assert.Equal(Endpoint, harness.ViewModel.CurrentSettingsForTests.UsageApiEndpoint);
     }
 
@@ -468,7 +466,6 @@ public sealed class UsageConnectionSettingsTests
         Directory.CreateDirectory(root);
         var store = new LinuxSecretToolCredentialStore(new SecretToolLikeRunner());
         var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)),
             settingsStore: new AppSettingsStore(Path.Combine(root, "config")),
             usageCredentialStore: store,
@@ -524,8 +521,7 @@ public sealed class UsageConnectionSettingsTests
             var handler = new RecordingHandler();
             var settings = new AppSettingsStore(Path.Combine(root, "config"));
             var viewModel = new MainViewModel(
-                new EmptyDashboardSource(),
-                timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)),
+            timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)),
                 settingsStore: settings,
                 usageCredentialStore: store,
                 usageHttpClientFactory: () => new TrackedClient(handler));

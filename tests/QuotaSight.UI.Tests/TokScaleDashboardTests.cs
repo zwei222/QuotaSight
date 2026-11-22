@@ -10,10 +10,12 @@ using Xunit;
 namespace QuotaSight.UI.Tests;
 
 /// <summary>
-/// The dashboard's "observed usage (TokScale)" section: small per-provider cards fed by
-/// the breakdown read port, visible even without a usage connection (an empty state with a
-/// settings shortcut takes its place), refreshed on a longer interval than the usage page,
-/// and never dressed up as a remaining-quota gauge.
+/// The dashboard's "observed usage (TokScale)" section under the user-selected provider
+/// model: cards exist only for providers the user added, observed-but-unselected
+/// providers never become cards, a combination row feeds every provider it contains,
+/// and the empty state is the add-provider guidance (with a note about observations).
+/// Refreshed on a longer interval than the usage page, never dressed up as a remaining
+/// quota gauge.
 /// </summary>
 public sealed class TokScaleDashboardTests
 {
@@ -25,7 +27,7 @@ public sealed class TokScaleDashboardTests
     [AvaloniaFact]
     public async Task WithoutAUsageConnectionTheSectionStaysVisibleWithAnEmptyState()
     {
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedNow(Now));
+        using var viewModel = new MainViewModel(timeProvider: new FixedNow(Now));
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
 
@@ -43,10 +45,9 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task AnAddedClientShowsItsNotObservedCardWithoutAUsageConnection()
+    public async Task AnAddedProviderShowsItsNotObservedCardWithoutAUsageConnection()
     {
-        using var viewModel = new MainViewModel(
-            new EmptyDashboardSource(), timeProvider: new FixedNow(Now), settingsStore: TemporarySettingsStore());
+        using var viewModel = new MainViewModel(timeProvider: new FixedNow(Now), settingsStore: TemporarySettingsStore());
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
 
@@ -64,60 +65,106 @@ public sealed class TokScaleDashboardTests
         Assert.Contains("usage API", viewModel.TokScaleStateText, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ---------- only selected providers get cards ----------
+
     [AvaloniaFact]
-    public async Task RemovingTheConnectionDropsTheObservedDataButKeepsTheSectionAndTrackedCards()
+    public async Task AnObservedProviderTheUserNeverAddedNeverBecomesACard()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 60, 0, 0, 0, 0)], [Cov(60, 60)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port, TemporarySettingsStore());
-        await viewModel.InitializeAsync();
-        await viewModel.TokScaleLoadTask;
-        await viewModel.AddTokScaleProviderAsync("openai");
-        Assert.True(viewModel.IsTokScaleSectionVisible);
-        Assert.Equal(2, viewModel.TokScaleCards.Count);
-
-        await viewModel.ClearUsageConnectionAsync();
-
-        Assert.True(viewModel.IsTokScaleSectionVisible);
-        Assert.Equal("Unconfigured", viewModel.TokScaleState);
-        // The observed data card is gone with the credential it was read with; the added
-        // card survives as a "not observed yet" card and the section itself stays put.
-        var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("openai", card.ProviderKey);
-        Assert.False(card.Observed);
-    }
-
-    // ---------- cards ----------
-
-    [AvaloniaFact]
-    public async Task DetectedClientsGetOneSmallCardEachWithTodayAndWeekTotals()
-    {
-        var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown(
-            [Part("claude", "anthropic", "", 10, 0, 0, 0, 0), Part("codex", "openai", "", 4, 0, 0, 0, 0)],
-            [Cov(14, 14)],
-            [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown(
-            [Part("codex", "openai", "", 120, 0, 0, 0, 0), Part("claude", "anthropic", "", 80, 0, 0, 0, 0)],
-            [Cov(200, 200), Cov(0, 0, "2026-11-16")],
-            [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
 
-        Assert.Equal(2, viewModel.TokScaleCards.Count);
-        // Sorted by the week's total, descending.
-        Assert.Equal("openai", viewModel.TokScaleCards[0].ProviderKey);
-        Assert.Equal("120", viewModel.TokScaleCards[0].WeekText);
-        Assert.Equal("4", viewModel.TokScaleCards[0].TodayText);
-        Assert.Equal("Anthropic", viewModel.TokScaleCards[1].DisplayName);
-        Assert.Equal("80", viewModel.TokScaleCards[1].WeekText);
-        Assert.Equal("10", viewModel.TokScaleCards[1].TodayText);
+        // Anthropic was observed but the user added nothing: no cards, and the empty
+        // state says so while naming that observations exist.
+        Assert.Empty(viewModel.TokScaleCards);
+        Assert.Equal("Empty", viewModel.TokScaleState);
+        Assert.True(viewModel.IsTokScaleEmptyStateVisible);
+        Assert.Contains("observed", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("anthropic", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
     }
 
     [AvaloniaFact]
-    public async Task TheSectionCarriesTheObservationBadgeAndFreshness()
+    public async Task AddingTheObservedProviderRevealsItsCardWithoutAnotherRead()
+    {
+        var port = new ScriptedDualReadPort();
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        using var viewModel = Create(port, TemporarySettingsStore());
+        await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
+        var reads = port.BreakdownCalls;
+
+        await viewModel.AddTokScaleProviderAsync("anthropic");
+
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("anthropic", card.ProviderKey);
+        Assert.Equal("10", card.TodayText);
+        Assert.Equal("80", card.WeekText);
+        // Adding a provider rebuilds from the stored reads; it costs no new read.
+        Assert.Equal(reads, port.BreakdownCalls);
+    }
+
+    // ---------- combination rows feed every provider they contain ----------
+
+    [AvaloniaFact]
+    public async Task ACombinationRowFeedsEachContainedProviderAndCarriesTheSharedNotice()
+    {
+        var port = new ScriptedDualReadPort();
+        port.Breakdown.Enqueue(() => Breakdown(
+            [Part("claude", "deepseek,opencode_go", "model-a", 12, 0, 0, 0, 0), Part("codex", "deepseek", "model-a", 100, 0, 0, 0, 0)],
+            [Cov(112, 112)],
+            [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown(
+            [Part("claude", "deepseek,opencode_go", "model-a", 34, 0, 0, 0, 0), Part("codex", "opencode_go", "model-b", 70, 0, 0, 0, 0)],
+            [Cov(104, 104)],
+            [Col("col-a", 1, Now.AddHours(-1))]));
+        using var viewModel = Create(port, TemporarySettingsStore());
+        await viewModel.InitializeAsync();
+        await viewModel.AddTokScaleProviderAsync("deepseek");
+        await viewModel.AddTokScaleProviderAsync("opencode_go");
+        await viewModel.TokScaleLoadTask;
+
+        Assert.Equal(2, viewModel.TokScaleCards.Count);
+        var deepseek = viewModel.TokScaleCards.Single(card => card.ProviderKey == "deepseek");
+        var opencode = viewModel.TokScaleCards.Single(card => card.ProviderKey == "opencode_go");
+        Assert.Equal("112", deepseek.TodayText);
+        Assert.Equal("34", deepseek.WeekText);
+        Assert.Equal("12", opencode.TodayText);
+        Assert.Equal("104", opencode.WeekText);
+        Assert.True(deepseek.IsMultiProvider);
+        Assert.True(opencode.IsMultiProvider);
+        Assert.Contains("shared", deepseek.MultiProviderText, StringComparison.OrdinalIgnoreCase);
+        // There is no card for the combination itself.
+        Assert.DoesNotContain(viewModel.TokScaleCards, card => card.ProviderKey.Contains(',', StringComparison.Ordinal));
+    }
+
+    // ---------- empty state with observations ----------
+
+    [AvaloniaFact]
+    public async Task WithNothingSelectedButOnlyUnknownProvidersObservedTheEmptyStateStaysPlain()
+    {
+        var port = new ScriptedDualReadPort();
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "model-a", 7, 0, 0, 0, 0)], [Cov(7, 7)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "model-a", 70, 0, 0, 0, 0)], [Cov(70, 70)], [Col("col-a", 1, Now.AddHours(-1))]));
+        using var viewModel = Create(port);
+        await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
+
+        // The empty provider key is data, never a provider: it is not a card, not a
+        // selectable choice and not counted as an observed provider.
+        Assert.Empty(viewModel.TokScaleCards);
+        Assert.True(viewModel.IsTokScaleEmptyStateVisible);
+        Assert.Contains("provider", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("observed through the usage API", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---------- badge and freshness ----------
+
+    [AvaloniaFact]
+    public async Task TheSectionCarriesTheObservationBadgeTheSharedNoteAndFreshness()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-2))]));
@@ -130,12 +177,14 @@ public sealed class TokScaleDashboardTests
         Assert.Contains("観測", viewModel.TokScaleBadgeText, StringComparison.Ordinal);
         Assert.Contains("推定", viewModel.TokScaleBadgeText, StringComparison.Ordinal);
         Assert.Contains("他端末", viewModel.TokScaleBadgeText, StringComparison.Ordinal);
+        // The badge discloses that card totals overlap on combination rows.
+        Assert.Contains("共有", viewModel.TokScaleBadgeText, StringComparison.Ordinal);
         Assert.Contains("2026-11-22 10:00", viewModel.TokScaleFreshnessText, StringComparison.Ordinal);
         Assert.False(viewModel.IsTokScaleLoading);
     }
 
     [AvaloniaFact]
-    public async Task AnEmptyDetectionStatesThatNoClientWasSeen()
+    public async Task AnEmptyDetectionStatesThatNoProviderWasSeen()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([], [Cov(0, 0)], [Col("col-a", 1, null)]));
@@ -147,12 +196,12 @@ public sealed class TokScaleDashboardTests
         Assert.True(viewModel.IsTokScaleSectionVisible);
         Assert.Empty(viewModel.TokScaleCards);
         Assert.Equal("Empty", viewModel.TokScaleState);
-        // Connected but without data: the empty state names the next step (add a provider
-        // or wait for a collector), and there is no settings shortcut to push.
+        // Connected but with nothing selected and nothing observed: the empty state names
+        // the next step, and there is no settings shortcut to push.
         Assert.True(viewModel.IsTokScaleEmptyStateVisible);
         Assert.False(viewModel.IsTokScaleUnconfigured);
         Assert.Contains("provider", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("collector", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("observed through the usage API", viewModel.TokScaleEmptyBodyText, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------- refresh interval ----------
@@ -163,8 +212,9 @@ public sealed class TokScaleDashboardTests
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port);
+        using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
+        await viewModel.AddTokScaleProviderAsync("anthropic");
         await viewModel.TokScaleLoadTask;
         Assert.Equal(2, port.BreakdownCalls);
 
@@ -196,8 +246,9 @@ public sealed class TokScaleDashboardTests
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port);
+        using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
+        await viewModel.AddTokScaleProviderAsync("anthropic");
         await viewModel.TokScaleLoadTask;
 
         port.Clock.Advance(MainViewModel.TokScaleRefreshInterval + TimeSpan.FromMinutes(1));
@@ -215,13 +266,14 @@ public sealed class TokScaleDashboardTests
     // ---------- on the real window ----------
 
     [AvaloniaFact]
-    public async Task TheSectionRendersPerClientCardsWithTheBadgeOnTheWindow()
+    public async Task TheSectionRendersPerProviderCardsWithTheBadgeOnTheWindow()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port);
+        using var viewModel = Create(port, TemporarySettingsStore());
         viewModel.Language = UiLanguage.Japanese;
+        await viewModel.AddTokScaleProviderAsync("anthropic");
         var window = new MainWindow(viewModel);
         try
         {
@@ -232,7 +284,6 @@ public sealed class TokScaleDashboardTests
 
             var section = window.FindControl<Border>("TokScaleSection")!;
             Assert.True(section.IsVisible);
-            var cards = window.FindControl<ItemsControl>("TokScaleCards")!;
             Assert.Single(viewModel.TokScaleCards);
             Assert.Contains("観測使用量（TokScale）", viewModel.TokScaleTitleText, StringComparison.Ordinal);
             Assert.Contains("今日 10", viewModel.TokScaleCards[0].SummaryText, StringComparison.Ordinal);
@@ -249,7 +300,8 @@ public sealed class TokScaleDashboardTests
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
-        using var viewModel = Create(port);
+        using var viewModel = Create(port, TemporarySettingsStore());
+        await viewModel.AddTokScaleProviderAsync("anthropic");
         var window = new MainWindow(viewModel);
         try
         {
@@ -281,7 +333,7 @@ public sealed class TokScaleDashboardTests
     [AvaloniaFact]
     public async Task WithoutAUsageConnectionTheSectionShowsTheEmptyStateAndASettingsShortcut()
     {
-        using var viewModel = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedNow(Now));
+        using var viewModel = new MainViewModel(timeProvider: new FixedNow(Now));
         var window = new MainWindow(viewModel);
         try
         {
@@ -301,10 +353,10 @@ public sealed class TokScaleDashboardTests
         finally { window.Close(); }
     }
 
-    // ---------- usage-only cards for catalog clients ----------
+    // ---------- usage-only cards for catalog providers ----------
 
     [AvaloniaFact]
-    public async Task AnAddedClientWithoutObservationsGetsANotObservedCard()
+    public async Task AnAddedProviderWithoutObservationsGetsANotObservedCard()
     {
         var port = new ScriptedDualReadPort();
         using var viewModel = Create(port, TemporarySettingsStore());
@@ -352,28 +404,6 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task ATrackedProviderWithoutAttributionGetsItsNotObservedCard()
-    {
-        var port = new ScriptedDualReadPort();
-        using var viewModel = Create(port, TemporarySettingsStore());
-        await viewModel.InitializeAsync();
-
-        await viewModel.AddTokScaleProviderAsync("deepseek");
-        await viewModel.TokScaleLoadTask;
-
-        Assert.True(viewModel.IsTokScaleSectionVisible);
-        var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("deepseek", card.ProviderKey);
-        Assert.Equal("DeepSeek", card.DisplayName);
-        Assert.False(card.Observed);
-        Assert.Equal("0", card.TodayText);
-        Assert.Equal("0", card.WeekText);
-        Assert.Contains("Not observed yet", card.SummaryText, StringComparison.Ordinal);
-        // The card is an observation surface, never a quota: the state stays Ready.
-        Assert.Equal("Ready", viewModel.TokScaleState);
-    }
-
-    [AvaloniaFact]
     public async Task RemovingTheTrackedProviderDropsItsCardAgain()
     {
         var port = new ScriptedDualReadPort();
@@ -393,34 +423,38 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task ObservedProvidersKeepTheirDataCardsNextToTheTrackedOnes()
+    public async Task RemovingTheConnectionDropsTheObservedDataButKeepsTheSectionAndTrackedCards()
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 60, 0, 0, 0, 0)], [Cov(60, 60)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
+        await viewModel.AddTokScaleProviderAsync("openai");
         await viewModel.TokScaleLoadTask;
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Single(viewModel.TokScaleCards);
 
-        await viewModel.AddTokScaleProviderAsync("nous");
+        await viewModel.ClearUsageConnectionAsync();
 
-        Assert.Equal(2, viewModel.TokScaleCards.Count);
-        var observed = viewModel.TokScaleCards.Single(card => card.Observed);
-        Assert.Equal("anthropic", observed.ProviderKey);
-        Assert.Equal("80", observed.WeekText);
-        var tracked = viewModel.TokScaleCards.Single(card => !card.Observed);
-        Assert.Equal("nous", tracked.ProviderKey);
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        Assert.Equal("Unconfigured", viewModel.TokScaleState);
+        // The observed data card is gone with the credential it was read with; the added
+        // card survives as a "not observed yet" card and the section itself stays put.
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("openai", card.ProviderKey);
+        Assert.False(card.Observed);
     }
 
     // ---------- settings compatibility ----------
 
     [AvaloniaFact]
-    public async Task AStoredClientListIsKeptInSettingsButNeverBecomesCards()
+    public async Task AStoredClientListIsKeptInSettingsButNeverBecomesCardsAndNothingIsAutoSelected()
     {
         // A settings file written before provider cards carries tracked client ids. They
         // are read and preserved verbatim — destroying a user's saved list would be
-        // data loss — but clients are no longer a card source, and an observed provider
-        // becomes a card without any list entry.
+        // data loss — but clients are no longer a card source, and an empty tracked
+        // list stays empty: observations never auto-select a provider.
         var store = TemporarySettingsStore();
         await store.SaveAsync(new AppSettingsDto(TokScaleClients: ["antigravity-cli", "grok"]));
         var port = new ScriptedDualReadPort();
@@ -431,8 +465,8 @@ public sealed class TokScaleDashboardTests
         await viewModel.TokScaleLoadTask;
 
         // The legacy ids never turn into cards, and nothing else was added.
-        var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("anthropic", card.ProviderKey);
+        Assert.Empty(viewModel.TokScaleCards);
+        Assert.True(viewModel.IsTokScaleEmptyStateVisible);
 
         // A later save keeps the legacy list untouched next to the new field.
         await viewModel.AddTokScaleProviderAsync("openai");
@@ -457,12 +491,10 @@ public sealed class TokScaleDashboardTests
 
             viewModel.OpenProviderFlow();
             window.FindControl<ComboBox>("ProviderPicker")!.SelectedItem =
-                viewModel.ProviderChoices.Single(choice => choice.TokScaleProviderId == "openai");
+                viewModel.ProviderChoices.Single(choice => choice.ProviderId == "openai");
             window.UpdateLayout();
 
             Assert.True(viewModel.IsTokScaleProviderPanelVisible);
-            Assert.False(viewModel.IsManualProviderPanelVisible);
-            Assert.False(viewModel.IsCodexProviderPanelVisible);
             var panel = window.FindControl<Border>("TokScalePanel")!;
             Assert.True(panel.IsVisible);
             Assert.Contains("OpenAI", viewModel.TokScaleFlowTitleText, StringComparison.Ordinal);
@@ -487,7 +519,6 @@ public sealed class TokScaleDashboardTests
     private static MainViewModel Create(ScriptedDualReadPort port, AppSettingsStore? settingsStore = null)
     {
         var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             timeProvider: port.Clock,
             uiDispatcher: new ImmediateUiDispatcher(),
             settingsStore: settingsStore,
