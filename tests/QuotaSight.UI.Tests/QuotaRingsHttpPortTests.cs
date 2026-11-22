@@ -8,6 +8,68 @@ public sealed class QuotaRingsHttpPortTests
 {
     private static readonly DateTimeOffset Fixed = DateTimeOffset.Parse("2026-11-22T01:30:00Z");
 
+    private static QuotaProviderValue Claude(QuotaFreshness freshness, DateTimeOffset? observed, DateTimeOffset? collected = null) =>
+        new(QuotaProvider.Claude, QuotaProviderStatus.Available, freshness, observed, [new(QuotaWindow.Session, 4200, null)], false, collected);
+
+    [Fact]
+    public void MissingObservationFallsBackToCollectionTimeLabelledAsCollected()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:30:00Z");
+        var quota = new LatestQuota(now.AddMinutes(-7), [Claude(QuotaFreshness.Unknown, null)]);
+        var card = Assert.Single(QuotaCardProjection.Project(quota, japanese: true, now));
+        Assert.Equal("収集 7分前", card.FreshnessText);
+        Assert.Equal("Collected 7m ago", Assert.Single(QuotaCardProjection.Project(quota, japanese: false, now)).FreshnessText);
+        Assert.Equal("42%", card.CenterText);
+        Assert.True(card.IsStale);
+    }
+
+    [Fact]
+    public void ProviderCollectionTimeWinsOverSectionCollectionTime()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:30:00Z");
+        var quota = new LatestQuota(now.AddMinutes(-1), [Claude(QuotaFreshness.Unknown, null, now.AddMinutes(-20))]);
+        Assert.Equal("収集 20分前", Assert.Single(QuotaCardProjection.Project(quota, japanese: true, now)).FreshnessText);
+    }
+
+    [Fact]
+    public void ObservationTimeStillWinsAndIsNotLabelledAsCollected()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:30:00Z");
+        var quota = new LatestQuota(now.AddMinutes(-1), [Claude(QuotaFreshness.Fresh, now.AddMinutes(-9), now.AddMinutes(-1))]);
+        Assert.Equal("9分前", Assert.Single(QuotaCardProjection.Project(quota, japanese: true, now)).FreshnessText);
+    }
+
+    [Fact]
+    public void CollectionTimeOlderThanTwelveHoursWarnsAndCachedKeepsItsRule()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:30:00Z");
+        var old = Assert.Single(QuotaCardProjection.Project(new LatestQuota(now.AddHours(-13), [Claude(QuotaFreshness.Unknown, null)]), japanese: true, now));
+        Assert.Equal("収集 13時間前の値", old.FreshnessText);
+        Assert.True(old.IsWarning);
+        var cached = Assert.Single(QuotaCardProjection.Project(new LatestQuota(now.AddMinutes(-3), [Claude(QuotaFreshness.Cached, null)]), japanese: true, now));
+        Assert.Equal("キャッシュ · 収集 3分前", cached.FreshnessText);
+        Assert.False(cached.IsWarning);
+    }
+
+    [Fact]
+    public void NeitherTimeKeepsUnknownText()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:30:00Z");
+        var card = Assert.Single(QuotaCardProjection.Project(new LatestQuota(DateTimeOffset.MinValue, [Claude(QuotaFreshness.Unknown, null)]), japanese: true, now));
+        Assert.Equal("取得時刻不明", card.FreshnessText);
+    }
+
+    [Fact]
+    public async Task ParserAttachesEachSnapshotCollectionTimeToItsProviders()
+    {
+        const string json = """{"snapshots":[{"collectedAt":"2026-11-22T01:00:00Z","providers":[{"provider":"claude","status":"available","freshness":"unknown","observedAt":null,"windows":[{"window":"session","remainingBasisPoints":1000,"resetsAt":null}]}]},{"collectedAt":"2026-11-22T02:00:00Z","providers":[{"provider":"codex","status":"available","freshness":"unknown","observedAt":null,"windows":[{"window":"five-hour","remainingBasisPoints":2000,"resetsAt":null}]}]}]}""";
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }));
+        var port = new HttpQuotaReadPort(client, new Uri("https://usage.test"), "owner", new TestCredentialProvider());
+        var quota = await port.ReadLatestAsync(CancellationToken.None);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-22T01:00:00Z"), quota.Providers.Single(p => p.Provider == QuotaProvider.Claude).CollectedAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-22T02:00:00Z"), quota.Providers.Single(p => p.Provider == QuotaProvider.Codex).CollectedAt);
+    }
+
     [Fact]
     public void CenterAndHighlightUseTheSmallestValidFiniteWindow()
     {
@@ -29,7 +91,7 @@ public sealed class QuotaRingsHttpPortTests
     public void UnlimitedOnlyCenterHasNoQuotaAndFiniteZeroRemainsDistinctFromUnknown()
     {
         var now = DateTimeOffset.Parse("2026-11-23T00:04:00Z");
-        var copilot = new LatestQuota(now, [new QuotaProviderValue(QuotaProvider.Copilot, QuotaProviderStatus.Available, QuotaFreshness.Unknown, null, [
+        var copilot = new LatestQuota(DateTimeOffset.MinValue, [new QuotaProviderValue(QuotaProvider.Copilot, QuotaProviderStatus.Available, QuotaFreshness.Unknown, null, [
             new(QuotaWindow.Premium, null, null, true), new(QuotaWindow.Chat, null, null, true), new(QuotaWindow.Completions, null, null, true)])]);
         var card = Assert.Single(QuotaCardProjection.Project(copilot, japanese: true, now));
         Assert.Equal("無制限", card.CenterText);

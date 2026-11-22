@@ -9,7 +9,7 @@ public enum QuotaWindow { Session, FiveHour, Rolling, Weekly, Monthly, Premium, 
 public enum QuotaFreshness { Fresh, Cached, Unknown }
 public enum QuotaProviderStatus { Available, Unavailable }
 public sealed record QuotaWindowValue(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool Unlimited = false);
-public sealed record QuotaProviderValue(QuotaProvider Provider, QuotaProviderStatus Status, QuotaFreshness Freshness, DateTimeOffset? ObservedAt, IReadOnlyList<QuotaWindowValue> Windows, bool MultipleSources = false);
+public sealed record QuotaProviderValue(QuotaProvider Provider, QuotaProviderStatus Status, QuotaFreshness Freshness, DateTimeOffset? ObservedAt, IReadOnlyList<QuotaWindowValue> Windows, bool MultipleSources = false, DateTimeOffset? CollectedAt = null);
 public sealed record LatestQuota(DateTimeOffset CollectedAt, IReadOnlyList<QuotaProviderValue> Providers);
 public sealed record QuotaCardWindow(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool IsStale, bool Unlimited, string WindowText, string RemainingText, string ResetText, string FreshnessText, bool Expired = false)
 {
@@ -56,8 +56,13 @@ public static class QuotaCardProjection
         {
             var multiple = provider.MultipleSources;
             var unavailable = multiple || provider.Status != QuotaProviderStatus.Available;
-            var age = provider.ObservedAt is { } observed ? FormatAge(current - observed, japanese) : string.Empty;
-            var oldObservation = provider.ObservedAt is { } old && current - old > TimeSpan.FromHours(12);
+            // The vendor observation time is preferred; only when it is absent does the collector's snapshot
+            // collection time stand in, and it is labelled as such so the two are never confused.
+            var collected = provider.ObservedAt is null ? (provider.CollectedAt ?? (quota.CollectedAt > DateTimeOffset.MinValue ? quota.CollectedAt : null)) : null;
+            var reference = provider.ObservedAt ?? collected;
+            var age = reference is { } at0 ? FormatAge(current - at0, japanese) : string.Empty;
+            if (collected is not null) age = (japanese ? "収集 " : "Collected ") + age;
+            var oldObservation = reference is { } old && current - old > TimeSpan.FromHours(12);
             var freshnessStale = forceStale || unavailable || provider.Freshness != QuotaFreshness.Fresh || oldObservation;
             var sourceWindows = unavailable ? Array.Empty<QuotaWindowValue>() : provider.Windows.ToArray();
             var windows = sourceWindows.OrderBy(window => Array.IndexOf(Order, window.Window)).Take(3).Select(window =>
@@ -113,7 +118,7 @@ public static class QuotaCardProjection
             var freshness = multiple ? (japanese ? "複数の送信元" : "Multiple sources")
                 : unavailable ? (japanese ? "取得できませんでした" : "Unavailable")
                 : forceStale ? (japanese ? "古いデータ" : "Stale")
-                : provider.Freshness == QuotaFreshness.Unknown || provider.ObservedAt is null ? (japanese ? "取得時刻不明" : "Time unknown")
+                : reference is null ? (japanese ? "取得時刻不明" : "Time unknown")
                 : oldObservation ? (japanese ? age + "の値" : age + " old")
                 : provider.Freshness == QuotaFreshness.Cached ? (japanese ? "キャッシュ · " + age : "Cached · " + age)
                 : age;
@@ -190,8 +195,9 @@ public sealed class HttpQuotaReadPort(HttpClient client, Uri origin, string iden
             Exact(snapshot, "collectedAt", "providers");
             var time = Instant(snapshot.GetProperty("collectedAt"));
             if (time > collectedAt) collectedAt = time;
-            foreach (var value in ParseProviders(snapshot.GetProperty("providers")))
+            foreach (var parsed in ParseProviders(snapshot.GetProperty("providers")))
             {
+                var value = parsed with { CollectedAt = time };
                 if (!found.TryGetValue(value.Provider, out var list)) { found[value.Provider] = list = []; order.Add(value.Provider); }
                 list.Add(value);
             }
