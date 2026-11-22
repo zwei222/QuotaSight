@@ -13,6 +13,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { hasScope, type Authenticator, type Principal } from './auth';
 import { readBoundedBodyText } from './body';
 import { ApiError, errorBody } from './errors';
+import { parseQuota } from './quota';
 import {
   MAX_BREAKDOWN_QUERY_SPAN_DAYS,
   canonicalSnapshotJson,
@@ -146,6 +147,44 @@ export function createApp(options: AppOptions) {
       changedDays: receipt.changedDays,
       ignoredReductions: receipt.ignoredReductions,
     });
+  });
+
+  app.put('/v1/collectors/:collectorId/quota', async (c) => {
+    const principal = c.get('principal');
+    if (!hasScope(principal, 'usage:write')) throw new ApiError(403, 'forbidden_scope', 'This credential cannot write usage snapshots.');
+    const collectorId = parseCollectorId(c.req.param('collectorId'));
+    if (principal.collectorId !== collectorId) throw new ApiError(403, 'forbidden_collector', 'This credential cannot write to that collector.');
+    if (!isJsonMediaType(c.req.header('content-type'))) throw new ApiError(415, 'unsupported_media_type', 'Content-Type must be application/json.');
+    const text = await readBoundedBodyText(c.req.raw, 4 * 1024);
+    let raw: unknown;
+    try { raw = JSON.parse(text); } catch { throw new ApiError(400, 'invalid_json', 'The request body must be valid JSON.'); }
+    const snapshot = parseQuota(raw, now());
+    const collector = await loadOwnedCollector(c.env.DB, collectorId, principal.ownerId);
+    if (collector === null) throw new ApiError(404, 'collector_not_found', 'No such collector.');
+    if (snapshot.generation !== collector.activeGeneration) throw new ApiError(409, 'generation_inactive', 'The snapshot generation is not active.');
+    const body = JSON.stringify({ collectedAt: snapshot.collectedAt, providers: snapshot.providers });
+    await c.env.DB.prepare(`INSERT INTO quota_snapshot (collector_id, owner_id, generation, collected_at, payload_json)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(collector_id, generation) DO UPDATE SET
+      owner_id = excluded.owner_id, collected_at = excluded.collected_at, payload_json = excluded.payload_json
+      WHERE excluded.collected_at > quota_snapshot.collected_at`)
+      .bind(collector.id, collector.ownerId, snapshot.generation, snapshot.collectedAt, body).run();
+    return c.json({ status: 'accepted' });
+  });
+
+  app.get('/v1/quota/latest', async (c) => {
+    const principal = c.get('principal');
+    if (!hasScope(principal, 'usage:read') || principal.collectorId !== null) throw new ApiError(403, 'forbidden_scope', 'This credential cannot read owner-wide usage.');
+    const rows = await c.env.DB.prepare(`SELECT q.collected_at, q.payload_json FROM quota_snapshot q
+      JOIN collectors c ON c.id = q.collector_id AND c.owner_id = q.owner_id AND c.active_generation = q.generation
+      WHERE q.owner_id = ? ORDER BY q.collected_at DESC LIMIT 65`).bind(principal.ownerId).all<{ collected_at: string; payload_json: string }>();
+    if (rows.results.length > 64) throw new ApiError(422, 'result_too_large', 'The quota response exceeds its row limit.', { reason: 'too_many_rows', limitRows: 64 });
+    const snapshots = rows.results.map(row => {
+      const payload = JSON.parse(row.payload_json) as { providers: unknown[] };
+      return { collectedAt: row.collected_at, providers: payload.providers };
+    });
+    const responseBody = { snapshots };
+    if (new TextEncoder().encode(JSON.stringify(responseBody)).byteLength > 256 * 1024) throw new ApiError(422, 'result_too_large', 'The quota response exceeds its byte limit.', { reason: 'response_too_large', limitBytes: 256 * 1024 });
+    return c.json(responseBody);
   });
 
   app.get('/v1/usage/daily', async (c) => {

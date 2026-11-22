@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text;
 
 namespace QuotaSight.Collector;
 
@@ -7,7 +8,7 @@ namespace QuotaSight.Collector;
 public static class TokscaleUsageQuotaContract
 {
     public const int MaxInputBytes = 256 * 1024;
-    private static readonly string[] SupportedProviders = ["Claude", "Codex", "OpenCode Go"];
+    private static readonly string[] SupportedProviders = ["Claude", "Codex", "OpenCode Go", "antigravity-gemini", "antigravity-claude-gpt", "Grok", "Copilot"];
     private const int MaxProviders = 64;
     private const int MaxMetricsPerProvider = 128;
     private const int MaxJsonDepth = 8;
@@ -17,7 +18,7 @@ public static class TokscaleUsageQuotaContract
     /// are returned; spend/balance fields and all account, plan, credential and free-text
     /// fields are deliberately excluded from the result.
     /// </summary>
-    public static TokscaleUsageQuotaParseResult Parse(ReadOnlySpan<byte> utf8)
+    public static TokscaleUsageQuotaParseResult Parse(ReadOnlySpan<byte> utf8, bool grokBuildFirstParty = false)
     {
         if (utf8.IsEmpty || utf8.Length > MaxInputBytes)
         {
@@ -57,15 +58,23 @@ public static class TokscaleUsageQuotaContract
                     return TokscaleUsageQuotaParseResult.Malformed;
                 }
 
-                if (!IsSupportedProvider(provider))
+                if (provider == "Grok Bot")
                 {
                     continue;
                 }
 
-                if (!groups.TryGetValue(provider, out var rows))
+                var key = provider switch
+                {
+                    "Claude" or "Codex" or "OpenCode Go" or "Grok" or "Copilot" => provider,
+                    "Antigravity" when TryAntigravityProvider(output, out var antigravityId) => antigravityId,
+                    _ => null,
+                };
+                if (key is null) continue;
+
+                if (!groups.TryGetValue(key, out var rows))
                 {
                     rows = new List<JsonElement>();
-                    groups.Add(provider, rows);
+                    groups.Add(key, rows);
                 }
 
                 rows.Add(output);
@@ -79,27 +88,36 @@ public static class TokscaleUsageQuotaContract
                     continue;
                 }
 
-                var selected = SelectAccount(rows);
+                var sourceProvider = provider.StartsWith("antigravity-", StringComparison.Ordinal) ? "Antigravity" : provider;
+                if (provider.StartsWith("antigravity-", StringComparison.Ordinal) && rows.Count != 1)
+                {
+                    providers.Add(Unavailable(sourceProvider, provider));
+                    continue;
+                }
+                if (provider == "Grok" && !grokBuildFirstParty)
+                {
+                    providers.Add(Unavailable("Grok", "grok-build"));
+                    continue;
+                }
+                var selected = provider.StartsWith("antigravity-", StringComparison.Ordinal) ? rows[0] : SelectAccount(rows);
                 if (selected is null)
                 {
-                    providers.Add(new TokscaleUsageQuotaProvider(
-                        provider,
-                        TokscaleUsageQuotaProviderStatus.Unavailable,
-                        TokscaleUsageQuotaFreshness.Unknown,
-                        Array.Empty<TokscaleUsageQuotaWindow>()));
+                    providers.Add(Unavailable(sourceProvider, WireId(provider)));
                     continue;
                 }
 
-                if (!TryReadProvider(selected.Value, provider, out var freshness, out var windows))
+                if (!TryReadProvider(selected.Value, provider, out var freshness, out var windows, out var observedAt))
                 {
                     return TokscaleUsageQuotaParseResult.Malformed;
                 }
 
                 providers.Add(new TokscaleUsageQuotaProvider(
-                    provider,
+                    sourceProvider,
                     TokscaleUsageQuotaProviderStatus.Available,
                     freshness,
-                    windows));
+                    windows,
+                    observedAt,
+                    WireId(provider)));
             }
 
             return TokscaleUsageQuotaParseResult.Success(providers);
@@ -118,10 +136,12 @@ public static class TokscaleUsageQuotaContract
         JsonElement output,
         string provider,
         out TokscaleUsageQuotaFreshness freshness,
-        out IReadOnlyList<TokscaleUsageQuotaWindow> windows)
+        out IReadOnlyList<TokscaleUsageQuotaWindow> windows,
+        out DateTime? outputObservedAt)
     {
         freshness = TokscaleUsageQuotaFreshness.Unknown;
         windows = Array.Empty<TokscaleUsageQuotaWindow>();
+        outputObservedAt = null;
 
         if (TryGetOptional(output, "freshness", out var freshValue))
         {
@@ -129,13 +149,14 @@ public static class TokscaleUsageQuotaContract
             {
                 if (HasDuplicateProperties(freshValue)
                     || !TryGetBoolean(freshValue, "stale", out var isStale)
-                    || !TryGetNumber(freshValue, "fetched_at", out var fetchedAt)
-                    || fetchedAt < 0)
+                    || !TryGetInteger(freshValue, "fetched_at", out var fetchedAt)
+                    || fetchedAt < 0 || fetchedAt > DateTimeOffset.MaxValue.ToUnixTimeSeconds())
                 {
                     return false;
                 }
 
                 freshness = isStale ? TokscaleUsageQuotaFreshness.Stale : TokscaleUsageQuotaFreshness.Fresh;
+                outputObservedAt = DateTimeOffset.FromUnixTimeSeconds(fetchedAt).UtcDateTime;
             }
             else if (freshValue.ValueKind != JsonValueKind.Null)
             {
@@ -171,6 +192,12 @@ public static class TokscaleUsageQuotaContract
                 return false;
             }
 
+            var unlimited = string.Equals(provider, "Copilot", StringComparison.Ordinal)
+                && TryGetOptional(metric, "remaining_label", out var remainingLabel)
+                && remainingLabel.ValueKind == JsonValueKind.String
+                && string.Equals(remainingLabel.GetString(), "unlimited", StringComparison.Ordinal);
+            if (unlimited) percent = null;
+
             string? resetAt = null;
             if (TryGetOptional(metric, "resets_at", out var resetValue)
                 && !TryReadReset(resetValue, out resetAt))
@@ -182,7 +209,8 @@ public static class TokscaleUsageQuotaContract
                 label,
                 percent,
                 percent is null ? TokscaleUsageQuotaValueStatus.Unknown : TokscaleUsageQuotaValueStatus.Known,
-                resetAt));
+                resetAt,
+                unlimited));
         }
 
         windows = windowsFound;
@@ -232,8 +260,41 @@ public static class TokscaleUsageQuotaContract
         && TryGetBoolean(account, "is_active", out var isActive)
         && isActive;
 
-    private static bool IsSupportedProvider(string provider) =>
-        provider is "Claude" or "Codex" or "OpenCode Go";
+    private static TokscaleUsageQuotaProvider Unavailable(string provider, string wireId) =>
+        new(provider, TokscaleUsageQuotaProviderStatus.Unavailable, TokscaleUsageQuotaFreshness.Unknown,
+            Array.Empty<TokscaleUsageQuotaWindow>(), null, wireId);
+
+    private static string WireId(string key) => key switch
+    {
+        "Claude" => "claude",
+        "Codex" => "codex",
+        "OpenCode Go" => "opencode-go",
+        "antigravity-gemini" => "antigravity-gemini",
+        "antigravity-claude-gpt" => "antigravity-claude-gpt",
+        "Grok" => "grok-build",
+        "Copilot" => "copilot",
+        _ => throw new InvalidOperationException("Unsupported provider key."),
+    };
+
+    private static bool TryAntigravityProvider(JsonElement output, out string providerId)
+    {
+        providerId = string.Empty;
+        if (!TryGetOptional(output, "account", out var account) || account.ValueKind != JsonValueKind.Object
+            || HasDuplicateProperties(account)
+            || !TryGetString(account, "id", out var accountId)
+            || !TryGetString(account, "label", out var label)) return false;
+        if (accountId == "gemini-models" && label == "Gemini Models")
+        {
+            providerId = "antigravity-gemini";
+            return true;
+        }
+        if (accountId == "claude-and-gpt-models" && label == "Claude and GPT Models")
+        {
+            providerId = "antigravity-claude-gpt";
+            return true;
+        }
+        return false;
+    }
 
     // Evidence from the pinned TokScale provider modules: Claude emits the
     // account-wide Session/Weekly windows and separate model-scoped rows;
@@ -245,6 +306,9 @@ public static class TokscaleUsageQuotaContract
         "Claude" => label is "Session" or "Weekly",
         "Codex" => label is "5h" or "Weekly",
         "OpenCode Go" => label is "Rolling" or "Weekly" or "Monthly",
+        "antigravity-gemini" or "antigravity-claude-gpt" => label is "5h" or "weekly",
+        "Grok" => label is "Weekly" or "Monthly",
+        "Copilot" => label is "Premium" or "Chat" or "Completions",
         _ => false,
     };
 
@@ -281,12 +345,15 @@ public static class TokscaleUsageQuotaContract
 
         var text = element.GetString();
         if (string.IsNullOrEmpty(text)
-            || !DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
+            || !text.Contains('T')
+            || !(text.EndsWith('Z') || text.EndsWith("+00:00", StringComparison.Ordinal))
+            || !DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var timestamp)
+            || timestamp.Offset != TimeSpan.Zero)
         {
             return true;
         }
 
-        value = text;
+        value = timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
         return true;
     }
 
@@ -313,6 +380,14 @@ public static class TokscaleUsageQuotaContract
 
         value = element.GetBoolean();
         return true;
+    }
+
+    private static bool TryGetInteger(JsonElement parent, string name, out long value)
+    {
+        value = 0;
+        return TryGetRequired(parent, name, out var element)
+            && element.ValueKind == JsonValueKind.Number
+            && element.TryGetInt64(out value);
     }
 
     private static bool TryGetNumber(JsonElement parent, string name, out double value)
@@ -373,13 +448,16 @@ public sealed record TokscaleUsageQuotaWindow(
     string Label,
     double? RemainingPercent,
     TokscaleUsageQuotaValueStatus ValueStatus,
-    string? ResetAt);
+    string? ResetAt,
+    bool Unlimited = false);
 
 public sealed record TokscaleUsageQuotaProvider(
     string Provider,
     TokscaleUsageQuotaProviderStatus Status,
     TokscaleUsageQuotaFreshness Freshness,
-    IReadOnlyList<TokscaleUsageQuotaWindow> Windows);
+    IReadOnlyList<TokscaleUsageQuotaWindow> Windows,
+    DateTime? ObservedAt = null,
+    string? ProviderId = null);
 
 public sealed record TokscaleUsageQuotaParseResult(
     TokscaleUsageQuotaParseStatus Status,

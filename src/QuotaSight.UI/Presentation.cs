@@ -100,7 +100,19 @@ public sealed class SettingsState
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly ReconfigurableUsageReadPort usageReadPort;
+    private IQuotaReadPort? quotaReadPort;
+    private LatestQuota? latestQuota;
+    private string quotaReadStatus = "Unavailable";
+    public LatestQuota? LatestQuota => latestQuota;
+    public string QuotaReadStatus => quotaReadStatus;
+    public string QuotaTitleText => Language == UiLanguage.Japanese ? "契約の残量" : "Subscription quota";
+    public string QuotaReadStatusText => quotaReadStatus switch { "Loading" => Language == UiLanguage.Japanese ? "残量を更新中…" : "Refreshing quota…", "Error" => Language == UiLanguage.Japanese ? "残量を更新できません（前回値は古い可能性があります）" : "Quota refresh failed; shown values may be stale", _ => string.Empty };
+    public bool IsQuotaSurfaceVisible => latestQuota is not null || quotaReadStatus == "Error";
+    public bool IsQuotaStatusVisible => QuotaReadStatusText.Length > 0;
+    public bool IsQuotaAvailable => latestQuota is not null;
+    public IReadOnlyList<QuotaProviderCard> QuotaCards => latestQuota is null ? [] : QuotaCardProjection.Project(latestQuota, Language == UiLanguage.Japanese, forceStale: quotaReadStatus == "Error");
     private readonly StoreUsageCredentialProvider? usageCredentials;
+    private readonly bool quotaReadPortInjected;
     private readonly Func<string, TimeZoneInfo> timeZoneResolver;
     private readonly TimeZoneInfo localTimeZone;
     private string usageApiEndpoint = string.Empty;
@@ -1092,6 +1104,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // The port adapter owns the one long-lived client and swaps only the target, so a
         // save or a removal can never dispose a transport an outstanding read is using.
         usageReadPort.Configure(new Uri(endpoint, UriKind.Absolute), StoreUsageCredentialProvider.IdentityId, usageCredentials);
+        if (!quotaReadPortInjected) quotaReadPort = new HttpQuotaReadPort(quotaHttpClient, new Uri(endpoint, UriKind.Absolute), StoreUsageCredentialProvider.IdentityId, usageCredentials);
+        _ = RefreshQuotaAsync();
+    }
+
+    public async Task RefreshQuotaAsync(CancellationToken cancellationToken = default)
+    {
+        var port = quotaReadPort;
+        if (port is null) { quotaReadStatus = "Unavailable"; return; }
+        quotaReadStatus = "Loading"; OnPropertyChanged(nameof(QuotaReadStatus));
+        try
+        {
+            latestQuota = await port.ReadLatestAsync(cancellationToken).ConfigureAwait(false);
+            quotaReadStatus = "Ready";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception) { quotaReadStatus = "Error"; }
+        OnPropertyChanged(nameof(LatestQuota)); OnPropertyChanged(nameof(QuotaCards));
+        OnPropertyChanged(nameof(IsQuotaAvailable)); OnPropertyChanged(nameof(IsQuotaSurfaceVisible)); OnPropertyChanged(nameof(QuotaReadStatus)); OnPropertyChanged(nameof(QuotaReadStatusText)); OnPropertyChanged(nameof(IsQuotaStatusVisible));
     }
 
     private async Task RestoreUsageCredentialPairAsync((string? ClientId, string? ClientSecret) previous, CancellationToken cancellationToken)
@@ -1233,11 +1263,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         breakdownRequest?.Cancel(); breakdownRequest?.Dispose(); breakdownRequest = null;
         tokScaleRequest?.Cancel(); tokScaleRequest?.Dispose(); tokScaleRequest = null;
         usageReadPort.Dispose();
+        quotaHttpClient.Dispose();
     }
-    public MainViewModel(TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null)
+    private readonly HttpClient quotaHttpClient = UsageReadTransport.CreateClient(TimeSpan.FromSeconds(30));
+    public MainViewModel(TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null, IQuotaReadPort? quotaReadPort = null)
     {
         this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(usageHttpClientFactory?.Invoke());
         if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort);
+        this.quotaReadPort = quotaReadPort;
+        quotaReadPortInjected = quotaReadPort is not null;
         this.usageCredentials = usageCredentialStore is null ? null : new StoreUsageCredentialProvider(usageCredentialStore);
         this.timeZoneResolver = timeZoneResolver ?? TimeZoneInfo.FindSystemTimeZoneById;
         this.localTimeZone = localTimeZone ?? TimeZoneInfo.Local;
@@ -1254,6 +1288,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (settingsStore is not null) SetSettings(await workScheduler.RunAsync(() => settingsStore.LoadAsync(cancellationToken).AsTask()), persist: false);
             await RefreshUsageConnectionAsync(cancellationToken);
+            if (quotaReadPortInjected) await RefreshQuotaAsync(cancellationToken);
         }
         finally
         {
@@ -1336,7 +1371,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText), nameof(UsageFailureText), nameof(UsageFreshnessText), nameof(IsUsageFreshnessVisible), nameof(UsageDelayedText), nameof(IsUsageDelayed), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(ProviderChoices), nameof(TokScaleTitleText), nameof(TokScaleBadgeText), nameof(TokScaleEmptyTitleText), nameof(TokScaleEmptyBodyText), nameof(TokScaleOpenSettingsText), nameof(TokScaleStateText), nameof(TokScaleFailureText), nameof(BreakdownNoteText), nameof(BreakdownPartialText), nameof(BreakdownUnclassifiedText), nameof(BreakdownOverAttributionText), nameof(BreakdownFailureText), nameof(UsageBreakdownStateText), nameof(BreakdownDimensionChoices), nameof(NotificationBannerText) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(QuotaTitleText), nameof(QuotaReadStatusText), nameof(IsQuotaStatusVisible), nameof(QuotaCards), nameof(IsQuotaSurfaceVisible), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(HeaderTitle), nameof(SubtitleText), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText), nameof(UsageFailureText), nameof(UsageFreshnessText), nameof(IsUsageFreshnessVisible), nameof(UsageDelayedText), nameof(IsUsageDelayed), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(ProviderChoices), nameof(TokScaleTitleText), nameof(TokScaleBadgeText), nameof(TokScaleEmptyTitleText), nameof(TokScaleEmptyBodyText), nameof(TokScaleOpenSettingsText), nameof(TokScaleStateText), nameof(TokScaleFailureText), nameof(BreakdownNoteText), nameof(BreakdownPartialText), nameof(BreakdownUnclassifiedText), nameof(BreakdownOverAttributionText), nameof(BreakdownFailureText), nameof(UsageBreakdownStateText), nameof(BreakdownDimensionChoices), nameof(NotificationBannerText) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)

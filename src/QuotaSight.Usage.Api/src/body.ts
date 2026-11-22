@@ -37,7 +37,7 @@ function decode(chunks: readonly Uint8Array[], total: number): string {
   }
 }
 
-export async function readBoundedBodyText(request: Request): Promise<string> {
+export async function readBoundedBodyText(request: Request, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
   const declared = request.headers.get('content-length');
   if (declared !== null) {
     if (!CONTENT_LENGTH_PATTERN.test(declared)) {
@@ -46,7 +46,7 @@ export async function readBoundedBodyText(request: Request): Promise<string> {
         reason: 'invalid_content_length',
       });
     }
-    if (Number(declared) > MAX_BODY_BYTES) throw payloadTooLarge();
+    if (Number(declared) > maxBytes) throw new ApiError(413, 'payload_too_large', `The request body must not exceed ${maxBytes} bytes.`, { reason: 'payload_too_large', limitBytes: maxBytes });
   }
 
   const stream = request.body;
@@ -60,10 +60,10 @@ export async function readBoundedBodyText(request: Request): Promise<string> {
     if (done) break;
     if (value === undefined) continue;
     total += value.byteLength;
-    if (total > MAX_BODY_BYTES) {
+    if (total > maxBytes) {
       // Stop consuming immediately: the remaining bytes are never buffered.
       await reader.cancel().catch(() => undefined);
-      throw payloadTooLarge();
+      throw new ApiError(413, 'payload_too_large', `The request body must not exceed ${maxBytes} bytes.`, { reason: 'payload_too_large', limitBytes: maxBytes });
     }
     chunks.push(value);
   }
