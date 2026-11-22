@@ -260,18 +260,29 @@ public sealed class WorkflowContractTests
         var foundation = Assert.Single(
             references,
             reference => (string?)reference.Attribute("Include") == "Microsoft.WindowsAppSDK.Foundation");
-        Assert.Equal("2.3.12", (string?)foundation.Attribute("Version"));
+        Assert.Equal("2.7.0", (string?)foundation.Attribute("Version"));
         Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)foundation.Parent?.Attribute("Condition"));
     }
 
     [Fact]
     public void Ui_project_pins_interactive_experiences_at_the_version_foundation_resolves_to()
     {
+        var references = XDocument.Parse(UiProject).Descendants("PackageReference").ToArray();
         var reference = Assert.Single(
-            XDocument.Parse(UiProject).Descendants("PackageReference"),
+            references,
             element => (string?)element.Attribute("Include") == "Microsoft.WindowsAppSDK.InteractiveExperiences");
+        var foundation = Assert.Single(
+            references,
+            element => (string?)element.Attribute("Include") == "Microsoft.WindowsAppSDK.Foundation");
 
-        Assert.Equal("2.1.9", (string?)reference.Attribute("Version"));
+        // Foundation declares its dependency as the range [2.7.0, 3.0.0). Referencing the same exact
+        // version keeps a later 2.7.x publish from changing the bundled framework payload without a
+        // repository change, so the UI project pins a version and never a range.
+        var version = (string?)reference.Attribute("Version");
+        Assert.Equal("2.7.0", version);
+        Assert.Equal((string?)foundation.Attribute("Version"), version);
+        Assert.DoesNotContain("[", version!);
+        Assert.DoesNotContain("*", version!);
         Assert.Equal("'$(OS)' == 'Windows_NT'", (string?)reference.Parent?.Attribute("Condition"));
     }
 

@@ -4,7 +4,7 @@
 
 ## Windows App SDKの同梱内容（実機では未確認）
 
-Windows版は`Microsoft.WindowsAppSDK`メタパッケージを参照しなくなりました。QuotaSightが使うのはトースト通知（`Microsoft.Windows.AppNotifications`）だけで、これは`Microsoft.WindowsAppSDK.Foundation`に含まれます。そのため`src/QuotaSight.UI/QuotaSight.UI.csproj`は`Microsoft.WindowsAppSDK.Foundation` 2.3.12（メタパッケージ2.5.1が指していた版）を直接参照し、`Microsoft.WindowsAppSDK.InteractiveExperiences` 2.1.9を明示的に固定して、NU1603警告を出さずにrestoreが解決できるようにしています。メタパッケージはWinUI、onnxruntime、DirectMLなどQuotaSightが読み込まないpayloadも同梱していたため、Windows ZIPには約300ファイル・約80MiBの未使用内容が含まれていました。`WindowsAppSDKSelfContained`は`true`のままです。フレームワークを同梱し続けるので、利用者PCにWindows App SDK Runtimeを別途インストールする必要はなく、Bootstrapperも使いません。
+Windows版は`Microsoft.WindowsAppSDK`メタパッケージを参照しなくなりました。QuotaSightが使うのはトースト通知（`Microsoft.Windows.AppNotifications`）だけで、これは`Microsoft.WindowsAppSDK.Foundation`に含まれます。そのため`src/QuotaSight.UI/QuotaSight.UI.csproj`は`Microsoft.WindowsAppSDK.Foundation` 2.7.0と、その依存である`Microsoft.WindowsAppSDK.InteractiveExperiences` 2.7.0を直接参照しています。FoundationはInteractiveExperiencesを`[2.7.0, 3.0.0)`の範囲で要求するため、明示的な参照によって、後からrestoreしたときに2.7.xの別版へ勝手に移って同梱フレームワークが変わることを防ぎ、確認済みの1バージョンに固定しています。メタパッケージはWinUI、onnxruntime、DirectMLなどQuotaSightが読み込まないpayloadも同梱していたため、Windows ZIPには約300ファイル・約80MiBの未使用内容が含まれていました。`WindowsAppSDKSelfContained`は`true`のままです。フレームワークを同梱し続けるので、利用者PCにWindows App SDK Runtimeを別途インストールする必要はなく、Bootstrapperも使いません。
 
 この構成はWindows以外のマシンでのrestoreと参照内容の確認までしか行っていません。Windows専用のコンパイル経路（`#if WINDOWS`）、Native AOTのpublish、生成されるファイル数はWindows CI runnerでのみ確認され、そのrunnerはトーストの実表示を観測できません。以下に示す手順は、この構成で作成したZIPを使って実Windowsデスクトップで改めて実行する必要があります。それまでは、Foundation単体構成でのトースト表示とトーストのクリックが**未検証**です。特に、通知登録probeが引き続きexit code `0`を返すこと、しきい値トーストが表示され、クリックでアプリが前面に来ることを確認してください。
 

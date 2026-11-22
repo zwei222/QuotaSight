@@ -19,7 +19,7 @@ QuotaSightは、サブスクリプションの利用枠を確認するWindows/Li
 
 通知は可能な範囲で送信を試みますが、表示を保証しません。Linuxではsession D-Bus経由で`org.freedesktop.Notifications`への送信を試みます。D-Busが要求を受け付けても、通知サービスが画面に表示するとは限りません。
 
-Windows x64ではWindows App SDK 2.5.1の基盤を使い、portable Native AOT ZIPからOS通知の送信を試みます。APIが要求を受け付けたことと、画面にポップアップが表示されたことは別です。CIで確認するのはrestore、format、Release build/test、Native AOT publish/smokeまでです。Windows通知の登録と画面表示は、非昇格のWindows 11 x64デスクトップで別途手動確認が必要です。成功したという確認記録はまだありません。手順は[Windows通知の受け入れ確認](docs/windows-notification-acceptance.ja.md)を参照してください。
+Windows x64ではWindows App SDK 2.7.0の基盤を使い、portable Native AOT ZIPからOS通知の送信を試みます。APIが要求を受け付けたことと、画面にポップアップが表示されたことは別です。CIで確認するのはrestore、format、Release build/test、Native AOT publish/smokeまでです。Windows通知の登録と画面表示は、非昇格のWindows 11 x64デスクトップで別途手動確認が必要です。成功したという確認記録はまだありません。手順は[Windows通知の受け入れ確認](docs/windows-notification-acceptance.ja.md)を参照してください。
 
 両OSとも、代替としてアプリ内バナーを表示します。ただし、ウィンドウが隠れている間は見えません。通常終了時には、`UnregisterAll`を含むWindows通知登録の解除を試みます。これは画面上にすでに表示された通知を消す操作ではありません。異常終了や後片付けの失敗時には、登録が残ることがあります。
 
