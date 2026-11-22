@@ -14,6 +14,8 @@ public sealed record LatestQuota(DateTimeOffset CollectedAt, IReadOnlyList<Quota
 public sealed record QuotaCardWindow(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool IsStale, bool Unlimited, string WindowText, string RemainingText, string ResetText, string FreshnessText, bool Expired = false);
 public sealed record QuotaProviderCard(QuotaProvider Provider, string ProviderText, IReadOnlyList<QuotaCardWindow> Windows, string CenterText, string CenterPeriodText, bool IsStale, string FreshnessText)
 {
+    public bool IsUnavailable { get; init; }
+    public string RemoveText { get; init; } = "Remove";
     public IReadOnlyList<int?> RingValues => Windows.Where(window => !window.Unlimited).Select(window => window.Expired ? null : window.RemainingBasisPoints).Take(3).ToArray();
     public bool IsUnlimitedOnly => Windows.Count > 0 && Windows.All(window => window.Unlimited);
     public double MainCenterFontSize => CenterText.Length > 4 ? 10 : 17;
@@ -78,9 +80,9 @@ public static class QuotaCardProjection
                 (QuotaProvider.Copilot, true) => "GitHub Copilot",
                 _ => "GitHub Copilot"
             };
-            var freshness = multiple ? (japanese ? "複数の送信元" : "Multiple sources") : unavailable ? (japanese ? "利用不可" : "Unavailable") : provider.Freshness == QuotaFreshness.Cached ? (japanese ? "キャッシュ" : "Cached") : provider.Freshness == QuotaFreshness.Unknown ? (japanese ? "鮮度不明" : "Freshness unknown") : (japanese ? "古いデータ" : "Stale");
+            var freshness = multiple ? (japanese ? "複数の送信元" : "Multiple sources") : unavailable ? (japanese ? "取得できません" : "Unavailable") : provider.Freshness == QuotaFreshness.Cached ? (japanese ? "キャッシュ" : "Cached") : provider.Freshness == QuotaFreshness.Unknown ? (japanese ? "鮮度不明" : "Freshness unknown") : (japanese ? "古いデータ" : "Stale");
             var staleCard = unavailable || windows.Any(window => window.IsStale);
-            return new QuotaProviderCard(provider.Provider, providerText, windows, center, shortWindow?.WindowText ?? "", staleCard, staleCard ? freshness : string.Empty);
+            return new QuotaProviderCard(provider.Provider, providerText, windows, center, shortWindow?.WindowText ?? string.Empty, staleCard, staleCard ? freshness : string.Empty) { IsUnavailable = unavailable };
         }).ToArray();
     }
 }

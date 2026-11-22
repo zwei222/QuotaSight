@@ -94,6 +94,7 @@ public sealed class SettingsState
     public IReadOnlyList<string> TokScaleClients { get; set; } = [];
     /// <summary>Catalog provider ids the user added; their cards are usage-only observations.</summary>
     public IReadOnlyList<string> TokScaleProviders { get; set; } = [];
+    public IReadOnlyList<string> QuotaProviders { get; set; } = [];
     public bool TrySetRefreshMinutes(int value) => UiSettings.IsRefreshIntervalValid(TimeSpan.FromMinutes(value)) && (RefreshMinutes = value) > 0;
 }
 
@@ -105,12 +106,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string quotaReadStatus = "Unavailable";
     public LatestQuota? LatestQuota => latestQuota;
     public string QuotaReadStatus => quotaReadStatus;
-    public string QuotaTitleText => Language == UiLanguage.Japanese ? "契約の残量" : "Subscription quota";
+    public string QuotaTitleText => Language == UiLanguage.Japanese ? "契約残量" : "Subscription quota";
     public string QuotaReadStatusText => quotaReadStatus switch { "Loading" => Language == UiLanguage.Japanese ? "残量を更新中…" : "Refreshing quota…", "Error" => Language == UiLanguage.Japanese ? "残量を更新できません（前回値は古い可能性があります）" : "Quota refresh failed; shown values may be stale", _ => string.Empty };
     public bool IsQuotaSurfaceVisible => latestQuota is not null || quotaReadStatus == "Error";
     public bool IsQuotaStatusVisible => QuotaReadStatusText.Length > 0;
     public bool IsQuotaAvailable => latestQuota is not null;
-    public IReadOnlyList<QuotaProviderCard> QuotaCards => latestQuota is null ? [] : QuotaCardProjection.Project(latestQuota, Language == UiLanguage.Japanese, forceStale: quotaReadStatus == "Error");
+    public bool IsQuotaSelectionEmpty => QuotaCards.Count == 0;
+    public IReadOnlyList<QuotaProviderCard> QuotaCards => BuildQuotaCards();
+    private IReadOnlyList<QuotaProviderCard> BuildQuotaCards()
+    {
+        var cards = latestQuota is null ? new List<QuotaProviderCard>() : QuotaCardProjection.Project(latestQuota, Language == UiLanguage.Japanese, forceStale: quotaReadStatus == "Error").Where(card => QuotaServiceSelected(card.Provider)).ToList();
+        foreach (var id in Settings.QuotaProviders)
+        {
+            var providers = id switch { "claude" => new[] { QuotaProvider.Claude }, "codex" => new[] { QuotaProvider.Codex }, "opencode-go" => new[] { QuotaProvider.OpenCodeGo }, "antigravity" => new[] { QuotaProvider.AntigravityGemini, QuotaProvider.AntigravityClaudeGpt }, "grok-build" => new[] { QuotaProvider.GrokBuild }, "copilot" => new[] { QuotaProvider.Copilot }, _ => [] };
+            if (providers.Any(provider => cards.Any(card => card.Provider == provider))) continue;
+            var provider = providers.FirstOrDefault();
+            if (providers.Length == 0) continue;
+            var name = provider switch { QuotaProvider.Claude => "Claude", QuotaProvider.Codex => "Codex", QuotaProvider.OpenCodeGo => "OpenCode Go", QuotaProvider.AntigravityGemini => "Antigravity", QuotaProvider.GrokBuild => "Grok Build", _ => "GitHub Copilot" };
+            cards.Add(new QuotaProviderCard(provider, name, [], "—", string.Empty, true, Language == UiLanguage.Japanese ? "取得できません" : "Unavailable") { IsUnavailable = true });
+        }
+        return cards.Select(card => card with { RemoveText = CopyText.QuotaRemoveService }).ToArray();
+    }
+    private bool QuotaServiceSelected(QuotaProvider provider) => Settings.QuotaProviders.Contains(provider switch { QuotaProvider.Claude => "claude", QuotaProvider.Codex => "codex", QuotaProvider.OpenCodeGo => "opencode-go", QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt => "antigravity", QuotaProvider.GrokBuild => "grok-build", QuotaProvider.Copilot => "copilot", _ => "" }, StringComparer.Ordinal);
     private readonly StoreUsageCredentialProvider? usageCredentials;
     private readonly bool quotaReadPortInjected;
     private readonly Func<string, TimeZoneInfo> timeZoneResolver;
@@ -1121,7 +1138,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception) { quotaReadStatus = "Error"; }
         OnPropertyChanged(nameof(LatestQuota)); OnPropertyChanged(nameof(QuotaCards));
-        OnPropertyChanged(nameof(IsQuotaAvailable)); OnPropertyChanged(nameof(IsQuotaSurfaceVisible)); OnPropertyChanged(nameof(QuotaReadStatus)); OnPropertyChanged(nameof(QuotaReadStatusText)); OnPropertyChanged(nameof(IsQuotaStatusVisible));
+        OnPropertyChanged(nameof(IsQuotaAvailable)); OnPropertyChanged(nameof(IsQuotaSelectionEmpty)); OnPropertyChanged(nameof(IsQuotaSurfaceVisible)); OnPropertyChanged(nameof(QuotaReadStatus)); OnPropertyChanged(nameof(QuotaReadStatusText)); OnPropertyChanged(nameof(IsQuotaStatusVisible));
     }
 
     private async Task RestoreUsageCredentialPairAsync((string? ClientId, string? ClientSecret) previous, CancellationToken cancellationToken)
@@ -1170,6 +1187,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     // ---------- the add-provider flow (catalog providers only) ----------
+
+    public Task AddQuotaProviderAsync(string providerId, CancellationToken cancellationToken = default) => SetQuotaProviderAsync(providerId, true, cancellationToken);
+    public Task RemoveQuotaProviderAsync(string providerId, CancellationToken cancellationToken = default) => SetQuotaProviderAsync(providerId, false, cancellationToken);
+    private Task SetQuotaProviderAsync(string providerId, bool add, CancellationToken token)
+    {
+        if (providerId is not ("claude" or "codex" or "opencode-go" or "antigravity" or "grok-build" or "copilot") || IsDisposed) return Task.CompletedTask;
+        return UpdateSettingsAsync(settings =>
+        {
+            var values = settings.QuotaProviders ?? [];
+            var next = add ? values.Append(providerId).Distinct(StringComparer.Ordinal).ToArray() : values.Where(id => id != providerId).ToArray();
+            return (settings with { QuotaProviders = next }, true, true);
+        }, () => { Settings.QuotaProviders = add ? Settings.QuotaProviders.Append(providerId).Distinct(StringComparer.Ordinal).ToArray() : Settings.QuotaProviders.Where(id => id != providerId).ToArray(); OnPropertyChanged(nameof(QuotaCards)); OnPropertyChanged(nameof(IsQuotaSelectionEmpty)); OnPropertyChanged(nameof(IsQuotaSurfaceVisible)); }, token);
+    }
 
     public IReadOnlyList<ProviderChoiceViewModel> ProviderChoices => UiSettings.ProviderChoices(Language);
     private bool providerSelectionMade;
@@ -1325,6 +1355,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 ? []
                 : [.. dto.TokScaleProviders.Where(id => TokScaleProviderCatalog.Find(id) is not null).Distinct(StringComparer.Ordinal)];
             trackedTokScaleProviders = Settings.TokScaleProviders;
+            Settings.QuotaProviders = dto.QuotaProviders is null ? [] : [.. dto.QuotaProviders.Where(id => id is "claude" or "codex" or "opencode-go" or "antigravity" or "grok-build" or "copilot").Distinct(StringComparer.Ordinal)];
             Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English;
             Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System;
             UiSettings.ApplyTheme(Settings.Theme);
@@ -1333,7 +1364,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finally { settingsTransactionGate.Release(); }
     }
     public AppSettingsDto CurrentSettingsForTests => CurrentSettings();
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.NotificationsEnabled, Settings.ResidentMode, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients], [.. Settings.TokScaleProviders]);
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.NotificationsEnabled, Settings.ResidentMode, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients], [.. Settings.TokScaleProviders], [.. Settings.QuotaProviders]);
     private async Task<T> UpdateSettingsAsync<T>(Func<AppSettingsDto, (AppSettingsDto Candidate, T Result, bool Persist)> buildCandidate, Action publish, CancellationToken cancellationToken)
     {
         await settingsTransactionGate.WaitAsync(cancellationToken);

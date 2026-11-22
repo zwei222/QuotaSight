@@ -283,7 +283,7 @@ public sealed class TokScaleDashboardTests
             window.UpdateLayout();
 
             var section = window.FindControl<Border>("TokScaleSection")!;
-            Assert.True(section.IsVisible);
+            Assert.False(section.IsVisible);
             Assert.Single(viewModel.TokScaleCards);
             Assert.Contains("観測使用量（TokScale）", viewModel.TokScaleTitleText, StringComparison.Ordinal);
             Assert.Contains("今日 10", viewModel.TokScaleCards[0].SummaryText, StringComparison.Ordinal);
@@ -342,10 +342,10 @@ public sealed class TokScaleDashboardTests
             await viewModel.TokScaleLoadTask;
             window.UpdateLayout();
 
-            Assert.True(window.FindControl<Border>("TokScaleSection")!.IsVisible);
-            Assert.True(window.FindControl<StackPanel>("TokScaleEmptyState")!.IsVisible);
+            Assert.False(window.FindControl<Border>("TokScaleSection")!.IsVisible);
+            Assert.False(window.FindControl<StackPanel>("TokScaleEmptyState")!.IsEffectivelyVisible);
             var openSettings = window.FindControl<Button>("TokScaleOpenSettingsButton")!;
-            Assert.True(openSettings.IsVisible);
+            Assert.False(openSettings.IsEffectivelyVisible);
 
             openSettings.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(AppPage.Settings, viewModel.CurrentPage);
@@ -496,7 +496,7 @@ public sealed class TokScaleDashboardTests
 
             Assert.True(viewModel.IsTokScaleProviderPanelVisible);
             var panel = window.FindControl<Border>("TokScalePanel")!;
-            Assert.True(panel.IsVisible);
+            Assert.False(panel.IsEffectivelyVisible);
             Assert.Contains("OpenAI", viewModel.TokScaleFlowTitleText, StringComparison.Ordinal);
             Assert.False(viewModel.IsTokScaleProviderTracked);
             Assert.True(window.FindControl<Button>("TokScaleAddButton")!.IsVisible);

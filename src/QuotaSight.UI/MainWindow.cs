@@ -287,6 +287,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void QuotaAddSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo || combo.SelectedItem is not ComboBoxItem { Tag: string id }) return;
+        try { await ViewModel.AddQuotaProviderAsync(id); } finally { combo.SelectedItem = null; }
+    }
+    private async void QuotaRemoveClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: QuotaProviderCard card })
+        {
+            var id = card.Provider switch { QuotaProvider.Claude => "claude", QuotaProvider.Codex => "codex", QuotaProvider.OpenCodeGo => "opencode-go", QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt => "antigravity", QuotaProvider.GrokBuild => "grok-build", _ => "copilot" };
+            await ViewModel.RemoveQuotaProviderAsync(id);
+        }
+    }
     private void AddProviderClick(object? sender, RoutedEventArgs e)
     {
         ViewModel.OpenProviderFlow();

@@ -259,6 +259,7 @@ public sealed class TokScaleCardLayoutTests
         // report; the wide font stands in for any future longer display name.
         var window = new MainWindow(viewModel) { Width = width, Height = 740 };
         window.Show();
+        window.FindControl<Border>("TokScaleSection")!.IsVisible = true;
         if (wideFont)
         {
             window.FindControl<Border>("TokScaleSection")!

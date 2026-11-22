@@ -271,8 +271,8 @@ public sealed class UiCopy
     public string Refresh => IsJapanese ? "更新" : "Refresh";
     public string RefreshError => IsJapanese ? "更新できません。最後に取得した状態を表示しています。" : "Unable to refresh. Showing the last known state.";
     public string Subtitle => IsJapanese
-        ? "利用量 API を通じたトークンの観測使用量を確認できます。"
-        : "Observed token usage through the usage API, at a glance.";
+        ? "契約サービスの残量をひと目で確認できます。"
+        : "See remaining quota across your selected services.";
     public string LocalFirst => "LOCAL-FIRST";
     public string NoSecretsLeave => IsJapanese ? "テレメトリーは送信しません。認証情報は連携先への認証に使用します。" : "No telemetry is sent. Credentials are used to authenticate with providers.";
     public string TrayUnavailableTitle => IsJapanese ? "トレイを利用できません" : "Tray unavailable";
@@ -291,8 +291,11 @@ public sealed class UiCopy
     public string OpenFullWindow => IsJapanese ? "メインウィンドウを開く" : "Open full window";
     public string TrayUpdate => IsJapanese ? "更新" : "Refresh";
     public string TrayExit => IsJapanese ? "終了" : "Exit";
-    public string CompactTitle => IsJapanese ? "観測使用量" : "Observed usage";
-    public string CompactSubtitle => IsJapanese ? "利用量 API から集計した利用量" : "Usage observed through the usage API";
+    public string QuotaAddService => IsJapanese ? "＋ 追加" : "Add";
+    public string QuotaRemoveService => IsJapanese ? "削除" : "Remove";
+    public string QuotaEmptySelection => IsJapanese ? "サービスを追加すると残量が表示されます。" : "Add a service to see its remaining quota.";
+    public string CompactTitle => IsJapanese ? "契約残量" : "Quota";
+    public string CompactSubtitle => IsJapanese ? "選択したサービスの残量" : "Remaining quota for selected services";
     // Usage connection section. Credential values are never part of this copy: it is fixed
     // text that is safe to show, log or screenshot next to masked inputs.
     public string UsageConnectionTitle => IsJapanese ? "利用量 API 接続" : "Usage API connection";

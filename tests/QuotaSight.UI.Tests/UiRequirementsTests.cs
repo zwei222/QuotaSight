@@ -252,7 +252,7 @@ public sealed class UiRequirementsTests
         var openai = window.ViewModel.ProviderChoices.Single(item => item.ProviderId == "openai");
         picker.SelectedItem = openai;
         picker.RaiseEvent(new SelectionChangedEventArgs(ComboBox.SelectionChangedEvent, new List<object?>(), new List<object?> { openai }));
-        Assert.True(window.FindControl<Border>("TokScalePanel")!.IsVisible);
+        Assert.False(window.FindControl<Border>("TokScalePanel")!.IsEffectivelyVisible);
         Assert.True(window.FindControl<Button>("CloseProviderButton")!.IsVisible);
 
         window.ViewModel.CloseProviderFlow();

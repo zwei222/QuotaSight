@@ -2,20 +2,20 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-QuotaSight is a Windows/Linux desktop dashboard for **observed AI token usage**. It does not fetch subscription quotas, does not call provider billing APIs, and is not an API-cost or token-billing tracker. The numbers it shows are observations: a machine's local CLI logs, aggregated by [TokScale](https://github.com/junhoyeo/tokscale) on that machine, sent to a Usage API the operator controls, and read back by the app. Every surface therefore states where a value came from, which period and collectors it covers, and how old it is.
+QuotaSight is a Windows/Linux desktop dashboard for **subscription quota remaining**. The dashboard reads the configured read-only quota API and shows only services you explicitly add; it does not call provider billing APIs. A separate Usage page retains **observed AI token usage** from the operator-controlled Usage API, aggregated by TokScale on the sending machine. Quota remaining and observed token counts are distinct data and are never combined.
 
 ## Current capabilities
 
 - Avalonia dashboard, usage page, settings, runtime English/Japanese switching, and a narrow-width layout.
-- Dashboard: observed-usage cards for the providers you add, with today's and the last seven days' token counts.
-- Usage page: daily token totals for a 30-day window (days bucketed in `Asia/Tokyo`) with per-collector rows and a freshness line, plus a separate usage breakdown grouped by client, provider, or model.
+- Dashboard: contract quota cards for the services you add, with remaining percentages, reset periods and rings. The default selection is empty.
+- Usage page: observed daily token totals for a 30-day window (days bucketed in `Asia/Tokyo`) with per-collector rows and freshness, plus a separate breakdown grouped by client, provider, or model.
 - Missing, stale, delayed, unsupported, and failed reads are distinct, fixed states; a failed refresh keeps the previous values on screen and marks them stale instead of showing zero.
 - Theme, refresh interval, resident mode, and the Usage API connection (endpoint plus Access Client ID and Client Secret) settings.
 - Windows Credential Manager and Linux Secret Service/`secret-tool` for the Usage API credential, with session-only storage when a secure store is unavailable.
 - No telemetry.
-- Optional resident mode with a compact observed-usage window and an explicit exit action.
+- Optional resident mode with a compact quota window and an explicit exit action.
 
-There are no quotas, rings, gauges, or thresholds anywhere in the current UI, and no local quota history or export. The app also does not scan a machine's logs itself: usage of a machine appears only when a Collector on that machine sends it (see [Collector setup on Linux](docs/collector-linux-setup.md)).
+Quota cards show only subscription quota data returned by the read-only quota endpoint. The dashboard starts with no selected services; observed usage, local quota history and export are not mixed into this surface. The app does not scan machine logs itself: usage appears on the separate Usage page only when a Collector sends it (see [Collector setup on Linux](docs/collector-linux-setup.md)).
 
 ## Data path: sending and reading are separate
 
@@ -28,12 +28,12 @@ There are no quotas, rings, gauges, or thresholds anywhere in the current UI, an
 
 Sending is opt-in twice: a Collector has to be installed and scheduled, and `--send` is explicit (`--preview` is the default). The wire contract carries daily total tokens, and — only with `--wire-schema 2` — the normalized client/provider/model identifiers and five token components. Details are in [security](docs/security.md) and the [deployment runbook](docs/deployment.md).
 
-## Dashboard: observed usage cards
+## Dashboard: selected subscription quota
 
-- A card exists only for a provider you added from the catalog (pinned to TokScale 4.23.0). A provider the breakdown has not attributed anything to yet shows **"Not observed yet"**, never a zero reading.
-- A row that several providers served together arrives as one comma-joined provider value, and it feeds **every** card it names. Card totals therefore can overlap, and such a card says "Includes tokens shared with other providers". The section badge states the same limit: observed, no limit, no estimates, other devices excluded, cards may share amounts.
-- **Do not add card totals together.** The number on a card is "usage attributed through that provider", not a disjoint partition of your tokens.
-- Tokens are a count, not a share of any allowance: no card carries a percentage, a ring, or a threshold.
+- The six-service picker starts empty. Only services added by the user are shown; old TokScale observation selections do not add quota cards.
+- A selected service absent from the latest response stays visible as **Unavailable**, without a numeric value or ring, and can still be removed.
+- Antigravity is one selectable service; API model groups remain separate cards. Percentages and reset periods come only from the quota API.
+- The separate Usage page continues to show observed token counts and attribution from the Usage API. These are observations, not quota remaining, and must not be added to quota cards.
 
 ## Usage page: daily totals and breakdown
 

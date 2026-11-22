@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
+using QuotaSight.Infrastructure;
 using QuotaSight.UI;
 using QuotaSight.UI.Controls;
 using Xunit;
@@ -25,6 +27,130 @@ public sealed class QuotaProviderTileVisualTests
 
     private static QuotaWindowValue W(QuotaWindow window, int? bp, int? hours) => new(window, bp, hours is { } h ? Base.AddHours(h) : null);
     private static QuotaProviderValue P(QuotaProvider provider, params QuotaWindowValue[] windows) => new(provider, QuotaProviderStatus.Available, QuotaFreshness.Fresh, Base.AddMinutes(-1), windows);
+
+    [AvaloniaFact]
+    public async Task Quota_copy_matches_language_and_updates_live_when_language_changes()
+    {
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort([P(QuotaProvider.Claude, W(QuotaWindow.Session, 5000, 5))]));
+        vm.SetSettings(new AppSettingsDto(Language: "English"), persist: false);
+        var window = new MainWindow(vm) { Width = 1100, Height = 800 };
+        try
+        {
+            window.Show();
+            await vm.InitializeAsync(TestContext.Current.CancellationToken);
+            window.UpdateLayout();
+            Assert.Equal("Add", window.FindControl<ComboBox>("QuotaAddPicker")!.PlaceholderText);
+            Assert.Equal("Add a service to see its remaining quota.", window.FindControl<TextBlock>("QuotaEmptyStateText")!.Text);
+            var picker = window.FindControl<ComboBox>("QuotaAddPicker")!;
+            picker.SelectedIndex = 0;
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+            window.UpdateLayout();
+            var remove = window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "QuotaRemoveButton");
+            Assert.Equal("Remove", remove.Content);
+            vm.Language = UiLanguage.Japanese;
+            window.UpdateLayout();
+            Assert.Equal("＋ 追加", picker.PlaceholderText);
+            Assert.Equal("サービスを追加すると残量が表示されます。", window.FindControl<TextBlock>("QuotaEmptyStateText")!.Text);
+            Assert.Equal("削除", window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "QuotaRemoveButton").Content);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Selected_service_missing_from_response_remains_removable_as_unavailable()
+    {
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort([P(QuotaProvider.Claude, W(QuotaWindow.Session, 5000, 5))]));
+        vm.SetSettings(new AppSettingsDto(Language: "Japanese", QuotaProviders: ["copilot"]), persist: false);
+        await vm.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Single(vm.QuotaCards);
+        Assert.Equal("GitHub Copilot", vm.QuotaCards[0].ProviderText);
+        Assert.Contains("取得できません", vm.QuotaCards[0].FreshnessText);
+        Assert.Empty(vm.QuotaCards[0].Windows);
+        await vm.RemoveQuotaProviderAsync("copilot");
+        Assert.Empty(vm.QuotaCards);
+    }
+
+    [AvaloniaFact]
+    public async Task Unavailable_service_renders_text_without_a_ring()
+    {
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort([P(QuotaProvider.Claude, W(QuotaWindow.Session, 5000, 5))]));
+        vm.SetSettings(new AppSettingsDto(Language: "Japanese", QuotaProviders: ["copilot"]), persist: false);
+        var window = new MainWindow(vm) { Width = 1100, Height = 800 };
+        try
+        {
+            window.Show();
+            await vm.InitializeAsync(TestContext.Current.CancellationToken);
+            window.UpdateLayout();
+            var card = Assert.Single(vm.QuotaCards);
+            Assert.True(card.IsUnavailable);
+            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), text => text.IsEffectivelyVisible && text.Text == "取得できません");
+            Assert.DoesNotContain(window.GetVisualDescendants().OfType<QuotaRingControl>(), ring => ring.IsEffectivelyVisible);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Dashboard_starts_empty_even_when_quota_api_returns_services()
+    {
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(Services().SelectMany(service => service.Providers).ToArray()));
+        await vm.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(vm.QuotaCards);
+    }
+
+    [AvaloniaFact]
+    public async Task Explicit_antigravity_selection_shows_both_model_groups_without_merging()
+    {
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(Services().Single(service => service.Name == "antigravity").Providers));
+        vm.SetSettings(new AppSettingsDto(QuotaProviders: ["antigravity"]), persist: false);
+        await vm.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, vm.QuotaCards.Count);
+        Assert.Contains(vm.QuotaCards, card => card.Provider == QuotaProvider.AntigravityGemini);
+        Assert.Contains(vm.QuotaCards, card => card.Provider == QuotaProvider.AntigravityClaudeGpt);
+    }
+
+    [AvaloniaFact]
+    public async Task Dashboard_quota_picker_adds_then_removes_one_service_and_tokscale_surface_is_hidden()
+    {
+        var values = Services().SelectMany(service => service.Providers).ToArray();
+        using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(values));
+        var main = new MainWindow(vm) { Width = 420, Height = 800 };
+        var compact = new CompactQuotaWindow(vm) { Width = 410, Height = 800 };
+        try
+        {
+            main.Show(); compact.Show();
+            await vm.InitializeAsync(TestContext.Current.CancellationToken);
+            main.UpdateLayout(); compact.UpdateLayout();
+            Assert.True(main.FindControl<Border>("QuotaContractsSection")!.IsEffectivelyVisible);
+            Assert.False(main.FindControl<Border>("TokScaleSection")!.IsEffectivelyVisible);
+            Assert.False(main.FindControl<Border>("TokScalePanel")!.IsEffectivelyVisible);
+            Assert.False(compact.FindControl<ItemsControl>("CompactTokScaleCards")!.IsEffectivelyVisible);
+            Assert.False(compact.FindControl<TextBlock>("CompactTokScaleStatus")!.IsEffectivelyVisible);
+            Assert.Empty(vm.QuotaCards);
+            var picker = main.FindControl<ComboBox>("QuotaAddPicker")!;
+            Assert.True(picker.IsEffectivelyVisible);
+            Assert.True(picker.Bounds.Width > 0);
+            picker.SelectedIndex = 0;
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Single(vm.QuotaCards);
+            var restored = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(values));
+            restored.SetSettings(vm.CurrentSettingsForTests, persist: false);
+            await restored.InitializeAsync(TestContext.Current.CancellationToken);
+            Assert.Single(restored.QuotaCards);
+            restored.Dispose();
+            var remove = main.GetVisualDescendants().OfType<Button>().First(button => button.Name == "QuotaRemoveButton");
+            remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Empty(vm.QuotaCards);
+        }
+        finally { main.Close(); compact.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Japanese_quota_dashboard_capture_evidence_is_opt_in()
+    {
+        await CaptureAndCheck("ja-initial-empty", [], 420, compact: false, japanese: true, dark: true);
+        await CaptureAndCheck("ja-claude-only", [P(QuotaProvider.Claude, W(QuotaWindow.Session, 6400, 7), W(QuotaWindow.Weekly, 2800, 60))], 420, compact: false, japanese: true, dark: true);
+    }
 
     [AvaloniaFact]
     public async Task Production_quota_templates_keep_every_service_card_and_ring_inside_formal_bounds()
@@ -77,9 +203,10 @@ public sealed class QuotaProviderTileVisualTests
         finally { window.Close(); }
     }
 
-    private static async Task CaptureAndCheck(string name, QuotaProviderValue[] providers, int width, bool compact, bool japanese)
+    private static async Task CaptureAndCheck(string name, QuotaProviderValue[] providers, int width, bool compact, bool japanese, bool dark = false)
     {
         using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(providers));
+        vm.SetSettings(new AppSettingsDto(Theme: dark ? "Dark" : "System", Language: japanese ? "Japanese" : "English", QuotaProviders: providers.Select(provider => provider.Provider switch { QuotaProvider.Claude => "claude", QuotaProvider.Codex => "codex", QuotaProvider.OpenCodeGo => "opencode-go", QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt => "antigravity", QuotaProvider.GrokBuild => "grok-build", _ => "copilot" }).Distinct().ToArray()), persist: false);
         vm.Language = japanese ? UiLanguage.Japanese : UiLanguage.English;
         Window window = compact ? new CompactQuotaWindow(vm) { Width = width, Height = 900 } : new MainWindow(vm) { Width = width, Height = 900 };
         try
@@ -90,8 +217,8 @@ public sealed class QuotaProviderTileVisualTests
             var panel = compact ? window.FindControl<Border>("CompactQuotaContracts")! : window.FindControl<Border>("QuotaContractsSection")!;
             Assert.True(panel.IsVisible);
             Assert.Equal(providers.Length, vm.QuotaCards.Count);
-            var rings = window.GetVisualDescendants().OfType<QuotaRingControl>().ToArray();
-            Assert.Equal(providers.Length, rings.Length);
+            var rings = window.GetVisualDescendants().OfType<QuotaRingControl>().Where(ring => ring.IsEffectivelyVisible).ToArray();
+            Assert.Equal(providers.Count(provider => provider.Status == QuotaProviderStatus.Available && !provider.MultipleSources), rings.Length);
             Assert.All(rings, ring => Assert.Equal(compact ? 72 : 86, (int)ring.Bounds.Width));
             var cards = window.GetVisualDescendants().OfType<Border>().Where(border => border.DataContext is QuotaProviderCard && border.Classes.Contains(compact ? "tokscale" : "tile")).ToArray();
             Assert.Equal(providers.Length, cards.Length);
