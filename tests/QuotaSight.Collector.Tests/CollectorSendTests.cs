@@ -536,7 +536,13 @@ public sealed class CollectorSendTests
         Assert.Contains("ExecStart=/usr/local/bin/example-collector-run", readme, StringComparison.Ordinal);
         Assert.Contains("| /usr/local/bin/QuotaSight.Collector --send", readme, StringComparison.Ordinal);
         Assert.Contains("OnUnitActiveSec=3h", readme, StringComparison.Ordinal);
-        Assert.Contains("--days 30", readme, StringComparison.Ordinal);
+        // tokscale 4.23.0 `graph` has neither --json (it always writes JSON) nor --days; the
+        // window is a date filter, so the wrapper passes 30 days of history with --since.
+        Assert.Contains("tokscale graph", readme, StringComparison.Ordinal);
+        Assert.Contains("--since \"$(date -d '-30 days' +%F)\"", readme, StringComparison.Ordinal);
+        Assert.Contains("--no-spinner", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("--days 30", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("tokscale graph --json", readme, StringComparison.Ordinal);
         // The upstream window is bounded, and an over-long window is refused, not trimmed.
         Assert.Contains("7 days or more and 62 days or less", readme, StringComparison.Ordinal);
         Assert.Contains("exits `4`", readme, StringComparison.Ordinal);

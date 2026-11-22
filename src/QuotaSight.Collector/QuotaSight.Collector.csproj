@@ -4,5 +4,17 @@
     <AssemblyName>QuotaSight.Collector</AssemblyName>
     <RootNamespace>QuotaSight.Collector</RootNamespace>
     <IsPackable>false</IsPackable>
+    <!-- Same release lane as the UI: one self-contained Native AOT executable per RID. -->
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- Release archives ship no debug symbols. Native AOT derives its own symbol emission from
+         DebugType, so turning it off there stops both the managed .pdb and the native .dbg/.pdb. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <StripSymbols>true</StripSymbols>
+    <!-- Project references still build their own portable .pdb files; do not copy them into the
+         published folder either. -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 </Project>

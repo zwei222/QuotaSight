@@ -76,3 +76,9 @@ jobs:
           $process = Start-Process -FilePath .\publish\QuotaSight.UI.exe -ArgumentList '--smoke-test' -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "smoke test failed with exit code $($process.ExitCode)" }
           Write-Host "smoke test exit code: $($process.ExitCode)"
+      - name: Publish the Collector Native AOT (Linux)
+        if: runner.os == 'Linux'
+        run: dotnet publish src/QuotaSight.Collector/QuotaSight.Collector.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishAot=true --no-restore -o publish-collector
+      - name: Smoke the Collector Native AOT (Linux)
+        if: runner.os == 'Linux'
+        run: ./publish-collector/QuotaSight.Collector --preview --generation 1 --bucket-time-zone Asia/Tokyo < tests/QuotaSight.Collector.Tests/Fixtures/graph-4.23.0-positive.json > /dev/null

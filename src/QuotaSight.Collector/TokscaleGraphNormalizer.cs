@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace QuotaSight.Collector;
 
 /// <summary>
-/// Bounded, strict reader for the pinned <c>tokscale graph --json</c> document
+/// Bounded, strict reader for the pinned <c>tokscale graph</c> document
 /// (version 4.23.0) that produces an API wire candidate snapshot.
 ///
 /// Rules, all deliberate:

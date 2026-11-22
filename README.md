@@ -58,7 +58,7 @@ For Codex, QuotaSight runs its own device OAuth, does not read Hermes/Codex cred
 
 ## Distribution
 
-The supported release artifact is the self-contained .NET 10 Native AOT ZIP for Windows x64 or Linux x64. MSIX, deb, and AppImage packages are not currently supported.
+The supported release artifact is the self-contained .NET 10 Native AOT ZIP for Windows x64 or Linux x64. MSIX, deb, and AppImage packages are not currently supported. Releases for Linux x64 also attach `QuotaSight-Collector-<version>-linux-x64.zip`, the sender that normalizes a local `tokscale graph` document and sends it to a Usage API; the host setup (binary, TokScale, systemd credentials, timer) is in [Collector setup on Linux](docs/collector-linux-setup.md).
 
 ## Build and run
 
