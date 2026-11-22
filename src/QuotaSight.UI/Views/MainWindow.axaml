@@ -97,11 +97,11 @@
             <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding IsProviderFlowOpen}"><ui:KeyboardComboBox x:Name="ProviderPicker" ItemsSource="{Binding ProviderChoices}" SelectionChanged="ProviderSelected" IsVisible="{Binding IsProviderFlowOpen}" AutomationProperties.Name="{Binding CopyText.ProviderPicker}"/><Button x:Name="CloseProviderButton" Grid.Column="1" Content="{Binding CopyText.Close}" Click="CloseProviderClick" IsVisible="{Binding IsProviderFlowOpen}" AutomationProperties.Name="{Binding CopyText.Close}"/></Grid>
             <Border x:Name="TokScaleSection" Classes="board" IsVisible="{Binding IsTokScaleSectionVisible}">
               <StackPanel Spacing="12">
-                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                  <TextBlock x:Name="TokScaleTitle" Text="{Binding TokScaleTitleText}" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                  <TextBlock x:Name="TokScaleTitle" Text="{Binding TokScaleTitleText}" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
                   <Button x:Name="AddProviderButton" Classes="icon-action" Grid.Column="1" Click="AddProviderClick" ToolTip.Tip="{Binding CopyText.AddProvider}" AutomationProperties.Name="{Binding CopyText.AddProvider}"><PathIcon Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"/></Button>
-                  <Border Classes="pill" Grid.Column="2" VerticalAlignment="Center"><TextBlock x:Name="TokScaleBadge" Text="{Binding TokScaleBadgeText}" FontSize="11" TextWrapping="Wrap" MaxWidth="240"/></Border>
                 </Grid>
+                <Border Classes="pill" HorizontalAlignment="Left" MaxWidth="420"><TextBlock x:Name="TokScaleBadge" Text="{Binding TokScaleBadgeText}" FontSize="11" TextWrapping="Wrap"/></Border>
                 <TextBlock x:Name="TokScaleStatus" Classes="muted" Text="{Binding TokScaleStateText}" IsVisible="{Binding IsTokScaleStatusVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleStateText}"/>
                 <ProgressBar x:Name="TokScaleLoadingBar" IsIndeterminate="True" IsVisible="{Binding IsTokScaleLoading}" MinHeight="8"/>
                 <StackPanel x:Name="TokScaleEmptyState" Spacing="6" IsVisible="{Binding IsTokScaleEmptyStateVisible}">
@@ -110,6 +110,10 @@
                   <Button x:Name="TokScaleOpenSettingsButton" Classes="usage-link" Content="{Binding TokScaleOpenSettingsText}" Click="UsageOpenSettingsClick" HorizontalAlignment="Left" IsVisible="{Binding IsTokScaleUnconfigured}" AutomationProperties.Name="{Binding TokScaleOpenSettingsText}"/>
                 </StackPanel>
                 <TextBlock x:Name="TokScaleFreshness" Classes="muted" Text="{Binding TokScaleFreshnessText}" IsVisible="{Binding IsTokScaleFreshnessVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleFreshnessText}"/>
+                <!-- The comparison bars' common scale, shown once for the whole board as a
+                     token amount: the largest observed amount of either period on screen.
+                     It disappears with the bars, so an all-zero board shows no ceiling. -->
+                <TextBlock x:Name="TokScaleScaleLabel" Classes="muted" FontSize="11" Text="{Binding TokScaleScaleText}" IsVisible="{Binding IsTokScaleScaleVisible}" TextWrapping="Wrap" AutomationProperties.Name="{Binding TokScaleScaleText}"/>
                 <ItemsControl x:Name="TokScaleCards" ItemsSource="{Binding TokScaleCards}" AutomationProperties.Name="{Binding TokScaleTitleText}">
                   <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel ItemSpacing="8" LineSpacing="8"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                   <ItemsControl.ItemTemplate>
@@ -128,6 +132,31 @@
                                  border, which reads as clipped on screen. -->
                             <TextBlock Classes="muted" FontSize="10" LineHeight="12" MaxLines="2" TextWrapping="Wrap" TextTrimming="None" Padding="0,0,8,0" Text="{Binding MultiProviderText}" IsVisible="{Binding IsMultiProvider}" VerticalAlignment="Top" AutomationProperties.Name="{Binding MultiProviderText}"/>
                           </Grid>
+                          <!-- Two comparison rows on the card-crossing token scale: today on
+                               top, the seven-day row below — the period is named by its own
+                               label and its position, never by color alone. The slot keeps
+                               its fixed height on every card (observed, zero or unobserved),
+                               so mixing card kinds in one WrapPanel row stays one height.
+                               The rows themselves vanish on an unobserved card and on an
+                               all-zero board, where no scale exists to draw against. -->
+                          <StackPanel Spacing="3" Height="30" AutomationProperties.Name="{Binding BarsName}">
+                            <Grid ColumnDefinitions="40,160" ColumnSpacing="6" IsVisible="{Binding HasComparisonBars}">
+                              <TextBlock Classes="muted" FontSize="10" LineHeight="12" Text="{Binding TodayLabelText}" VerticalAlignment="Center"/>
+                              <Grid Grid.Column="1" Width="160" Height="6" VerticalAlignment="Center">
+                                <ui:TokScaleBarFill Classes="tokscale-bar" Ratio="{Binding TodayBarRatio}">
+                                  <Border CornerRadius="3" Background="{DynamicResource AccentBrush}"/>
+                                </ui:TokScaleBarFill>
+                              </Grid>
+                            </Grid>
+                            <Grid ColumnDefinitions="40,160" ColumnSpacing="6" IsVisible="{Binding HasComparisonBars}">
+                              <TextBlock Classes="muted" FontSize="10" LineHeight="12" Text="{Binding WeekLabelText}" VerticalAlignment="Center"/>
+                              <Grid Grid.Column="1" Width="160" Height="6" VerticalAlignment="Center">
+                                <ui:TokScaleBarFill Classes="tokscale-bar" Ratio="{Binding WeekBarRatio}">
+                                  <Border CornerRadius="3" Background="{DynamicResource AccentBrush}"/>
+                                </ui:TokScaleBarFill>
+                              </Grid>
+                            </Grid>
+                          </StackPanel>
                         </StackPanel>
                       </Border>
                     </DataTemplate>

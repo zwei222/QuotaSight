@@ -144,6 +144,18 @@ public sealed class UiCopy
         : "Observed · no limit · no estimates · other devices excluded · cards may share amounts";
     public string TokScaleToday => IsJapanese ? "今日" : "Today";
     public string TokScaleWeek => IsJapanese ? "7日" : "7 days";
+    /// <summary>
+    /// The comparison bars' shared tick, stated as a token amount: the largest observed
+    /// amount of either period across the cards on screen. It is a tick on a shared
+    /// token scale, never a ceiling, so no quota wording belongs in it.
+    /// </summary>
+    public string TokScaleScaleTop(long tokens) => IsJapanese
+        ? $"最長のバー: {tokens:N0} トークン"
+        : $"Longest bar: {tokens:N0} tokens";
+    /// <summary>Screen-reader name of a card's two bar rows: the observed amounts themselves, never a percentage of anything.</summary>
+    public string TokScaleBarsName(long today, long week) => IsJapanese
+        ? $"{TokScaleToday} {today:N0} / {TokScaleWeek} {week:N0} トークン"
+        : $"{TokScaleToday} {today:N0} / {TokScaleWeek} {week:N0} tokens";
     /// <summary>A tracked provider the breakdown has not attributed anything to yet.</summary>
     public string TokScaleNotObserved => IsJapanese ? "まだ観測されていません" : "Not observed yet";
     /// <summary>A card whose tokens include a combination row other providers also carry.</summary>
