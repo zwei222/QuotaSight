@@ -41,11 +41,13 @@
     <!-- Only the toast notification API is used (Microsoft.Windows.AppNotifications lives in
          Foundation). Referencing the Microsoft.WindowsAppSDK metapackage also pulled in
          WinUI, onnxruntime and DirectML, inflating the Windows ZIP with ~300 unused files. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
-    <!-- Foundation 2.3.12 declares a dependency on InteractiveExperiences >= 2.1.8, but 2.1.8 was
-         never published, so NuGet resolves 2.1.9 and raises NU1603. Pinning the version it
-         actually resolves keeps warnings-as-errors enabled instead of suppressing NU1603. -->
-    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.7.0" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
+    <!-- Foundation 2.7.0 depends on InteractiveExperiences as the range [2.7.0, 3.0.0), and 2.7.0 is
+         published, so plain restore needs no NU1603 workaround any more. The explicit reference
+         stays because the range would otherwise float onto whatever 2.7.x a later restore finds,
+         silently changing the bundled framework payload without a repository change. Pinning the
+         version Foundation resolves to keeps one reviewed version in the Windows ZIP. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.7.0" PrivateAssets="$(WindowsAppSdkPrivateAssets)" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../QuotaSight.Application/QuotaSight.Application.csproj" /><ProjectReference Include="../QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" /></ItemGroup>
   <ItemGroup><AvaloniaResource Include="Assets/quotasight-icon.svg" /><AvaloniaResource Include="Assets/quotasight-*.png" /><AvaloniaResource Include="Assets/quotasight.ico" /></ItemGroup>

@@ -16,7 +16,7 @@
 
 GitHub App Client IDは設定画面の実行時設定からのみ受け取り、コードやworkflowにハードコードしません。client secretは要求しません。user codeは認証中に限り画面へ表示し、device code、device auth ID、access tokenは画面、ログ、履歴に出しません。GitHub Device Flowで期限付きuser tokenが利用可能な場合、新規ログイン時に返されるrefresh tokenをOS資格情報ストアに保存し、access tokenの期限前にrefresh token grantで更新します。refresh時にrotationされたtoken bundleも保存し直します。既存の旧形式access-token-only資格情報にはrefresh tokenがないため、期限切れ後は継続利用できません。利用を再開するには、ユーザーが明示的に再認証する必要があります。セキュアストアが利用できない場合、tokenは現在のセッション中だけ保持されるため、アプリの再起動後に再認証が必要です。device flowの承認URLは、ユーザーが確認してから開きます。GitHubの認証成功はBilling Usageを参照する権限を保証しません。参照に失敗した場合、前回値を最新として扱わず、古いデータであることを明示します。詳しくは[GitHub App user access tokenのrefresh](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)を参照してください。
 
-Windowsの通知バックエンドはWindows App SDK 2.5.1のApp Notifications APIを使用します。Windows x64向けportable Native AOT ZIPからOS通知の送信を試みますが、API呼び出しが成功してもポップアップが画面に表示されるとは限らず、Windows実機でのpixel-level表示は未検証です。アプリ内バナーはWindowsとLinuxの両方で代替手段として残ります。通常のアプリ終了経路では登録解除と`UnregisterAll`を呼び出しますが、終了処理が実行されない異常終了やcleanup自体の失敗時には、登録情報が残る可能性があります。配布artifactはWindows x64およびLinux x64向けのself-contained .NET 10 Native AOT ZIPのみです。MSIX、deb、AppImageは対象外です。
+Windowsの通知バックエンドはWindows App SDK 2.7.0のApp Notifications APIを使用します。Windows x64向けportable Native AOT ZIPからOS通知の送信を試みますが、API呼び出しが成功してもポップアップが画面に表示されるとは限らず、Windows実機でのpixel-level表示は未検証です。アプリ内バナーはWindowsとLinuxの両方で代替手段として残ります。通常のアプリ終了経路では登録解除と`UnregisterAll`を呼び出しますが、終了処理が実行されない異常終了やcleanup自体の失敗時には、登録情報が残る可能性があります。配布artifactはWindows x64およびLinux x64向けのself-contained .NET 10 Native AOT ZIPのみです。MSIX、deb、AppImageは対象外です。
 
 ## OpenAI Codex device OAuth（非公開・実験的）
 
