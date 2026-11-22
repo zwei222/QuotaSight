@@ -23,6 +23,12 @@ namespace QuotaSight.Collector;
 /// is sent with its total only and counted, rather than rejecting the whole
 /// snapshot: withholding one day's breakdown is a smaller loss than sending
 /// nothing, and guessing the rows from a broken shape is not an option.</item>
+/// <item>The allow-lists are the observed 4.23.0 output, not a wish list:
+/// <c>contributions[].activeTimeMs</c> appears on the days that had a measured
+/// session, and <c>contributions[].clients[].costProvenance</c> appears on every
+/// client row. Both are read for type and bounds and then discarded, so a real
+/// document is neither rejected for carrying them nor able to smuggle a value
+/// into the wire through them.</item>
 /// <item>A day's breakdown is kept only when it explains the day's total exactly
 /// and fits one day's row bound; otherwise that day is sent with its total only and
 /// the withheld day is counted.</item>
@@ -39,9 +45,9 @@ public static class TokscaleGraphNormalizer
 
     private static readonly string[] RootKeys = ["meta", "summary", "years", "contributions", "timeMetrics"];
     private static readonly string[] MetaKeys = ["generatedAt", "version", "dateRange"];
-    private static readonly string[] ContributionKeys = ["date", "totals", "intensity", "tokenBreakdown", "clients"];
+    private static readonly string[] ContributionKeys = ["date", "totals", "intensity", "tokenBreakdown", "clients", "activeTimeMs"];
     private static readonly string[] TotalsKeys = ["tokens", "cost", "messages", "costProvenance"];
-    private static readonly string[] ClientKeys = ["client", "modelId", "providerId", "tokens", "cost", "messages"];
+    private static readonly string[] ClientKeys = ["client", "modelId", "providerId", "tokens", "cost", "messages", "costProvenance"];
     private static readonly string[] ClientTokenKeys = ["input", "output", "cacheRead", "cacheWrite", "reasoning"];
 
     /// <summary>
@@ -380,6 +386,15 @@ public static class TokscaleGraphNormalizer
                     clients = ReadClientsOrWithhold(ref reader, $"{field}.clients");
                     clientsWithheld = clients is null;
                     break;
+                case "activeTimeMs":
+                    // Optional upstream detail: present on the days that had a
+                    // measured session and absent on the rest. It is read so a
+                    // malformed value is still rejected (this is a pinned shape, not
+                    // a permissive reader), and discarded: the collector emits
+                    // tokens only. Both wire versions validate it, because the
+                    // document either matches the pinned shape or it does not.
+                    ReadTokenCount(ref reader, $"{field}.activeTimeMs");
+                    break;
                 default:
                     // intensity and tokenBreakdown are upstream detail; they are discarded.
                     // The day's tokenBreakdown always equals totals.tokens, so it adds
@@ -544,7 +559,7 @@ public static class TokscaleGraphNormalizer
                     sawTokens = true;
                     break;
                 default:
-                    // cost and messages are never mapped: this collector emits tokens only.
+                    // cost, messages and costProvenance are never mapped: this collector emits tokens only.
                     SkipValue(ref reader);
                     break;
             }

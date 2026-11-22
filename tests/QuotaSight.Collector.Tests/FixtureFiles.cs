@@ -24,6 +24,11 @@ internal static class FixtureFiles
     internal const string UnknownRootKey = "graph-4.23.0-unknown-root-key.json";
     internal const string UnknownMetaKey = "graph-4.23.0-unknown-meta-key.json";
     internal const string TrailingGarbage = "graph-4.23.0-trailing-garbage.json";
+    internal const string ActiveTime = "graph-4.23.0-active-time.json";
+    internal const string ActiveTimeNegative = "graph-4.23.0-active-time-negative.json";
+    internal const string ActiveTimeFractional = "graph-4.23.0-active-time-fractional.json";
+    internal const string ActiveTimeString = "graph-4.23.0-active-time-string.json";
+    internal const string ActiveTimeOverflow = "graph-4.23.0-active-time-overflow.json";
 
     /// <summary>
     /// The wire-v2 body both lanes test against: <c>src/QuotaSight.Usage.Api/test/fixtures</c>.
