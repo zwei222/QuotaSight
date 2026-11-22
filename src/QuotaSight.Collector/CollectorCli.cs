@@ -162,7 +162,9 @@ public static class CollectorCli
     /// <param name="send">Injected transport, credentials and state directory. Production passes null.</param>
     /// <returns>Process exit code from <see cref="CollectorExitCodes"/>.</returns>
     public static int Run(string[] args, Stream stdin, Stream stdout, TextWriter stderr, CollectorSendContext? send) =>
-        RunCore(args, stdin, stdout, stderr, send);
+        args.Any(static arg => arg is "--quota-preview" or "--quota-send")
+            ? TokscaleQuotaCli.Run(args, stdin, stdout, stderr, send)
+            : RunCore(args, stdin, stdout, stderr, send);
 
     private static int RunCore(string[] args, Stream stdin, Stream stdout, TextWriter stderr, CollectorSendContext? send)
     {

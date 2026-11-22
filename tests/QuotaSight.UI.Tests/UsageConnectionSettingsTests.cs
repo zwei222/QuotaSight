@@ -424,13 +424,19 @@ public sealed class UsageConnectionSettingsTests
         harness.Store.Availability = CredentialStoreAvailability.SessionOnly;
         await harness.ViewModel.SaveUsageConnectionAsync(Endpoint, ClientId, ClientSecret, CancellationToken.None);
         var raised = new List<string?>();
-        harness.ViewModel.PropertyChanged += (_, args) => raised.Add(args.PropertyName);
+        var gate = new object();
+        harness.ViewModel.PropertyChanged += (_, args) =>
+        {
+            lock (gate) raised.Add(args.PropertyName);
+        };
 
         harness.ViewModel.Language = UiLanguage.Japanese;
 
         Assert.Equal(new UiCopy(UiLanguage.Japanese).UsageConnectionStatus(UsageConnectionState.SessionOnly), harness.ViewModel.UsageConnectionStatusText);
-        Assert.Contains(nameof(MainViewModel.UsageConnectionStatusText), raised);
-        Assert.Contains(nameof(MainViewModel.UsageConnectionErrorText), raised);
+        string?[] snapshot;
+        lock (gate) snapshot = [.. raised];
+        Assert.Contains(nameof(MainViewModel.UsageConnectionStatusText), snapshot);
+        Assert.Contains(nameof(MainViewModel.UsageConnectionErrorText), snapshot);
     }
 
     [Fact]

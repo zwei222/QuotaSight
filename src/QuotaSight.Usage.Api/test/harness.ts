@@ -186,6 +186,8 @@ export interface Harness {
   putStream(input: PutStreamInput): Promise<Response>;
   getDaily(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
   getBreakdown(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
+  putQuota(body: unknown, token?: string): Promise<Response>;
+  getQuota(token?: string): Promise<Response>;
   dispose(): Promise<void>;
 }
 
@@ -282,6 +284,14 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
       const headers: Record<string, string> = { ...(extra ?? {}) };
       if (token !== null) headers.authorization = `Bearer ${token}`;
       return request(`/v1/usage/breakdown${search}`, { headers });
+    },
+    async putQuota(body, token = 'write-a1') {
+      return request(`/v1/collectors/${FIXTURE.collectorA1}/quota`, {
+        method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+    },
+    async getQuota(token = 'read-a1') {
+      return request('/v1/quota/latest', { headers: { authorization: `Bearer ${token}` } });
     },
     async dispose() {
       await mf.dispose();
