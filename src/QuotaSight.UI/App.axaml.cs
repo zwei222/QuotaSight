@@ -84,6 +84,7 @@ public partial class App : Avalonia.Application
             lifecycle = new AppLifecycleCoordinator(_ => CleanupAsync(window, compact).AsTask());
             window.OperationRunner = lifecycle.Run;
             compact.OpenFullRequested = window.ShowFullWindow;
+            compact.OpenFullAndManageRequested = window.ShowFullWindowWithManagePanel;
             compact.IsExiting = () => lifecycle.IsExiting;
             // The tray and the compact window refresh the observed-usage section: the only
             // data surface left outside the open windows.

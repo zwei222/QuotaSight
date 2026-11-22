@@ -11,16 +11,39 @@ public enum QuotaProviderStatus { Available, Unavailable }
 public sealed record QuotaWindowValue(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool Unlimited = false);
 public sealed record QuotaProviderValue(QuotaProvider Provider, QuotaProviderStatus Status, QuotaFreshness Freshness, DateTimeOffset? ObservedAt, IReadOnlyList<QuotaWindowValue> Windows, bool MultipleSources = false);
 public sealed record LatestQuota(DateTimeOffset CollectedAt, IReadOnlyList<QuotaProviderValue> Providers);
-public sealed record QuotaCardWindow(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool IsStale, bool Unlimited, string WindowText, string RemainingText, string ResetText, string FreshnessText, bool Expired = false);
+public sealed record QuotaCardWindow(QuotaWindow Window, int? RemainingBasisPoints, DateTimeOffset? ResetsAt, bool IsStale, bool Unlimited, string WindowText, string RemainingText, string ResetText, string FreshnessText, bool Expired = false)
+{
+    public bool IsPrimary { get; init; }
+    /// <summary>Approved mock: the lowest valid window is emphasised only when it is picked from several valid finite windows.</summary>
+    public bool IsEmphasized { get; init; }
+    public bool IsLimited => !Unlimited;
+    public double CompactValueFontSize => Unlimited ? 11 : 13;
+    public double RowHeight => Unlimited ? 20 : 28;
+    public bool IsResetVisible => !Unlimited && ResetText.Length > 0;
+    public string ValueTone => Unlimited || RemainingBasisPoints is null || Expired ? "muted" : RemainingBasisPoints <= 1000 ? "danger" : RemainingBasisPoints <= 3000 ? "attention" : "normal";
+    public bool IsNormal => ValueTone == "normal";
+    public bool IsAttention => ValueTone == "attention";
+    public bool IsDanger => ValueTone == "danger";
+    public bool IsMuted => ValueTone == "muted";
+}
 public sealed record QuotaProviderCard(QuotaProvider Provider, string ProviderText, IReadOnlyList<QuotaCardWindow> Windows, string CenterText, string CenterPeriodText, bool IsStale, string FreshnessText)
 {
     public bool IsUnavailable { get; init; }
+    public bool IsWarning { get; init; }
+    public string CenterTone { get; init; } = "muted";
+    public bool IsCenterNormal => CenterTone == "normal";
+    public bool IsCenterAttention => CenterTone == "attention";
+    public bool IsCenterDanger => CenterTone == "danger";
+    public bool IsCenterMuted => CenterTone == "muted";
     public string RemoveText { get; init; } = "Remove";
+    /// <summary>Two short lines shown in place of the windows when the card has no quota to show.</summary>
+    public string UnavailableMessage { get; init; } = string.Empty;
     public IReadOnlyList<int?> RingValues => Windows.Where(window => !window.Unlimited).Select(window => window.Expired ? null : window.RemainingBasisPoints).Take(3).ToArray();
     public bool IsUnlimitedOnly => Windows.Count > 0 && Windows.All(window => window.Unlimited);
-    public double MainCenterFontSize => CenterText.Length > 4 ? 10 : 17;
+    public double MainCenterFontSize => CenterText.Length > 4 ? 12 : CenterText.Length > 3 ? 15 : 16;
     public double CompactCenterFontSize => CenterText.Length > 4 ? 9 : 14;
-    public bool HasCenter => Windows.Any(window => window.Window is QuotaWindow.Session or QuotaWindow.FiveHour or QuotaWindow.Premium or QuotaWindow.Rolling);
+    public bool HasCenter => Windows.Count > 0;
+    public bool IsFiniteCenterVisible => HasCenter && !IsUnlimitedOnly;
 }
 
 public static class QuotaCardProjection
@@ -29,11 +52,13 @@ public static class QuotaCardProjection
     public static IReadOnlyList<QuotaProviderCard> Project(LatestQuota quota, bool japanese, DateTimeOffset? now = null, bool forceStale = false)
     {
         var current = now ?? DateTimeOffset.UtcNow;
-        return quota.Providers.Select(provider =>
+        var cards = quota.Providers.Select(provider =>
         {
             var multiple = provider.MultipleSources;
             var unavailable = multiple || provider.Status != QuotaProviderStatus.Available;
-            var freshnessStale = forceStale || unavailable || provider.Freshness != QuotaFreshness.Fresh || provider.ObservedAt is { } observed && observed < current.AddHours(-12);
+            var age = provider.ObservedAt is { } observed ? FormatAge(current - observed, japanese) : string.Empty;
+            var oldObservation = provider.ObservedAt is { } old && current - old > TimeSpan.FromHours(12);
+            var freshnessStale = forceStale || unavailable || provider.Freshness != QuotaFreshness.Fresh || oldObservation;
             var sourceWindows = unavailable ? Array.Empty<QuotaWindowValue>() : provider.Windows.ToArray();
             var windows = sourceWindows.OrderBy(window => Array.IndexOf(Order, window.Window)).Take(3).Select(window =>
             {
@@ -59,13 +84,18 @@ public static class QuotaCardProjection
                     (QuotaWindow.Completions, false) => "Completions",
                     _ => "Monthly"
                 };
-                var resetText = window.ResetsAt is { } at ? (japanese ? at.ToLocalTime().ToString("M/d HH:mm", CultureInfo.InvariantCulture) + " にリセット" : "Resets " + at.ToLocalTime().ToString("M/d h:mm tt", CultureInfo.InvariantCulture)) : (japanese ? "リセット時刻不明" : "Reset unknown");
+                var resetText = expired ? (japanese ? "リセット済み・更新待ち" : "Past reset · awaiting refresh") : window.Unlimited ? string.Empty : window.ResetsAt is { } at ? "↻ " + at.ToLocalTime().ToString("M/d HH:mm", CultureInfo.InvariantCulture) : (japanese ? "リセット時刻不明" : "Reset unknown");
                 var staleText = !stale ? string.Empty : expired ? (japanese ? "リセット済み・再取得待ち" : "Past reset · awaiting refresh") : provider.Freshness switch { QuotaFreshness.Cached => japanese ? "キャッシュ" : "Cached", QuotaFreshness.Unknown => japanese ? "鮮度不明" : "Unknown freshness", _ => japanese ? "古い／期限切れ" : "Stale / expired" };
                 return new QuotaCardWindow(window.Window, window.RemainingBasisPoints, window.ResetsAt, stale, window.Unlimited, name, window.Unlimited ? (japanese ? "無制限" : "Unlimited") : expired ? "—" : window.RemainingBasisPoints is { } bp ? $"{bp / 100m:0.#}%" : "—", resetText, staleText, expired);
             }).ToArray();
-            var shortWindow = windows.FirstOrDefault(window => window.Window is QuotaWindow.Session or QuotaWindow.FiveHour or QuotaWindow.Premium or QuotaWindow.Rolling);
-            var centerExpired = shortWindow is { Expired: true };
-            var center = shortWindow is null ? "—" : shortWindow.Unlimited ? (japanese ? "無制限" : "Unlimited") : centerExpired ? "—" : shortWindow.RemainingText;
+            var primary = windows.Where(window => !window.Unlimited && !window.Expired && window.RemainingBasisPoints is not null)
+                .OrderBy(window => window.RemainingBasisPoints).FirstOrDefault();
+            var validFinite = windows.Count(window => !window.Unlimited && !window.Expired && window.RemainingBasisPoints is not null);
+            windows = windows.Select(window => window with { IsPrimary = primary?.Window == window.Window, IsEmphasized = validFinite > 1 && primary?.Window == window.Window }).ToArray();
+            var allUnlimited = windows.Length > 0 && windows.All(window => window.Unlimited);
+            var center = primary is not null ? primary.RemainingText : allUnlimited ? (japanese ? "無制限" : "Unlimited") : "—";
+            var centerPeriod = primary?.WindowText ?? string.Empty;
+            var centerTone = primary?.ValueTone ?? "muted";
             var providerText = (provider.Provider, japanese) switch
             {
                 (QuotaProvider.Claude, _) => "Claude",
@@ -80,10 +110,44 @@ public static class QuotaCardProjection
                 (QuotaProvider.Copilot, true) => "GitHub Copilot",
                 _ => "GitHub Copilot"
             };
-            var freshness = multiple ? (japanese ? "複数の送信元" : "Multiple sources") : unavailable ? (japanese ? "取得できません" : "Unavailable") : provider.Freshness == QuotaFreshness.Cached ? (japanese ? "キャッシュ" : "Cached") : provider.Freshness == QuotaFreshness.Unknown ? (japanese ? "鮮度不明" : "Freshness unknown") : (japanese ? "古いデータ" : "Stale");
-            var staleCard = unavailable || windows.Any(window => window.IsStale);
-            return new QuotaProviderCard(provider.Provider, providerText, windows, center, shortWindow?.WindowText ?? string.Empty, staleCard, staleCard ? freshness : string.Empty) { IsUnavailable = unavailable };
-        }).ToArray();
+            var freshness = multiple ? (japanese ? "複数の送信元" : "Multiple sources")
+                : unavailable ? (japanese ? "取得できませんでした" : "Unavailable")
+                : forceStale ? (japanese ? "古いデータ" : "Stale")
+                : provider.Freshness == QuotaFreshness.Unknown || provider.ObservedAt is null ? (japanese ? "取得時刻不明" : "Time unknown")
+                : oldObservation ? (japanese ? age + "の値" : age + " old")
+                : provider.Freshness == QuotaFreshness.Cached ? (japanese ? "キャッシュ · " + age : "Cached · " + age)
+                : age;
+            var staleCard = unavailable || freshnessStale || windows.Any(window => window.IsStale);
+            var warning = forceStale || oldObservation;
+            return new QuotaProviderCard(provider.Provider, providerText, windows, center, centerPeriod, staleCard, freshness)
+            {
+                IsUnavailable = unavailable,
+                UnavailableMessage = multiple ? (japanese ? "複数の送信元" : "Multiple sources") : unavailable ? (japanese ? "残量を\n取得できませんでした" : "Couldn't read\nthe quota") : string.Empty,
+                IsWarning = warning,
+                CenterTone = centerTone
+            };
+        }).ToList();
+        // No Antigravity model group could be read: one card headed just "Antigravity", not two near-identical ones.
+        var antigravity = cards.Where(card => card.Provider is QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt).ToArray();
+        if (antigravity.Length > 0 && antigravity.All(card => card.IsUnavailable))
+        {
+            var merged = antigravity[0] with { Provider = QuotaProvider.AntigravityGemini, ProviderText = "Antigravity" };
+            var at = cards.IndexOf(antigravity[0]);
+            cards.RemoveAll(card => antigravity.Contains(card));
+            cards.Insert(at, merged);
+        }
+        return cards.ToArray();
+    }
+
+    private static string FormatAge(TimeSpan age, bool japanese)
+    {
+        var minutes = Math.Max(0, (int)age.TotalMinutes);
+        if (minutes < 1) return japanese ? "たった今" : "Just now";
+        if (minutes < 60) return japanese ? $"{minutes}分前" : $"{minutes}m ago";
+        var hours = minutes / 60;
+        if (hours < 48) return japanese ? $"{hours}時間前" : $"{hours}h ago";
+        var days = hours / 24;
+        return japanese ? $"{days}日前" : $"{days}d ago";
     }
 }
 

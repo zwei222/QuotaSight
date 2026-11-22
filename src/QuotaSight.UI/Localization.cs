@@ -295,7 +295,18 @@ public sealed class UiCopy
     public string QuotaManageServices => IsJapanese ? "サービスを管理" : "Manage services";
     public string QuotaEmptyTitle => IsJapanese ? "表示するサービスがありません" : "No services on your dashboard";
     public string QuotaRemoveService => IsJapanese ? "表示から外す" : "Hide from dashboard";
-    public string QuotaEmptySelection => IsJapanese ? "サービスを追加すると残量が表示されます。" : "Add a service to see its remaining quota.";
+    public string QuotaEmptySelection => IsJapanese ? "残量を確認したい契約を追加してください。" : "Add the subscriptions whose remaining quota you want to see.";
+    public string QuotaCompactEmptyAdd => IsJapanese ? "メインウィンドウで追加" : "Add in the main window";
+    public string QuotaEmptyAdd => IsJapanese ? "サービスを追加" : "Add a service";
+    public string QuotaPanelTitle => IsJapanese ? "ダッシュボードに表示するサービス" : "Services shown on the dashboard";
+    public string QuotaAddAction => IsJapanese ? "追加" : "Add";
+    public string QuotaAntigravityNote => IsJapanese ? "Gemini系とClaude/GPT系の2枚" : "Two cards: Gemini and Claude/GPT models";
+    public string QuotaNoneYet => IsJapanese ? "まだありません" : "None yet";
+    public string QuotaAllAdded => IsJapanese ? "すべて追加済みです" : "All services are added";
+    public string QuotaShownHeader(int count) => IsJapanese ? $"表示中（{count}）" : $"Shown ({count})";
+    public string QuotaAddableHeader(int count) => IsJapanese ? $"追加できるサービス（{count}）" : $"Available to add ({count})";
+    public string QuotaRemoveServiceNamed(string name) => IsJapanese ? $"{name} を表示から外す" : $"Hide {name} from dashboard";
+    public string QuotaAddServiceNamed(string name) => IsJapanese ? $"{name} を追加" : $"Add {name}";
     public string CompactTitle => IsJapanese ? "契約残量" : "Quota";
     public string CompactSubtitle => IsJapanese ? "選択したサービスの残量" : "Remaining quota for selected services";
     // Usage connection section. Credential values are never part of this copy: it is fixed

@@ -23,6 +23,8 @@ public sealed class QuotaRingDrawingTests
             Segments = segments,
             TrackBrush = Brushes.LightGray,
             UnknownBrush = Brushes.Gray,
+            DangerBrush = Brushes.Red,
+            AttentionBrush = Brushes.Goldenrod,
             ValueBrush = Brushes.DarkGreen,
             InnerBrush = Brushes.DarkBlue,
         };
@@ -71,6 +73,15 @@ public sealed class QuotaRingDrawingTests
             if (bytes[i + 3] > 128) greenness = Math.Max(greenness, bytes[i + 1] - Math.Max(bytes[i + 2], bytes[i]));
         }
         return (runs, samples.Count(s => s), Color.FromArgb(bytes[o + 3], bytes[o + 2], bytes[o + 1], bytes[o]), greenness);
+    }
+
+    [AvaloniaFact]
+    public void ZeroRemainderGetsAVisibleDangerDotOnTheTrack()
+    {
+        var bitmap = Render(0);
+        var probe = Probe(bitmap, 0);
+        Assert.Equal(1, probe.Runs);
+        Assert.True(probe.First.R > probe.First.G * 1.8, $"zero window marker should use the danger color, got {probe.First}");
     }
 
     [AvaloniaFact]
@@ -158,7 +169,7 @@ public sealed class QuotaResetTextCultureTests
         {
             Assert.DoesNotContain("午前", text, StringComparison.Ordinal);
             Assert.DoesNotContain("午後", text, StringComparison.Ordinal);
-            Assert.Matches(@"^Resets \d{1,2}/\d{1,2} \d{1,2}:\d{2} (AM|PM)$", text);
+            Assert.Matches(@"^↻ \d{1,2}/\d{1,2} \d{2}:\d{2}$", text);
         }
     }
 
@@ -171,7 +182,7 @@ public sealed class QuotaResetTextCultureTests
         {
             Assert.DoesNotContain("AM", text, StringComparison.Ordinal);
             Assert.DoesNotContain("PM", text, StringComparison.Ordinal);
-            Assert.Matches(@"^\d{1,2}/\d{1,2} \d{2}:\d{2} にリセット$", text);
+            Assert.Matches(@"^↻ \d{1,2}/\d{1,2} \d{2}:\d{2}$", text);
         }
     }
 

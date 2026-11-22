@@ -13,6 +13,8 @@ public partial class CompactQuotaWindow : Window
 {
     public MainViewModel ViewModel { get; }
     public Action? OpenFullRequested { get; set; }
+    /// <summary>Empty compact view: open the main window with the "manage services" panel already open.</summary>
+    public Action? OpenFullAndManageRequested { get; set; }
     public Func<CancellationToken, Task>? RefreshRequested { get; set; }
     public Func<bool>? IsExiting { get; set; }
     private bool terminalClose;
@@ -41,5 +43,6 @@ public partial class CompactQuotaWindow : Window
         catch { }
     }
     private void OpenFullClick(object? sender, RoutedEventArgs e) { if (IsExiting?.Invoke() == true) return; OpenFullRequested?.Invoke(); }
+    private void OpenFullAndManageClick(object? sender, RoutedEventArgs e) { if (IsExiting?.Invoke() == true) return; OpenFullAndManageRequested?.Invoke(); }
     public void Release() { terminalClose = true; Close(); }
 }
