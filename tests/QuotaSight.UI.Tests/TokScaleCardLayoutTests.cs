@@ -50,10 +50,11 @@ public sealed class TokScaleCardLayoutTests
             entry.Card.ProviderKey == "claude_subscription_directsdk_experimental");
 
         // Squeeze the card below the name's natural width, the exact real-machine report:
-        // the name ("Claude (subscription SDK)") is wider than the card.
-        border.MaxWidth = 190;
-        window.UpdateLayout();
+        // the name ("Claude (subscription SDK)") is wider than the card. The width comes
+        // from the measured name itself, so the scenario holds on any font metrics.
         var name = CardName(border);
+        var natural = SqueezeBelowLabelWidth(border, name);
+        window.UpdateLayout();
 
         // The template contract itself: wrap, at most two lines, nothing trimmed off.
         Assert.Equal(TextWrapping.Wrap, name.TextWrapping);
@@ -61,7 +62,6 @@ public sealed class TokScaleCardLayoutTests
         Assert.True(name.MaxLines == 2, $"The name allows {name.MaxLines} lines; it must be capped at two.");
 
         // The name really is too wide for the card here, so it must have wrapped.
-        var natural = NaturalLineWidth(name);
         Assert.True(natural > name.Bounds.Width,
             $"The scenario no longer exercises the bug: '{name.Text}' measures {natural:0.#}px but the element is {name.Bounds.Width:0.#}px wide.");
         Assert.True(name.TextLayout.TextLines.Count == 2,
@@ -84,9 +84,10 @@ public sealed class TokScaleCardLayoutTests
 
         var entries = Cards(window);
         // A long weekly total makes one card's summary wrap to two lines, the way real
-        // observation data does; its row must not become taller than the others.
-        entries.Single(entry => entry.Card.ProviderKey == "claude_subscription_directsdk_experimental")
-            .Border.MaxWidth = 190;
+        // observation data does; its row must not become taller than the others. The card
+        // is squeezed from the summary's measured width, not a fixed pixel count.
+        var squeezed = entries.Single(entry => entry.Card.ProviderKey == "claude_subscription_directsdk_experimental");
+        SqueezeBelowLabelWidth(squeezed.Border, CardSummary(squeezed.Border));
         window.UpdateLayout();
         var panel = window.FindControl<ItemsControl>("TokScaleCards")!.ItemsPanelRoot!;
         var rows = GroupRowsByY(entries, panel);
@@ -127,17 +128,26 @@ public sealed class TokScaleCardLayoutTests
         Assert.True(card.IsMultiProvider, "The Anthropic card must carry the shared notice for this test to mean anything.");
 
         // Squeeze the card the way the real-machine report does; the Japanese notice is
-        // then wider than the card's content area and would be cut at the right edge.
-        border.MaxWidth = 170;
+        // then wider than the card's content area and would be cut at the right edge. The
+        // width comes from the measured notice, so any font still overflows it.
+        var notice = SharedNotice(border);
+        var natural = SqueezeBelowLabelWidth(border, notice);
         window.UpdateLayout();
         // The scenario must actually exercise the bug: the notice is wider than its element.
-        var notice = SharedNotice(border);
-        var natural = NaturalLineWidth(notice);
         Assert.True(natural > notice.Bounds.Width,
             $"The scenario no longer exercises the bug: '{notice.Text}' measures {natural:0.#}px but the element is {notice.Bounds.Width:0.#}px wide.");
         AssertNoticeStaysReadable(window);
         window.ViewModel.Language = UiLanguage.Japanese;
         window.UpdateLayout();
+        // A language change rebuilds the cards, so the squeezed border above is detached
+        // now: resolve the card again and squeeze from the Japanese notice's own measured
+        // width, or this half of the scenario silently stops exercising the cut.
+        var japaneseBorder = Cards(window).Single(entry => entry.Card.ProviderKey == "anthropic").Border;
+        var japaneseNotice = SharedNotice(japaneseBorder);
+        var japaneseNatural = SqueezeBelowLabelWidth(japaneseBorder, japaneseNotice);
+        window.UpdateLayout();
+        Assert.True(japaneseNatural > japaneseNotice.Bounds.Width,
+            $"The Japanese scenario no longer exercises the bug: '{japaneseNotice.Text}' measures {japaneseNatural:0.#}px but the element is {japaneseNotice.Bounds.Width:0.#}px wide.");
         AssertNoticeStaysReadable(window);
         window.Close();
     }
@@ -210,9 +220,9 @@ public sealed class TokScaleCardLayoutTests
 
     /// <summary>
     /// Builds the dashboard with the nine providers and the three combination rows. The
-    /// narrow 420px window plus a deliberately wide font keep the widest catalog name
-    /// ("Claude (subscription SDK)") wider than its card, which is the real-machine
-    /// report; the wide font stands in for any future longer display name.
+    /// narrow 420px window and the deliberately wide font stand in for a real screen where
+    /// a catalog name is longer than its card; the wide font is not what makes the name
+    /// overflow — every squeeze in this file is derived from measured text.
     /// </summary>
     private static async Task<MainWindow> Section(int width, bool wideFont = false)
     {
@@ -303,6 +313,31 @@ public sealed class TokScaleCardLayoutTests
 
     private static TextBlock CardName(Border card) =>
         card.GetVisualDescendants().OfType<TextBlock>().First(text => text.FontWeight == FontWeight.SemiBold);
+
+    /// <summary>The card's usage summary: the only 12px text inside the card.</summary>
+    private static TextBlock CardSummary(Border card) =>
+        card.GetVisualDescendants().OfType<TextBlock>().First(text => Math.Abs(text.FontSize - 12) < 0.5);
+
+    /// <summary>
+    /// Narrows a card below the natural width of one of its labels, so that label must wrap.
+    /// The width is measured from the label itself rather than fixed in pixels: font metrics
+    /// differ per machine, and a fixed MaxWidth only squeezes a font wide enough to overflow
+    /// it — on a narrower font (a Windows CI run measured the name at 152.9px, not 194.9px)
+    /// the label slid back onto one line and the scenario stopped exercising the bug. The
+    /// content area is set to 80% of the label's natural width: below the label, still above
+    /// its widest word, so a wide label wraps onto exactly two lines and nothing is trimmed.
+    /// The template's 170px MinWidth floor is released too, or it would refuse the
+    /// artificial squeeze once the measured width falls below it. Returns the natural width.
+    /// </summary>
+    private static double SqueezeBelowLabelWidth(Border card, TextBlock label)
+    {
+        var natural = NaturalLineWidth(label);
+        var chrome = card.Padding.Left + card.Padding.Right
+            + card.BorderThickness.Left + card.BorderThickness.Right;
+        card.MinWidth = 0;
+        card.MaxWidth = (natural * 0.8) + chrome;
+        return natural;
+    }
 
     /// <summary>The shared-notice label: the only 10px text inside the card.</summary>
     private static TextBlock SharedNotice(Border card) =>
