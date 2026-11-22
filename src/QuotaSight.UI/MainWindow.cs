@@ -425,7 +425,7 @@ public partial class MainWindow : Window
     private async void RefreshClick(object? sender, RoutedEventArgs e)
     {
         if (ViewModel.IsUsageVisible) { await UsageRefreshClickAsync(); return; }
-        try { await RunTrackedAsync(token => ViewModel.RefreshTokScaleAsync(force: true)); }
+        try { await RunTrackedAsync(token => ViewModel.RefreshDashboardAsync(force: true)); }
         catch (OperationCanceledException) { }
     }
     private async Task UsageRefreshClickAsync() { try { await ViewModel.RefreshUsageAsync(); } catch (OperationCanceledException) { } }
