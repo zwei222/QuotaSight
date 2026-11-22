@@ -1,0 +1,7 @@
+{
+  "meta": { "generatedAt": "2026-11-20T09:03:41.128+00:00", "version": "4.23.0" },
+  "contributions": [
+    { "date": "2026-11-17", "totals": { "tokens": 10 }, "activeTimeMs": 1000 },
+    { "date": "2026-11-18", "totals": { "tokens": 20 }, "activeTimeMs": 1.5 }
+  ]
+}

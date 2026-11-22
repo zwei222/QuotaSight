@@ -486,11 +486,18 @@ Consumed fields, and nothing else:
 - `contributions[].date` — strict `YYYY-MM-DD` calendar date, 2000-2100.
 - `contributions[].totals.tokens` — non-negative integer ≤ 2^53-1, never a
   fraction, an exponent, a string or a boolean.
+- `contributions[].activeTimeMs` — optional, and only on the days that had a
+  measured session. Non-negative integer ≤ 2^53-1 under the same rules as
+  `totals.tokens`; a fraction, a negative, a string, a boolean, `null`, an
+  object or a value above the bound is a rejection, in both wire versions. The
+  value is never mapped, so a day's presence or absence of it cannot change the
+  emitted bytes.
 - **Only with `--wire-schema 2`**, `contributions[].clients[]` —
   `client`, `modelId`, `providerId` and
   `tokens.{input,output,cacheRead,cacheWrite,reasoning}`, at most 512 rows read
-  per day. `cost` and `messages` are allowed at that level and never mapped; an
-  unknown key there, a repeated key and a missing `tokens` are rejections.
+  per day. `cost`, `messages` and `costProvenance` are allowed at that level and
+  never mapped; an unknown key there, a repeated key and a missing `tokens` are
+  rejections.
 
 Everything else (`summary`, `years`, `timeMetrics`, `intensity`,
 `tokenBreakdown`, the day-level `clients` in wire v1, `cost`, `messages`,

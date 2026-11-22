@@ -118,7 +118,6 @@ public sealed class TokscaleGraphPartsTests
 
     [Theory]
     [InlineData("extra")]
-    [InlineData("costProvenance")]
     [InlineData("sessionCount")]
     public void AnUnknownClientFieldWithholdsThatDayInsteadOfRejectingTheSnapshot(string field)
     {
