@@ -160,7 +160,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool CanRefresh => !IsTokScaleLoading;
     public bool IsDashboardVisible => CurrentPage == AppPage.Dashboard;
     public bool IsSettingsVisible => CurrentPage == AppPage.Settings;
-    public string HeaderTitle => CurrentPage switch { AppPage.Usage => NavUsageText, AppPage.Settings => CopyText.Settings, _ => CopyText.Dashboard };
+    public string HeaderTitle => CurrentPage switch { AppPage.Usage => NavUsageText, AppPage.Settings => CopyText.Settings, _ => QuotaTitleText };
     public bool IsUsageVisible => CurrentPage == AppPage.Usage;
     public string UsageStateText => new UiCopy(Language).UsageState(usageState);
     /// <summary>The daily read's raw state, for tests that pin the state machine itself.</summary>

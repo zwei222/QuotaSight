@@ -252,6 +252,7 @@ public partial class MainWindow : Window
         var localFirst = this.FindControl<Border>("LocalFirstCard")!;
         var header = this.FindControl<Grid>("DashboardHeader")!;
         var headerCopy = this.FindControl<StackPanel>("DashboardHeaderCopy")!;
+        var manage = this.FindControl<Button>("QuotaManageButton")!;
         var refresh = this.FindControl<Button>("RefreshButton")!;
         if (compact)
         {
@@ -263,10 +264,12 @@ public partial class MainWindow : Window
             nav.Orientation = Orientation.Horizontal;
             localFirst.IsVisible = false;
             nav.Children[1].IsVisible = false;
-            header.ColumnDefinitions = new ColumnDefinitions("*");
+            header.ColumnDefinitions = new ColumnDefinitions("*,Auto");
             header.RowDefinitions = new RowDefinitions("Auto,Auto");
             Grid.SetColumn(headerCopy, 0); Grid.SetRow(headerCopy, 0);
-            Grid.SetColumn(refresh, 0); Grid.SetRow(refresh, 1);
+            Grid.SetColumn(manage, 0); Grid.SetRow(manage, 1);
+            Grid.SetColumn(refresh, 1); Grid.SetRow(refresh, 1);
+            manage.HorizontalAlignment = HorizontalAlignment.Left;
             refresh.HorizontalAlignment = HorizontalAlignment.Right;
         }
         else
@@ -279,12 +282,20 @@ public partial class MainWindow : Window
             nav.Orientation = Orientation.Vertical;
             localFirst.IsVisible = true;
             nav.Children[1].IsVisible = true;
-            header.ColumnDefinitions = new ColumnDefinitions("*,Auto");
+            header.ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto");
             header.RowDefinitions = new RowDefinitions("Auto");
             Grid.SetColumn(headerCopy, 0); Grid.SetRow(headerCopy, 0);
-            Grid.SetColumn(refresh, 1); Grid.SetRow(refresh, 0);
+            Grid.SetColumn(manage, 1); Grid.SetRow(manage, 0);
+            Grid.SetColumn(refresh, 2); Grid.SetRow(refresh, 0);
+            manage.HorizontalAlignment = HorizontalAlignment.Stretch;
             refresh.HorizontalAlignment = HorizontalAlignment.Stretch;
         }
+    }
+
+    private void QuotaManageClick(object? sender, RoutedEventArgs e)
+    {
+        var panel = this.FindControl<Border>("QuotaManagePanel");
+        if (panel is not null) panel.IsVisible = !panel.IsVisible;
     }
 
     private async void QuotaAddSelected(object? sender, SelectionChangedEventArgs e)

@@ -291,8 +291,10 @@ public sealed class UiCopy
     public string OpenFullWindow => IsJapanese ? "メインウィンドウを開く" : "Open full window";
     public string TrayUpdate => IsJapanese ? "更新" : "Refresh";
     public string TrayExit => IsJapanese ? "終了" : "Exit";
-    public string QuotaAddService => IsJapanese ? "＋ 追加" : "Add";
-    public string QuotaRemoveService => IsJapanese ? "削除" : "Remove";
+    public string QuotaAddService => IsJapanese ? "＋ サービスを追加" : "＋ Add a service";
+    public string QuotaManageServices => IsJapanese ? "サービスを管理" : "Manage services";
+    public string QuotaEmptyTitle => IsJapanese ? "表示するサービスがありません" : "No services on your dashboard";
+    public string QuotaRemoveService => IsJapanese ? "表示から外す" : "Hide from dashboard";
     public string QuotaEmptySelection => IsJapanese ? "サービスを追加すると残量が表示されます。" : "Add a service to see its remaining quota.";
     public string CompactTitle => IsJapanese ? "契約残量" : "Quota";
     public string CompactSubtitle => IsJapanese ? "選択したサービスの残量" : "Remaining quota for selected services";
