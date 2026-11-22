@@ -43,43 +43,32 @@ public sealed class TokScaleCatalogTests
     }
 
     [Fact]
-    public void TheAddProviderPickerListsTheExistingFiveFirstThenTheCatalogByDisplayName()
+    public void TheAddProviderPickerListsTheExistingFiveFirstThenTheProviderCatalog()
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
-        // The five existing providers keep their slots at the top, in enum order.
+        // The five existing providers keep their slots at the top, in enum order; the
+        // provider catalog follows (see TokScaleProviderCatalogTests for its contract).
         var existing = choices.Take(5).ToList();
         Assert.Equal(
             (ProviderConnectionChoice[])Enum.GetValues<ProviderConnectionChoice>()[..5],
             [.. existing.Select(choice => choice.Choice)]);
-        Assert.All(existing, choice => Assert.Equal(string.Empty, choice.TokScaleClientId));
+        Assert.All(existing, choice => Assert.Equal(string.Empty, choice.TokScaleProviderId));
 
         var catalog = choices.Skip(5).ToList();
-        // 61 catalog clients minus the four ids the existing providers already cover.
-        Assert.Equal(61 - 4, catalog.Count);
-        Assert.All(catalog, choice => Assert.Equal(ProviderConnectionChoice.TokScale, choice.Choice));
-        Assert.All(catalog, choice => Assert.False(string.IsNullOrWhiteSpace(choice.TokScaleClientId)));
+        Assert.Equal(TokScaleProviderCatalog.Providers.Count, catalog.Count);
         Assert.Equal(
-            catalog.Select(choice => choice.TokScaleClientId).ToHashSet(StringComparer.Ordinal).Count,
-            catalog.Count);
-        foreach (var covered in new[] { "claude", "codex", "copilot", "opencode" })
-        {
-            Assert.DoesNotContain(catalog, choice => choice.TokScaleClientId == covered);
-        }
-
-        // The tail is readable: display name order, case-insensitively.
-        var names = catalog.Select(choice => choice.DisplayName).ToList();
-        var sorted = names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
-        Assert.Equal(sorted, names);
+            TokScaleProviderCatalog.Providers.Select(provider => provider.Id).ToHashSet(StringComparer.Ordinal),
+            catalog.Select(choice => choice.TokScaleProviderId).ToHashSet(StringComparer.Ordinal));
     }
 
     [Fact]
-    public void TheCatalogNeverNamesTheSameClientTwiceInThePicker()
+    public void ThePickerNeverNamesTheSameChoiceTwice()
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
         var identifiers = choices
-            .Select(choice => choice.Choice == ProviderConnectionChoice.TokScale ? choice.TokScaleClientId : choice.Choice.ToString())
+            .Select(choice => choice.Choice == ProviderConnectionChoice.TokScale ? choice.TokScaleProviderId : choice.Choice.ToString())
             .ToList();
         Assert.Equal(identifiers.ToHashSet(StringComparer.Ordinal).Count, identifiers.Count);
     }

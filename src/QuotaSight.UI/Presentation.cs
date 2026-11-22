@@ -26,9 +26,9 @@ public sealed record LocalizedChoice<T>(T Value, string DisplayName)
 {
     public override string ToString() => DisplayName;
 }
-public sealed record ProviderChoiceViewModel(ProviderConnectionChoice Choice, string DisplayName, string TokScaleClientId = "")
+public sealed record ProviderChoiceViewModel(ProviderConnectionChoice Choice, string DisplayName, string TokScaleProviderId = "")
 {
-    public bool IsTokScaleClient => Choice == ProviderConnectionChoice.TokScale;
+    public bool IsTokScaleProvider => Choice == ProviderConnectionChoice.TokScale;
     public override string ToString() => DisplayName;
 }
 public sealed record CodexAuthorizationPrompt(string UserCode, Uri VerificationUri, DateTimeOffset ExpiresAt);
@@ -522,8 +522,10 @@ public sealed class SettingsState
     public string GithubOrganization { get; set; } = string.Empty;
     public string UsageApiEndpoint { get; set; } = string.Empty;
     public decimal? CopilotReferenceCredits { get; set; }
-    /// <summary>Catalog client ids the user added; their cards are usage-only observations.</summary>
+    /// <summary>Legacy tracked client ids from before provider cards. Read and preserved verbatim; never a card source.</summary>
     public IReadOnlyList<string> TokScaleClients { get; set; } = [];
+    /// <summary>Catalog provider ids the user added; their cards are usage-only observations.</summary>
+    public IReadOnlyList<string> TokScaleProviders { get; set; } = [];
     public bool TrySetCopilotReference(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) { CopilotReferenceCredits = null; return true; }
@@ -2151,8 +2153,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // TokScale observes tokens, it knows nothing about a remaining quota.
 
     private string tokScaleState = "Hidden";
-    private IReadOnlyList<TokScaleClientCard> tokScaleCards = [];
-    private IReadOnlyList<string> trackedTokScaleClients = [];
+    private IReadOnlyList<TokScaleUsageCard> tokScaleCards = [];
+    private IReadOnlyList<string> trackedTokScaleProviders = [];
     private bool hasTokScaleValues;
     private UsageBreakdown? tokScaleTodayBreakdown;
     private UsageBreakdown? tokScaleWeekBreakdown;
@@ -2205,7 +2207,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public string TokScaleFailureText => new UiCopy(Language).UsageFailure(tokScaleFailure);
 
-    public IReadOnlyList<TokScaleClientCard> TokScaleCards => tokScaleCards;
+    public IReadOnlyList<TokScaleUsageCard> TokScaleCards => tokScaleCards;
 
     public bool IsTokScaleCardsVisible => tokScaleCards.Count > 0;
 
@@ -2289,7 +2291,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var empty = EmptyBreakdown();
             tokScaleTodayBreakdown = empty;
             tokScaleWeekBreakdown = empty;
-            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(empty, empty, trackedTokScaleClients, Language);
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(empty, empty, trackedTokScaleProviders, Language);
             tokScaleCollectors = [];
             hasTokScaleValues = false;
             tokScaleFailure = UsageFailureKind.None;
@@ -2325,7 +2327,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var weekRead = await usageReadPort.ReadBreakdownAsync(today.AddDays(-6), today, null, token);
             if (token.IsCancellationRequested || id != Volatile.Read(ref tokScaleRequestId)) return;
 
-            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(todayRead, weekRead, trackedTokScaleClients, Language);
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(todayRead, weekRead, trackedTokScaleProviders, Language);
             tokScaleTodayBreakdown = todayRead;
             tokScaleWeekBreakdown = weekRead;
             tokScaleCollectors = weekRead.Collectors;
@@ -2377,7 +2379,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// tracked list and language, then keeps the section state honest about the count.</summary>
     private void RebuildTokScaleCards(UsageBreakdown today, UsageBreakdown week)
     {
-        tokScaleCards = UsageBreakdownAggregation.TokScaleCards(today, week, trackedTokScaleClients, Language);
+        tokScaleCards = UsageBreakdownAggregation.TokScaleCards(today, week, trackedTokScaleProviders, Language);
         if (tokScaleState is "Ready" or "Empty")
         {
             tokScaleState = tokScaleCards.Count == 0 ? "Empty" : "Ready";
@@ -2598,7 +2600,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var emptyBreakdown = EmptyBreakdown();
             tokScaleTodayBreakdown = emptyBreakdown;
             tokScaleWeekBreakdown = emptyBreakdown;
-            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(emptyBreakdown, emptyBreakdown, trackedTokScaleClients, Language);
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(emptyBreakdown, emptyBreakdown, trackedTokScaleProviders, Language);
             tokScaleCollectors = [];
             hasTokScaleValues = false;
             tokScaleFailure = UsageFailureKind.None;
@@ -2770,63 +2772,63 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
     public bool IsProviderFlowOpen { get; private set; }
     public ProviderConnectionChoice SelectedProvider { get; private set; } = ProviderConnectionChoice.ChatGpt;
-    public bool IsManualProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleClient is null && SelectedProvider is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude;
+    public bool IsManualProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleProvider is null && SelectedProvider is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude;
     public bool IsCodexProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Codex;
     public bool IsOpenCodeProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.OpenCode;
     public bool IsCopilotProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Copilot;
-    public TokScaleClientInfo? SelectedTokScaleClient { get; private set; }
-    public bool IsTokScaleProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleClient is not null;
-    public string TokScaleFlowTitleText => SelectedTokScaleClient?.DisplayName ?? string.Empty;
+    public TokScaleProviderInfo? SelectedTokScaleProvider { get; private set; }
+    public bool IsTokScaleProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleProvider is not null;
+    public string TokScaleFlowTitleText => SelectedTokScaleProvider?.DisplayName ?? string.Empty;
     public string TokScaleFlowDescriptionText => CopyText.TokScalePanelDescription;
-    public string TokScaleFlowStatusText => SelectedTokScaleClient is { } client
-        ? IsTokScaleClientTracked ? CopyText.TokScalePanelTracked : CopyText.TokScalePanelNotTracked
+    public string TokScaleFlowStatusText => SelectedTokScaleProvider is { } provider
+        ? IsTokScaleProviderTracked ? CopyText.TokScalePanelTracked : CopyText.TokScalePanelNotTracked
         : string.Empty;
-    public bool IsTokScaleClientTracked => SelectedTokScaleClient is { } client
-        && trackedTokScaleClients.Contains(client.Id, StringComparer.Ordinal);
-    public void OpenProviderFlow() { SelectedTokScaleClient = null; IsProviderFlowOpen = true; providerSelectionMade = false; NotifyProviderFlow(); }
-    public void CloseProviderFlow() { SelectedTokScaleClient = null; IsProviderFlowOpen = false; providerSelectionMade = false; NotifyProviderFlow(); }
-    public void SelectProvider(ProviderConnectionChoice provider) { SelectedTokScaleClient = null; SelectedProvider = provider; providerSelectionMade = true; IsProviderFlowOpen = true; NotifyProviderFlow(); }
-    public void SelectTokScaleClient(string clientId)
+    public bool IsTokScaleProviderTracked => SelectedTokScaleProvider is { } provider
+        && trackedTokScaleProviders.Contains(provider.Id, StringComparer.Ordinal);
+    public void OpenProviderFlow() { SelectedTokScaleProvider = null; IsProviderFlowOpen = true; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void CloseProviderFlow() { SelectedTokScaleProvider = null; IsProviderFlowOpen = false; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void SelectProvider(ProviderConnectionChoice provider) { SelectedTokScaleProvider = null; SelectedProvider = provider; providerSelectionMade = true; IsProviderFlowOpen = true; NotifyProviderFlow(); }
+    public void SelectTokScaleProvider(string providerId)
     {
-        SelectedTokScaleClient = TokScaleClientCatalog.Find(clientId);
-        if (SelectedTokScaleClient is null) return;
+        SelectedTokScaleProvider = TokScaleProviderCatalog.Find(providerId);
+        if (SelectedTokScaleProvider is null) return;
         providerSelectionMade = true;
         IsProviderFlowOpen = true;
         NotifyProviderFlow();
     }
-    public Task AddTokScaleClientAsync(string clientId, CancellationToken cancellationToken = default) => SetTokScaleClientTrackedAsync(clientId, track: true, cancellationToken);
-    public Task RemoveTokScaleClientAsync(string clientId, CancellationToken cancellationToken = default) => SetTokScaleClientTrackedAsync(clientId, track: false, cancellationToken);
-    private Task SetTokScaleClientTrackedAsync(string clientId, bool track, CancellationToken cancellationToken)
+    public Task AddTokScaleProviderAsync(string providerId, CancellationToken cancellationToken = default) => SetTokScaleProviderTrackedAsync(providerId, track: true, cancellationToken);
+    public Task RemoveTokScaleProviderAsync(string providerId, CancellationToken cancellationToken = default) => SetTokScaleProviderTrackedAsync(providerId, track: false, cancellationToken);
+    private Task SetTokScaleProviderTrackedAsync(string providerId, bool track, CancellationToken cancellationToken)
     {
-        if (TokScaleClientCatalog.Find(clientId) is null || IsDisposed) return Task.CompletedTask;
+        if (TokScaleProviderCatalog.Find(providerId) is null || IsDisposed) return Task.CompletedTask;
         return UpdateSettingsAsync(
             settings =>
             {
-                var next = TokScaleTrackedList(settings.TokScaleClients, clientId, track);
-                return (settings with { TokScaleClients = next }, true, true);
+                var next = TokScaleTrackedList(settings.TokScaleProviders, providerId, track);
+                return (settings with { TokScaleProviders = next }, true, true);
             },
-            () => PublishTokScaleTrackedList(track, clientId),
+            () => PublishTokScaleTrackedList(track, providerId),
             cancellationToken);
     }
-    private static string[] TokScaleTrackedList(IEnumerable<string>? current, string clientId, bool track)
+    private static string[] TokScaleTrackedList(IEnumerable<string>? current, string providerId, bool track)
     {
         // Add keeps the existing order and appends only when absent: re-adding the same
-        // client must not reshuffle the saved list.
-        if (track && (current ?? []).Contains(clientId, StringComparer.Ordinal))
+        // provider must not reshuffle the saved list.
+        if (track && (current ?? []).Contains(providerId, StringComparer.Ordinal))
         {
             return [.. current!];
         }
 
-        var kept = (current ?? []).Where(id => !string.Equals(id, clientId, StringComparison.Ordinal)).ToList();
-        if (track) kept.Add(clientId);
+        var kept = (current ?? []).Where(id => !string.Equals(id, providerId, StringComparison.Ordinal)).ToList();
+        if (track) kept.Add(providerId);
         return [.. kept];
     }
-    private void PublishTokScaleTrackedList(bool track, string clientId)
+    private void PublishTokScaleTrackedList(bool track, string providerId)
     {
-        trackedTokScaleClients = TokScaleTrackedList(trackedTokScaleClients, clientId, track);
-        Settings.TokScaleClients = trackedTokScaleClients;
-        // The unconfigured state also carries the empty reads, so adding a client builds
-        // its "not observed yet" card even before any connection exists.
+        trackedTokScaleProviders = TokScaleTrackedList(trackedTokScaleProviders, providerId, track);
+        Settings.TokScaleProviders = trackedTokScaleProviders;
+        // The unconfigured state also carries the empty reads, so adding a provider
+        // builds its "not observed yet" card even before any connection exists.
         if (tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
         {
             RebuildTokScaleCards(today, week);
@@ -2837,7 +2839,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     private void NotifyProviderFlow()
     {
-        foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible), nameof(IsTokScaleProviderPanelVisible), nameof(TokScaleFlowTitleText), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(IsTokScaleClientTracked) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible), nameof(IsTokScaleProviderPanelVisible), nameof(TokScaleFlowTitleText), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(IsTokScaleProviderTracked) }) OnPropertyChanged(name);
     }
     public AppPage CurrentPage { get => currentPage; private set { if (currentPage == value) return; var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value)) { if (value == AppPage.Usage && !wasUsage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } else if (value == AppPage.Dashboard && !wasUsage) { _ = RefreshTokScaleAsync(); } } } }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); RelocalizeTokScale(); NotifyLocalizedProperties(); NotifyBreakdownSurface(); NotifyTokScaleSurface(); } } }
@@ -2959,11 +2961,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Settings.GithubOrganization = dto.GithubOrganization.Trim();
             Settings.UsageApiEndpoint = (dto.UsageApiEndpoint ?? string.Empty).Trim();
             Settings.CopilotReferenceCredits = dto.CopilotReferenceCredits is > 0 ? dto.CopilotReferenceCredits : null;
-            // Only catalog ids are kept: a stale saved id cannot resurrect as a card.
+            // Only catalog ids are kept: a stale saved id cannot resurrect as a card. The
+            // legacy client list is preserved verbatim — it is the user's saved data — but
+            // it is no longer a card source.
             Settings.TokScaleClients = dto.TokScaleClients is null
                 ? []
-                : [.. dto.TokScaleClients.Where(id => TokScaleClientCatalog.Find(id) is not null).Distinct(StringComparer.Ordinal)];
-            trackedTokScaleClients = Settings.TokScaleClients;
+                : [.. dto.TokScaleClients.Distinct(StringComparer.Ordinal)];
+            Settings.TokScaleProviders = dto.TokScaleProviders is null
+                ? []
+                : [.. dto.TokScaleProviders.Where(id => TokScaleProviderCatalog.Find(id) is not null).Distinct(StringComparer.Ordinal)];
+            trackedTokScaleProviders = Settings.TokScaleProviders;
             Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English;
             Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System;
             UiSettings.ApplyTheme(Settings.Theme);
@@ -2973,7 +2980,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally { settingsTransactionGate.Release(); }
     }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients]);
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients], [.. Settings.TokScaleProviders]);
     public async Task<bool> SetCopilotReferenceAsync(string? value, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -3466,13 +3473,16 @@ public static class UiSettings
     public static IReadOnlyList<string> SupportedLanguages { get; } = ["English", "日本語"];
     public static IReadOnlyList<ProviderChoiceViewModel> ProviderChoices(UiLanguage language)
     {
-        // The five existing providers stay at the top in enum order; the TokScale client
-        // catalog follows in display-name order so a list this long stays scannable.
+        // The five existing providers stay at the top in enum order; the provider catalog
+        // follows in display-name order so a list this long stays scannable. No TokScale
+        // choice is filtered away to avoid the five: a provider card and a connection are
+        // different things.
         var existing = Enum.GetValues<ProviderConnectionChoice>()
             .Where(choice => choice != ProviderConnectionChoice.TokScale)
             .Select(choice => new ProviderChoiceViewModel(choice, ProviderDisplayName(choice, language)));
-        var catalog = TokScaleClientCatalog.PickerClients
-            .Select(client => new ProviderChoiceViewModel(ProviderConnectionChoice.TokScale, client.DisplayName, client.Id));
+        var catalog = TokScaleProviderCatalog.Providers
+            .OrderBy(provider => provider.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(provider => new ProviderChoiceViewModel(ProviderConnectionChoice.TokScale, provider.DisplayName, provider.Id));
         return [.. existing, .. catalog];
     }
     private static string ProviderDisplayName(ProviderConnectionChoice choice, UiLanguage language) => choice switch

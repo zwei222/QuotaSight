@@ -4,28 +4,22 @@ namespace QuotaSight.UI;
 public sealed record TokScaleClientInfo(string Id, string DisplayName);
 
 /// <summary>
-/// The client catalog this build offers, pinned to TokScale 4.23.0. The ids are the
-/// lowercase client ids the usage breakdown attributes; the display names are the
-/// product names from the same release. The count and uniqueness are pinned by tests,
-/// so a TokScale release that adds or removes clients is a deliberate catalog update.
+/// The client catalog this build keeps display names for, pinned to TokScale 4.23.0.
+/// The ids are the lowercase client ids the usage breakdown attributes; the display
+/// names are the product names from the same release. The count and uniqueness are
+/// pinned by tests, so a TokScale release that adds or removes clients is a deliberate
+/// catalog update. The add-provider picker now offers providers (see
+/// TokScaleProviderCatalog); this catalog keeps naming the breakdown's client rows.
 ///
 /// One client of that release is deliberately absent from this list: a coding-agent
 /// client whose id is a tool name this public repository does not publish in its
-/// source. A breakdown that attributes tokens to that id still gets its observed card,
-/// with the raw id shown as the name (the same fallback an unknown id gets).
+/// source. A breakdown that attributes tokens to that id still shows it by its raw
+/// id, the same fallback an unknown id gets.
 /// </summary>
 public static class TokScaleClientCatalog
 {
     /// <summary>The TokScale release this catalog mirrors.</summary>
     public const string TokScaleVersion = "4.23.0";
-
-    /// <summary>
-    /// Client ids the five existing providers already cover. The add-provider picker
-    /// omits them so the same client is never offered twice; the catalog keeps them
-    /// because their observed cards still display these product names.
-    /// </summary>
-    public static readonly IReadOnlySet<string> IdsCoveredByExistingProviders =
-        new HashSet<string>(StringComparer.Ordinal) { "claude", "codex", "copilot", "opencode" };
 
     public static IReadOnlyList<TokScaleClientInfo> Clients { get; } =
     [
@@ -97,13 +91,4 @@ public static class TokScaleClientCatalog
 
     /// <summary>The product name for a client id, or the raw id when it is unknown.</summary>
     public static string DisplayNameOf(string id) => Find(id)?.DisplayName ?? id;
-
-    /// <summary>
-    /// The picker's catalog slice: every client the existing providers do not already
-    /// cover, in display-name order so a list this long stays scannable.
-    /// </summary>
-    public static IReadOnlyList<TokScaleClientInfo> PickerClients { get; } =
-        [.. Clients
-            .Where(client => !IdsCoveredByExistingProviders.Contains(client.Id))
-            .OrderBy(client => client.DisplayName, StringComparer.OrdinalIgnoreCase)];
 }

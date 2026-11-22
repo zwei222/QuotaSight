@@ -373,11 +373,11 @@ public partial class MainWindow : Window
         if (isInitializing || isConfiguringLists) return;
         if (sender is ComboBox { SelectedItem: ProviderChoiceViewModel choice })
         {
-            // A catalog client is not a connection: picking it opens the usage-only panel
+            // A catalog provider is not a connection: picking it opens the usage-only panel
             // where the card is added or removed.
-            if (choice.IsTokScaleClient)
+            if (choice.IsTokScaleProvider)
             {
-                ViewModel.SelectTokScaleClient(choice.TokScaleClientId);
+                ViewModel.SelectTokScaleProvider(choice.TokScaleProviderId);
                 return;
             }
 
@@ -391,14 +391,14 @@ public partial class MainWindow : Window
     }
     private async void TokScaleAddClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel.SelectedTokScaleClient is not { } client) return;
-        try { await RunTrackedAsync(token => ViewModel.AddTokScaleClientAsync(client.Id, token)); }
+        if (ViewModel.SelectedTokScaleProvider is not { } provider) return;
+        try { await RunTrackedAsync(token => ViewModel.AddTokScaleProviderAsync(provider.Id, token)); }
         catch (OperationCanceledException) { }
     }
     private async void TokScaleRemoveClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel.SelectedTokScaleClient is not { } client) return;
-        try { await RunTrackedAsync(token => ViewModel.RemoveTokScaleClientAsync(client.Id, token)); }
+        if (ViewModel.SelectedTokScaleProvider is not { } provider) return;
+        try { await RunTrackedAsync(token => ViewModel.RemoveTokScaleProviderAsync(provider.Id, token)); }
         catch (OperationCanceledException) { }
     }
     private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();

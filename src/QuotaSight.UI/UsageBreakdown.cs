@@ -42,17 +42,21 @@ public sealed record BreakdownGroup(
 }
 
 /// <summary>
-/// One small dashboard card: a detected TokScale client with its observed totals, or a
-/// client the user added whose tokens the breakdown has not attributed yet. It is an
-/// observation surface only — no limit, no ring and no threshold belongs on it.
+/// One small dashboard card: a detected provider with its observed totals, or a
+/// provider the user added whose tokens the breakdown has not attributed yet. Tokens
+/// are summed across clients and models for one provider; a row several providers
+/// served together is one combination card. It is an observation surface only — no
+/// limit, no ring and no threshold belongs on it.
 /// </summary>
-public sealed record TokScaleClientCard(
-    string ClientId,
+public sealed record TokScaleUsageCard(
+    string ProviderKey,
     string DisplayName,
     long TodayTokens,
     long WeekTokens,
     string SummaryText,
-    bool Observed = true)
+    bool Observed = true,
+    bool IsMultiProvider = false,
+    string MultiProviderText = "")
 {
     /// <summary>Today's tokens, formatted with grouping and never rounded.</summary>
     public string TodayText => TodayTokens.ToString("N0", CultureInfo.InvariantCulture);
@@ -163,61 +167,68 @@ public static class UsageBreakdownAggregation
 
     /// <summary>
     /// Builds the dashboard cards from the two reads the section performs (today and the
-    /// last seven days). A client seen in either read gets exactly one card; clients the
-    /// user added but the breakdown has not attributed anything to yet get a card that
-    /// says so instead of looking like a zero reading. Sorted by the seven-day total
-    /// descending, ties by client id.
+    /// last seven days), keyed by provider. Tokens one provider served are summed across
+    /// clients and models; a row several providers served together is one combination
+    /// card and its tokens go to no single provider's card, so the cards' totals always
+    /// add up to the parts' totals. A provider seen in either read gets exactly one
+    /// card; providers the user added but the breakdown has not attributed anything to
+    /// yet get a card that says so instead of looking like a zero reading. Sorted by the
+    /// seven-day total descending, ties by provider key.
     /// </summary>
-    public static IReadOnlyList<TokScaleClientCard> TokScaleCards(
+    public static IReadOnlyList<TokScaleUsageCard> TokScaleCards(
         UsageBreakdown today,
         UsageBreakdown week,
-        IReadOnlyList<string> trackedClients,
+        IReadOnlyList<string> trackedProviders,
         UiLanguage language = UiLanguage.English)
     {
         var copy = new UiCopy(language);
         var cards = new Dictionary<string, (long Today, long Week)>(StringComparer.Ordinal);
         foreach (var part in today.Parts)
         {
-            var key = string.IsNullOrEmpty(part.Client) ? string.Empty : part.Client;
+            var key = part.Provider;
             var seen = cards.TryGetValue(key, out var existing) ? existing : (0L, 0L);
             cards[key] = (seen.Item1 + part.Total, seen.Item2);
         }
 
         foreach (var part in week.Parts)
         {
-            var key = string.IsNullOrEmpty(part.Client) ? string.Empty : part.Client;
+            var key = part.Provider;
             var seen = cards.TryGetValue(key, out var existing) ? existing : (0L, 0L);
             cards[key] = (seen.Item1, seen.Item2 + part.Total);
         }
 
-        // A tracked client with no attribution on either read is "not observed yet",
+        // A tracked provider with no attribution on either read is "not observed yet",
         // not a zero-token observation.
-        foreach (var id in trackedClients)
+        foreach (var id in trackedProviders)
         {
-            if (TokScaleClientCatalog.Find(id) is not null && !cards.ContainsKey(id)) cards[id] = (0, 0);
+            if (TokScaleProviderCatalog.Find(id) is not null && !cards.ContainsKey(id)) cards[id] = (0, 0);
         }
 
         return [.. cards
             .Select(pair =>
             {
                 // Presence in either read's parts is the observation; absence is "not
-                // observed yet", even for a tracked client. A zero-token part is a real
+                // observed yet", even for a tracked provider. A zero-token part is a real
                 // observation, not the not-observed state.
-                var observed = today.Parts.Any(part => part.Client == pair.Key)
-                    || week.Parts.Any(part => part.Client == pair.Key);
-                return new TokScaleClientCard(
+                var observed = today.Parts.Any(part => part.Provider == pair.Key)
+                    || week.Parts.Any(part => part.Provider == pair.Key);
+                return new TokScaleUsageCard(
                     pair.Key,
-                    DisplayName(pair.Key, UsageBreakdownDimension.Client, copy),
+                    TokScaleProviderCatalog.CardDisplayName(pair.Key, copy),
                     pair.Value.Today,
                     pair.Value.Week,
                     observed
                         ? $"{copy.TokScaleToday} {pair.Value.Today:N0} · {copy.TokScaleWeek} {pair.Value.Week:N0}"
                         : copy.TokScaleNotObserved,
-                    observed);
+                    observed,
+                    IsMultiProvider(pair.Key),
+                    IsMultiProvider(pair.Key) ? copy.TokScaleMultiProvider : string.Empty);
             })
             .OrderByDescending(card => card.WeekTokens)
-            .ThenBy(card => card.ClientId, StringComparer.Ordinal)];
+            .ThenBy(card => card.ProviderKey, StringComparer.Ordinal)];
     }
+
+    private static bool IsMultiProvider(string providerKey) => providerKey.Contains(',');
 
     private static string KeyOf(UsagePart part, UsageBreakdownDimension dimension) => dimension switch
     {
