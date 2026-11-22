@@ -39,19 +39,26 @@ public sealed class QuotaProviderTileVisualTests
             window.Show();
             await vm.InitializeAsync(TestContext.Current.CancellationToken);
             window.UpdateLayout();
-            Assert.Equal("Add", window.FindControl<ComboBox>("QuotaAddPicker")!.PlaceholderText);
+            Assert.Equal("Subscription quota", window.FindControl<TextBlock>("DashboardTitle")!.Text);
+            Assert.False(window.FindControl<TextBlock>("DashboardSubtitle")!.IsEffectivelyVisible);
+            Assert.True(window.FindControl<Button>("QuotaManageButton")!.IsEffectivelyVisible);
+            Assert.DoesNotContain("board", window.FindControl<Border>("QuotaContractsSection")!.Classes);
             Assert.Equal("Add a service to see its remaining quota.", window.FindControl<TextBlock>("QuotaEmptyStateText")!.Text);
+            var manage = window.FindControl<Button>("QuotaManageButton")!;
+            manage.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(window.FindControl<Border>("QuotaManagePanel")!.IsEffectivelyVisible);
             var picker = window.FindControl<ComboBox>("QuotaAddPicker")!;
+            Assert.Contains("Add", picker.PlaceholderText, StringComparison.Ordinal);
             picker.SelectedIndex = 0;
             await Task.Delay(50, TestContext.Current.CancellationToken);
             window.UpdateLayout();
             var remove = window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "QuotaRemoveButton");
-            Assert.Equal("Remove", remove.Content);
+            Assert.Equal("Hide from dashboard", remove.Content);
             vm.Language = UiLanguage.Japanese;
             window.UpdateLayout();
-            Assert.Equal("＋ 追加", picker.PlaceholderText);
+            Assert.Equal("＋ サービスを追加", picker.PlaceholderText);
             Assert.Equal("サービスを追加すると残量が表示されます。", window.FindControl<TextBlock>("QuotaEmptyStateText")!.Text);
-            Assert.Equal("削除", window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "QuotaRemoveButton").Content);
+            Assert.Equal("表示から外す", window.GetVisualDescendants().OfType<Button>().Single(button => button.Name == "QuotaRemoveButton").Content);
         }
         finally { window.Close(); }
     }
@@ -126,6 +133,9 @@ public sealed class QuotaProviderTileVisualTests
             Assert.False(compact.FindControl<ItemsControl>("CompactTokScaleCards")!.IsEffectivelyVisible);
             Assert.False(compact.FindControl<TextBlock>("CompactTokScaleStatus")!.IsEffectivelyVisible);
             Assert.Empty(vm.QuotaCards);
+            var manageButton = main.FindControl<Button>("QuotaManageButton")!;
+            manageButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            main.UpdateLayout();
             var picker = main.FindControl<ComboBox>("QuotaAddPicker")!;
             Assert.True(picker.IsEffectivelyVisible);
             Assert.True(picker.Bounds.Width > 0);
@@ -150,6 +160,20 @@ public sealed class QuotaProviderTileVisualTests
     {
         await CaptureAndCheck("ja-initial-empty", [], 420, compact: false, japanese: true, dark: true);
         await CaptureAndCheck("ja-claude-only", [P(QuotaProvider.Claude, W(QuotaWindow.Session, 6400, 7), W(QuotaWindow.Weekly, 2800, 60))], 420, compact: false, japanese: true, dark: true);
+    }
+
+    [AvaloniaFact]
+    public async Task Redesigned_dashboard_evidence_is_opt_in_at_desktop_and_narrow_widths()
+    {
+        var one = Services()[0].Providers;
+        var several = one.Concat(Services()[1].Providers).ToArray();
+        foreach (var width in new[] { 1100, 420 })
+        {
+            await CaptureAndCheck("redesign-empty-ja-dark", [], width, compact: false, japanese: true, dark: true);
+            await CaptureAndCheck("redesign-one-ja-dark", one, width, compact: false, japanese: true, dark: true);
+            await CaptureAndCheck("redesign-many-ja-dark", several, width, compact: false, japanese: true, dark: true);
+            await CaptureAndCheck("redesign-manage-ja-dark", several, width, compact: false, japanese: true, dark: true, managementOpen: true);
+        }
     }
 
     [AvaloniaFact]
@@ -203,7 +227,7 @@ public sealed class QuotaProviderTileVisualTests
         finally { window.Close(); }
     }
 
-    private static async Task CaptureAndCheck(string name, QuotaProviderValue[] providers, int width, bool compact, bool japanese, bool dark = false)
+    private static async Task CaptureAndCheck(string name, QuotaProviderValue[] providers, int width, bool compact, bool japanese, bool dark = false, bool managementOpen = false)
     {
         using var vm = new MainViewModel(quotaReadPort: new SyntheticQuotaPort(providers));
         vm.SetSettings(new AppSettingsDto(Theme: dark ? "Dark" : "System", Language: japanese ? "Japanese" : "English", QuotaProviders: providers.Select(provider => provider.Provider switch { QuotaProvider.Claude => "claude", QuotaProvider.Codex => "codex", QuotaProvider.OpenCodeGo => "opencode-go", QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt => "antigravity", QuotaProvider.GrokBuild => "grok-build", _ => "copilot" }).Distinct().ToArray()), persist: false);
@@ -214,6 +238,13 @@ public sealed class QuotaProviderTileVisualTests
             window.Show();
             await vm.InitializeAsync(TestContext.Current.CancellationToken);
             window.UpdateLayout();
+            if (managementOpen && !compact)
+            {
+                var manage = window.FindControl<Button>("QuotaManageButton")!;
+                manage.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                Assert.True(window.FindControl<Border>("QuotaManagePanel")!.IsEffectivelyVisible);
+            }
             var panel = compact ? window.FindControl<Border>("CompactQuotaContracts")! : window.FindControl<Border>("QuotaContractsSection")!;
             Assert.True(panel.IsVisible);
             Assert.Equal(providers.Length, vm.QuotaCards.Count);
@@ -231,7 +262,7 @@ public sealed class QuotaProviderTileVisualTests
             Directory.CreateDirectory(dir);
             using var bitmap = new RenderTargetBitmap(new PixelSize(width, (int)window.Bounds.Height));
             bitmap.Render(window);
-            bitmap.Save(Path.Combine(dir, $"quota-{name}-{(compact ? "compact" : width == 420 ? "420" : "normal")}.png"), PngBitmapEncoderOptions.Default);
+            bitmap.Save(Path.Combine(dir, $"quota-{name}-{(managementOpen ? "management-" : string.Empty)}{(compact ? "compact" : width == 420 ? "420" : "normal")}.png"), PngBitmapEncoderOptions.Default);
         }
         finally { window.Close(); }
     }
