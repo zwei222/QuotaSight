@@ -18,6 +18,11 @@ public sealed class LinuxDesktopNotifications : IDesktopNotificationBackend
     private const string Destination = NotifyDestination;
     private const string ObjectPath = NotifyObjectPath;
     private const string Interface = NotifyInterface;
+    // Tmds.DBus.Protocol 0.9x removed the Connection.DBus* constants; the bus peer service
+    // values (org.freedesktop.DBus at /org/freedesktop/DBus) are stable DBus conventions.
+    private const string DBusServiceName = "org.freedesktop.DBus";
+    private const string DBusObjectPath = "/org/freedesktop/DBus";
+    private const string DBusInterface = "org.freedesktop.DBus";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);
 
     public static NotifyPayload BuildNotifyPayload(string title, string reason) =>
@@ -26,7 +31,7 @@ public sealed class LinuxDesktopNotifications : IDesktopNotificationBackend
     public static MessageBuffer BuildNotifyMessage(MessageWriter writer, string title, string reason)
     {
         var payload = BuildNotifyPayload(title, reason);
-        writer.WriteMethodCallHeader(Destination, ObjectPath, Interface, NotifyMember, NotifySignature);
+        writer.WriteMethodCallHeader(Destination, ObjectPath, Interface, NotifyMember, NotifySignature, MessageFlags.None);
         writer.WriteString(payload.ApplicationName);
         writer.WriteUInt32(payload.ReplacesId);
         writer.WriteString(payload.Icon);
@@ -52,10 +57,10 @@ public sealed class LinuxDesktopNotifications : IDesktopNotificationBackend
         var timeout = Stopwatch.StartNew();
         try
         {
-            var address = Address.Session;
+            var address = DBusAddress.Session;
             if (address is null) return false;
 
-            using var connection = new Connection(address);
+            using var connection = new DBusConnection(new DBusConnectionOptions(address) { AutoConnect = false });
             await connection.ConnectAsync().AsTask().WaitAsync(Remaining(timeout), token).ConfigureAwait(false);
             var request = BuildNotifyMessage(connection.GetMessageWriter(), title, reason);
             var response = await connection.CallMethodAsync(request,

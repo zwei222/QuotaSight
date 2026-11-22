@@ -48,10 +48,10 @@ public sealed class ResidentModeTests
         }
 
         await Task.WhenAll(guard.StartOnceAsync(Start, coordinator.CancellationToken), guard.StartOnceAsync(Start, coordinator.CancellationToken));
-        await probeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await probeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         var countAtExit = probeCount;
-        await Task.Delay(20);
+        await Task.Delay(20, TestContext.Current.CancellationToken);
 
         Assert.Equal(1, guard.StartCount);
         Assert.Equal(countAtExit, probeCount);
@@ -156,9 +156,9 @@ public sealed class ResidentModeTests
         }, refreshLifetime.Token).AsTask();
         coordinator.Track(schedulerTask);
 
-        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
-        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
         Assert.True(schedulerTask.IsCompleted);
         Assert.Equal(1, cleanupCount);
@@ -182,12 +182,12 @@ public sealed class ResidentModeTests
             window.FindControl<Button>("CodexStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await Task.Yield();
             window.FindControl<Button>("CodexPollButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await pollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await pollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
             Assert.False(exit.IsCompleted);
             release.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         }
         finally { window.Close(); vm.Dispose(); }
     }
@@ -216,15 +216,15 @@ public sealed class ResidentModeTests
             vm.SelectProvider(ProviderConnectionChoice.Codex);
             vm.SetCodexResult(new CodexUiResult(true, CodexAuthorizationState.Connected, "connected"));
             window.FindControl<Button>("CodexLogoutButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
             Assert.False(exit.IsCompleted);
             release.SetResult();
-            await cleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await cleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             Assert.Equal(CodexAuthorizationState.Disconnected, stateAtCleanup);
             allowCleanup.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
 
         }
@@ -288,8 +288,8 @@ public sealed class ResidentModeTests
         try
         {
             var store = new AppSettingsStore(root);
-            await store.SaveAsync(new AppSettingsDto(Theme: "Dark", ResidentMode: true));
-            var loaded = await store.LoadAsync();
+            await store.SaveAsync(new AppSettingsDto(Theme: "Dark", ResidentMode: true), TestContext.Current.CancellationToken);
+            var loaded = await store.LoadAsync(TestContext.Current.CancellationToken);
             Assert.True(loaded.ResidentMode);
             Assert.Equal("Dark", loaded.Theme);
         }
@@ -303,7 +303,7 @@ public sealed class ResidentModeTests
         vm.SetSettings(new AppSettingsDto(ResidentMode: true), persist: false);
         Assert.True(vm.Settings.ResidentMode);
         Assert.True(vm.CurrentSettingsForTests.ResidentMode);
-        await vm.SetResidentModeAsync(false);
+        await vm.SetResidentModeAsync(false, TestContext.Current.CancellationToken);
         Assert.False(vm.Settings.ResidentMode);
     }
 
@@ -332,7 +332,7 @@ public sealed class ResidentModeTests
     {
         var history = new BlockingDeleteHistory();
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
-        await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         vm.Navigate(AppPage.History);
         var window = new MainWindow(vm);
         var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
@@ -350,10 +350,10 @@ public sealed class ResidentModeTests
             var deleteButton = window.GetVisualDescendants().OfType<Button>().Single(button =>
                 Avalonia.Automation.AutomationProperties.GetName(button) == "Delete history entry");
             deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             await Task.Delay(100);
 
             Assert.Empty(unhandled);
@@ -390,10 +390,10 @@ public sealed class ResidentModeTests
             var deleteButton = window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>().Single(button =>
                 Avalonia.Automation.AutomationProperties.GetName(button) == "Delete all history");
             deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             await Task.Delay(100);
 
             Assert.Empty(unhandled);
@@ -451,10 +451,10 @@ public sealed class ResidentModeTests
             window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>()
                 .Single(button => Avalonia.Automation.AutomationProperties.GetName(button) == "Export history CSV")
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
 
             var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(5));
+            await exit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             Assert.True(exit.IsCompletedSuccessfully);
             Assert.Empty(unhandled);
@@ -484,15 +484,15 @@ public sealed class ResidentModeTests
             window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>()
                 .Single(button => Avalonia.Automation.AutomationProperties.GetName(button) == (buttonName == "Export CSV" ? "Export history CSV" : "Export history JSON"))
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             // Complete the write before exit so the tracked task is not cancelled.
             destination.AllowWrite.SetResult();
-            await destination.Written.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await destination.Written.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             // Now begin exit — the tracked task is blocked on DisposeAsync (AllowDispose).
             var exit = coordinator.BeginExitAsync();
             Assert.False(exit.IsCompleted);
             destination.AllowDispose.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2));
+            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
             Assert.Equal(contentType, destination.ContentType);
             Assert.Contains(contentType == "text/csv" ? "Provider,Account,Window" : "\"provider\"", destination.Content);
         }

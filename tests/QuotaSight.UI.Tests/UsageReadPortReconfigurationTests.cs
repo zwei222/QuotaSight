@@ -55,11 +55,11 @@ public sealed class UsageReadPortReconfigurationTests
 
         handler.Release();
 
-        var started = await inFlight.WaitAsync(TimeSpan.FromSeconds(5));
+        var started = await inFlight.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(1L, started.TotalTokens);
         Assert.Equal("usage-a.example.test", handler.Requests[0].Host);
 
-        var afterwards = await port.ReadDailyAsync(From, To, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        var afterwards = await port.ReadDailyAsync(From, To, null, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(2L, afterwards.TotalTokens);
         Assert.Equal("usage-b.example.test", handler.Requests[^1].Host);
         Assert.False(client.Disposed, "The shared client must never be disposed by a reconfiguration.");
@@ -74,7 +74,7 @@ public sealed class UsageReadPortReconfigurationTests
         for (var round = 0; round < 32; round++)
         {
             port.Configure(Port(client, round % 2 == 0 ? OriginA : OriginB));
-            await port.ReadDailyAsync(From, To, null, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+            await port.ReadDailyAsync(From, To, null, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             port.Reset();
         }
 

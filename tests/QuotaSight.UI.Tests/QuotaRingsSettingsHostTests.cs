@@ -172,7 +172,7 @@ public sealed class QuotaRingsSettingsHostTests
         {
             host.Window.Show();
             host.Window.UpdateLayout();
-            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             Assert.False(host.ViewModel.HasUsageCredential);
             Assert.Equal(UsageConnectionState.Unconfigured, host.ViewModel.UsageConnectionState);
@@ -250,7 +250,7 @@ public sealed class QuotaRingsSettingsHostTests
         {
             host.Window.Show();
             host.Window.UpdateLayout();
-            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await host.UsageCredentialStore!.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             var banner = host.Window.FindControl<TextBlock>("UsageConnectionStatusText")!;
             var expected = new UiCopy(japanese ? UiLanguage.Japanese : UiLanguage.English).UsageConnectionSaving;

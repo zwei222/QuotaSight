@@ -150,7 +150,7 @@ public sealed class UsageConnectionSettingsUiTests
         FillConnection(window, Endpoint, ClientId, ClientSecret);
 
         window.FindControl<Button>("UsageConnectionSaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await store.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await store.SaveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var busyPanel = window.FindControl<StackPanel>("UsageConnectionBusyPanel")!;
         var progress = window.FindControl<ProgressBar>("UsageConnectionProgressBar")!;

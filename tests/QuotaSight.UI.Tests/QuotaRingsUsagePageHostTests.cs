@@ -35,7 +35,7 @@ public sealed class QuotaRingsUsagePageHostTests
 
             // The loading state's second read is what hangs, so its task must not be awaited.
             if (state != "loading")
-                await host.ViewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5));
+                await host.ViewModel.UsageLoadTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
             var copy = new UiCopy(UiLanguage.English);
             switch (state)

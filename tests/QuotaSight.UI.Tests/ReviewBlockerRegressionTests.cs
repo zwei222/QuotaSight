@@ -23,25 +23,25 @@ public sealed class ReviewBlockerRegressionTests
         var history = new InMemoryQuotaHistory(Enumerable.Range(0, 9).Select(Snapshot).ToList());
         var dispatcher = new HoldNextPublishDispatcher();
         var state = new HistoryState(history, dispatcher);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         dispatcher.HoldNext();
         state.AccountFilter = "account-1";
-        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         state.AccountFilter = "account-2";
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.NotEmpty(state.FilteredEntries);
         Assert.All(state.FilteredEntries, entry => Assert.Equal("account-2", entry.Account));
 
         var notificationsAfterCommit = 0;
         state.PropertyChanged += (_, _) => notificationsAfterCommit++;
         dispatcher.Release();
-        await dispatcher.HeldActionExecuted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await dispatcher.HeldActionExecuted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.All(state.FilteredEntries, entry => Assert.Equal("account-2", entry.Account));
         Assert.Equal(0, notificationsAfterCommit);
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.All(state.FilteredEntries, entry => Assert.Equal("account-2", entry.Account));
         state.Dispose();
     }
@@ -55,18 +55,18 @@ public sealed class ReviewBlockerRegressionTests
         var history = new InMemoryQuotaHistory([]);
         var scheduler = new ConcurrencyContractTests.BlockingBuildScheduler(blockedCall: 2);
         var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var append = state.AppendAndReloadAsync([Snapshot(1) with { Account = "accepted-row" }]);
-        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var jsonTask = state.ExportJsonAsync();
-        var csvTask = state.ExportCsvAsync();
-        var deleteAll = state.DeleteAllAsync();
+        var append = state.AppendAndReloadAsync([Snapshot(1) with { Account = "accepted-row" }], TestContext.Current.CancellationToken);
+        await scheduler.BlockedBuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var jsonTask = state.ExportJsonAsync(TestContext.Current.CancellationToken);
+        var csvTask = state.ExportCsvAsync(TestContext.Current.CancellationToken);
+        var deleteAll = state.DeleteAllAsync(TestContext.Current.CancellationToken);
 
-        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5));
-        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5));
-        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5));
-        await append.WaitAsync(TimeSpan.FromSeconds(5));
+        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csv = await csvTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await append.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         using (var document = JsonDocument.Parse(json))
         {
@@ -78,8 +78,8 @@ public sealed class ReviewBlockerRegressionTests
         Assert.Contains("accepted-row", csv, StringComparison.Ordinal);
 
         scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Empty(state.Entries);
         Assert.Empty(state.FilteredEntries);
         state.Dispose();
@@ -93,22 +93,22 @@ public sealed class ReviewBlockerRegressionTests
         var history = new GatedAppendHistory([]);
         var scheduler = new ConcurrencyContractTests.BlockingBuildScheduler(blockedCall: 2);
         var state = new HistoryState(history, new ImmediateUiDispatcher(), scheduler);
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var append = state.AppendAndReloadAsync([Snapshot(1) with { Account = "accepted-row" }]);
-        await history.AppendStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var jsonTask = state.ExportJsonAsync();
-        var deleteAll = state.DeleteAllAsync();
+        var append = state.AppendAndReloadAsync([Snapshot(1) with { Account = "accepted-row" }], TestContext.Current.CancellationToken);
+        await history.AppendStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var jsonTask = state.ExportJsonAsync(TestContext.Current.CancellationToken);
+        var deleteAll = state.DeleteAllAsync(TestContext.Current.CancellationToken);
         history.ReleaseAppend.TrySetResult(true);
 
-        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5));
-        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5));
-        await append.WaitAsync(TimeSpan.FromSeconds(5));
+        await deleteAll.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var json = await jsonTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await append.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains("accepted-row", json, StringComparison.Ordinal);
 
         scheduler.ReleaseBlockedBuild.TrySetResult(true);
-        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await scheduler.BlockedBuildCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Empty(state.Entries);
         state.Dispose();
     }
@@ -119,14 +119,14 @@ public sealed class ReviewBlockerRegressionTests
     public async Task Latest_build_cancellation_terminates_pending_requests_and_queue_recovers()
     {
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), new ImmediateUiDispatcher(), new CancelOnSecondProjectionScheduler());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         state.AccountFilter = "account-1";
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
         state.AccountFilter = "All accounts";
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Single(state.FilteredEntries);
         state.Dispose();
     }
@@ -137,14 +137,14 @@ public sealed class ReviewBlockerRegressionTests
     {
         var history = new InMemoryQuotaHistory([Snapshot(1)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         state.Dispose();
-        await state.PumpCompletedForTests.WaitAsync(TimeSpan.FromSeconds(5));
+        await state.PumpCompletedForTests.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.DeleteAsync(history.Events[0].EventId).WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.AppendAndReloadAsync([Snapshot(2)]).WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.DeleteAsync(history.Events[0].EventId, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.AppendAndReloadAsync([Snapshot(2)], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         state.AccountFilter = "account-1";
         state.NextPage();
     }
@@ -158,19 +158,19 @@ public sealed class ReviewBlockerRegressionTests
     {
         var history = new MutationThenReadFaultHistory([Snapshot(1), Snapshot(2)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         var target = history.Events[0].EventId;
 
         if (operation == "delete")
-            await Assert.ThrowsAsync<InvalidOperationException>(() => state.DeleteAsync(target).WaitAsync(TimeSpan.FromSeconds(5)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => state.DeleteAsync(target, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         else
-            await Assert.ThrowsAsync<InvalidOperationException>(() => state.AppendAndReloadAsync([Snapshot(3) with { Account = "appended" }]).WaitAsync(TimeSpan.FromSeconds(5)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => state.AppendAndReloadAsync([Snapshot(3) with { Account = "appended" }], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         Assert.NotNull(state.LoadError);
 
-        await state.RefreshAfterPersistAsync().WaitAsync(TimeSpan.FromSeconds(5));
-        var csv = await state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var csv = await state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         if (operation == "delete") Assert.DoesNotContain(state.Entries, entry => entry.Id == target);
         else Assert.Contains("appended", csv, StringComparison.Ordinal);
         Assert.Null(state.LoadError);
@@ -184,20 +184,20 @@ public sealed class ReviewBlockerRegressionTests
     {
         var history = new MutationThenBlockedReadHistory([Snapshot(1), Snapshot(2)]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         var target = history.Events[0].EventId;
 
         using var cancellation = new CancellationTokenSource();
         var delete = state.DeleteAsync(target, cancellation.Token);
-        await history.BlockedReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await history.BlockedReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delete.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
 
-        await state.RefreshAfterPersistAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.DoesNotContain(state.Entries, entry => entry.Id == target);
-        var csv = await state.ExportCsvAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var csv = await state.ExportCsvAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(2, csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
         state.Dispose();
     }
@@ -208,7 +208,7 @@ public sealed class ReviewBlockerRegressionTests
     public async Task Dispose_during_property_changed_stops_remaining_notifications()
     {
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var disposedDuringNotification = false;
         var notificationsAfterDispose = 0;
@@ -223,7 +223,7 @@ public sealed class ReviewBlockerRegressionTests
             notificationsAfterDispose++;
         };
         state.SetLanguage(UiLanguage.Japanese);
-        await state.PumpCompletedForTests.WaitAsync(TimeSpan.FromSeconds(5));
+        await state.PumpCompletedForTests.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(disposedDuringNotification);
         Assert.Equal(0, notificationsAfterDispose);
@@ -238,8 +238,8 @@ public sealed class ReviewBlockerRegressionTests
         var application = new GatedSnapshotApplication(new QuotaRefreshResult([Snapshot(50)], []));
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
 
-        var refresh = vm.RefreshAsync(RefreshOrigin.Scheduled);
-        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var refresh = vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
+        await application.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         vm.Dispose();
 
         var propertyChanges = 0;
@@ -249,7 +249,7 @@ public sealed class ReviewBlockerRegressionTests
         vm.History.PropertyChanged += (_, _) => propertyChanges++;
 
         application.Release.TrySetResult(true);
-        try { await refresh.WaitAsync(TimeSpan.FromSeconds(5)); }
+        try { await refresh.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken); }
         catch (OperationCanceledException) { }
 
         Assert.Equal(0, propertyChanges);
@@ -266,8 +266,8 @@ public sealed class ReviewBlockerRegressionTests
         Assert.NotEmpty(vm.Cards);
 
         dispatcher.HoldNext();
-        var refresh = vm.RefreshAsync(RefreshOrigin.Scheduled);
-        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var refresh = vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
+        await dispatcher.Held.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         vm.Dispose();
 
         var propertyChanges = 0;
@@ -277,8 +277,8 @@ public sealed class ReviewBlockerRegressionTests
         vm.History.PropertyChanged += (_, _) => propertyChanges++;
 
         dispatcher.Release();
-        await dispatcher.HeldActionExecuted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        await dispatcher.HeldActionExecuted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.Equal(0, collectionChanges);
         Assert.Equal(0, propertyChanges);
@@ -290,7 +290,7 @@ public sealed class ReviewBlockerRegressionTests
     public async Task Notification_faults_with_changing_messages_do_not_republish_unbounded()
     {
         var state = new HistoryState(new InMemoryQuotaHistory([Snapshot(1)]), new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var faults = 0;
         var throwing = true;
@@ -303,12 +303,12 @@ public sealed class ReviewBlockerRegressionTests
             throw new InvalidOperationException($"subscriber failure {fault}");
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => state.RefreshAfterPersistAsync().WaitAsync(TimeSpan.FromSeconds(5)));
-        await Assert.ThrowsAnyAsync<TimeoutException>(() => thirdFault.Task.WaitAsync(TimeSpan.FromSeconds(1)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => state.RefreshAfterPersistAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAnyAsync<TimeoutException>(() => thirdFault.Task.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
         Assert.Equal(2, faults);
 
         throwing = false;
-        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "after-bounded-fault" }]).WaitAsync(TimeSpan.FromSeconds(5));
+        await state.AppendAndReloadAsync([Snapshot(2) with { Account = "after-bounded-fault" }], TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Contains(state.Entries, entry => entry.Account == "after-bounded-fault");
         Assert.Null(state.LoadError);
         state.Dispose();
@@ -323,7 +323,7 @@ public sealed class ReviewBlockerRegressionTests
         var snapshot = Snapshot(60) with { Account = "provider-owned" };
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: new SingleResultApplication(new QuotaRefreshResult([snapshot], [])), uiDispatcher: new ImmediateUiDispatcher());
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Single(history.Events, entry => entry.Snapshot.Account == "provider-owned");
         Assert.Contains(vm.History.Entries, entry => entry.Account == "provider-owned");
@@ -337,9 +337,9 @@ public sealed class ReviewBlockerRegressionTests
         var application = new MutableResultApplication(new QuotaRefreshResult([successful], []));
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(PresentationState.Ready, vm.PresentationState);
         Assert.False(vm.IsError);
@@ -370,12 +370,12 @@ public sealed class ReviewBlockerRegressionTests
         var application = new MutableResultApplication(new QuotaRefreshResult([old, other], []));
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         application.Result = new QuotaRefreshResult(
             [old with { Account = "org-b/user-b", Used = 40 }, other with { Used = 35 }],
             [],
             activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain(vm.Cards, card => card.Provider == ProviderKind.Copilot && card.Account == "org-a/user-a");
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.Copilot && card.Account == "org-b/user-b");
@@ -393,19 +393,19 @@ public sealed class ReviewBlockerRegressionTests
     {
         var history = new InMemoryQuotaHistory(Enumerable.Range(0, 150).Select(index => Snapshot(index) with { Account = "acct" }).ToList());
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         state.NextPage();
         state.NextPage();
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(2, state.CurrentPage);
         Assert.True(state.HasPreviousPage);
 
         var observed = new List<bool>();
         state.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(state.HasPreviousPage)) observed.Add(state.HasPreviousPage); };
 
-        await state.DeleteAllAsync().WaitAsync(TimeSpan.FromSeconds(5));
-        await state.WaitForPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.DeleteAllAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await state.WaitForPublishedAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.Equal(0, state.CurrentPage);
         Assert.Equal(0, state.RequestedPage);
@@ -423,9 +423,9 @@ public sealed class ReviewBlockerRegressionTests
         const string account = "tab\tback\bform\fquote\"slash\\solidus/cr\rlf\ncontrolend";
         var history = new InMemoryQuotaHistory([Snapshot(1) with { Account = account }]);
         var state = new HistoryState(history, new ImmediateUiDispatcher());
-        await state.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        await state.InitializeAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        var json = await state.ExportJsonAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var json = await state.ExportJsonAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         using var document = JsonDocument.Parse(json);
         var entry = Assert.Single(document.RootElement.EnumerateArray());
@@ -577,7 +577,7 @@ public sealed class ReviewBlockerAvaloniaRegressionTests
 
         var refresh = vm.RefreshAsync(RefreshOrigin.Manual);
         Assert.True(vm.IsQuotaDataBusy);
-        await refresh.WaitAsync(TimeSpan.FromSeconds(10));
+        await refresh.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.True(application.SynchronousPrefixOffUi);
         Assert.False(vm.IsQuotaDataBusy);
@@ -600,7 +600,7 @@ public sealed class ReviewBlockerAvaloniaRegressionTests
 
         var initialization = vm.InitializeAsync();
         Assert.True(vm.IsQuotaDataBusy);
-        await initialization.WaitAsync(TimeSpan.FromSeconds(10));
+        await initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.True(history.PruneOffUi);
         Assert.True(history.ReadOffUi);
@@ -628,9 +628,9 @@ public sealed class ReviewBlockerAvaloniaRegressionTests
             window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>()
                 .Single(button => Avalonia.Automation.AutomationProperties.GetName(button) == "Export history CSV")
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await destination.PickRequested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await destination.PickRequested.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-            await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await coordinator.BeginExitAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             Assert.True(coordinator.IsCleanupCompleted);
 
             var bannerBefore = vm.NotificationBannerText;

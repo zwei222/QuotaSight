@@ -98,12 +98,12 @@ public sealed class UsageConnectionSettingsTests
         using var harness = Harness.Create();
 
         await harness.ViewModel.SaveUsageConnectionAsync(Endpoint, ClientId, ClientSecret, CancellationToken.None);
-        var settingsJson = await File.ReadAllTextAsync(harness.Settings.Path);
+        var settingsJson = await File.ReadAllTextAsync(harness.Settings.Path, TestContext.Current.CancellationToken);
 
         Assert.Contains("\"UsageApiEndpoint\":\"" + Endpoint + "\"", settingsJson, StringComparison.Ordinal);
         foreach (var file in Directory.EnumerateFiles(harness.Root, "*", SearchOption.AllDirectories))
         {
-            var text = await File.ReadAllTextAsync(file);
+            var text = await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken);
             Assert.DoesNotContain(ClientId, text, StringComparison.Ordinal);
             Assert.DoesNotContain(ClientSecret, text, StringComparison.Ordinal);
         }

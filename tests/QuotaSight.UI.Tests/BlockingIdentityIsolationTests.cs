@@ -17,7 +17,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
             Json(HttpStatusCode.OK, "{\"login\":\"alice\"}"),
             Json(HttpStatusCode.OK, $"{{\"timePeriod\":{{\"year\":{now.Year},\"month\":{now.Month}}},\"organization\":\"acme\",\"user\":\"alice\",\"usageItems\":[{{\"product\":\"Copilot\",\"unitType\":\"credits\",\"grossQuantity\":3,\"discountQuantity\":0,\"netQuantity\":3}}]}}")));
 
-        var result = await new DynamicCopilotAdapter(client, new CountingCredentialStore("token"), () => "acme").FetchWithActiveAccountAsync("GitHub Copilot", default);
+        var result = await new DynamicCopilotAdapter(client, new CountingCredentialStore("token"), () => "acme").FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(FetchStatus.Success, result.Result.Status);
         Assert.Equal("acme/alice", result.ActiveAccount);
@@ -33,7 +33,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
             Json(HttpStatusCode.OK, $"{{\"timePeriod\":{{\"year\":{DateTimeOffset.UtcNow.Year},\"month\":{DateTimeOffset.UtcNow.Month}}},\"organization\":\"acme\",\"user\":\"alice\",\"usageItems\":[]}}")));
         var adapter = new DynamicCopilotAdapter(client, store, () => "  acme  ");
 
-        var result = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", default);
+        var result = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(FetchStatus.NoData, result.Result.Status);
         Assert.Equal("acme/alice", result.ActiveAccount);
@@ -56,7 +56,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
             using var client = new HttpClient(new SequenceHandler(Json(HttpStatusCode.OK, "{\"login\":\"alice\"}"), billingResponse));
             var adapter = new DynamicCopilotAdapter(client, store, () => "acme");
 
-            var result = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", default);
+            var result = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
             Assert.Equal(expectedStatus, result.Result.Status);
             Assert.Equal("acme/alice", result.ActiveAccount);
@@ -71,7 +71,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
         var handler = new SequenceHandler(Json(HttpStatusCode.Forbidden, "", ("Retry-After", "60")));
         using var client = new HttpClient(handler);
 
-        var result = await new DynamicCopilotAdapter(client, store, () => "acme").FetchWithActiveAccountAsync("GitHub Copilot", default);
+        var result = await new DynamicCopilotAdapter(client, store, () => "acme").FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(FetchStatus.RateLimited, result.Result.Status);
         Assert.Null(result.ActiveAccount);
@@ -87,7 +87,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
         using var client = new HttpClient(handler);
         var adapter = new DynamicCopilotAdapter(client, store, () => "  ");
 
-        var unsupported = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", default);
+        var unsupported = await adapter.FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(FetchStatus.ConfigurationError, unsupported.Result.Status);
         Assert.Null(unsupported.ActiveAccount);
@@ -113,7 +113,7 @@ public sealed class BlockingIdentityIsolationAdapterTests
         var handler = new SequenceHandler(Json(HttpStatusCode.OK, "{\"login\":\"alice\"}"));
         using var client = new HttpClient(handler);
 
-        var result = await new DynamicCopilotAdapter(client, store, () => organization).FetchWithActiveAccountAsync("GitHub Copilot", default);
+        var result = await new DynamicCopilotAdapter(client, store, () => organization).FetchWithActiveAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(FetchStatus.ConfigurationError, result.Result.Status);
         Assert.Null(result.ActiveAccount);
@@ -158,10 +158,10 @@ public sealed class BlockingIdentityIsolationViewModelTests
         var old = Snapshot("org-a/user-a");
         var application = new MutableResultApplication(new QuotaRefreshResult([old], [], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account }));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot }, new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain(vm.Cards, card => card.Provider == ProviderKind.Copilot);
         Assert.Equal(PresentationState.Empty, vm.PresentationState);
@@ -175,10 +175,10 @@ public sealed class BlockingIdentityIsolationViewModelTests
         var other = Snapshot("other") with { Provider = ProviderKind.OpenCode };
         var application = new MutableResultApplication(new QuotaRefreshResult([old, other], [], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account }));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         application.Result = new QuotaRefreshResult([], [new(ProviderKind.Copilot, FetchStatus.Forbidden)], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain(vm.Cards, card => card.Provider == ProviderKind.Copilot);
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
@@ -193,10 +193,10 @@ public sealed class BlockingIdentityIsolationViewModelTests
         var other = Snapshot("other") with { Provider = ProviderKind.OpenCode };
         var application = new MutableResultApplication(new QuotaRefreshResult([old, other], [], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account }));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot, ProviderKind.OpenCode }, new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
         Assert.Contains("Copilot: no data for the current period.", vm.NotificationBannerText, StringComparison.Ordinal);
@@ -209,11 +209,11 @@ public sealed class BlockingIdentityIsolationViewModelTests
         var old = Snapshot("org-a/user-a");
         var application = new MutableResultApplication(new QuotaRefreshResult([old], [], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account }));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot }, new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account });
         vm.Language = UiLanguage.Japanese;
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.Copilot && card.Account == old.Account);
         Assert.Equal(PresentationState.Ready, vm.PresentationState);
@@ -228,10 +228,10 @@ public sealed class BlockingIdentityIsolationViewModelTests
         var manual = old with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
         var application = new MutableResultApplication(new QuotaRefreshResult([old, manual], [], activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = old.Account }));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         application.Result = new QuotaRefreshResult([], [], new HashSet<ProviderKind> { ProviderKind.Copilot }, new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org-b/user-b" });
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(vm.Cards, item => item.Provider == ProviderKind.Copilot);
         Assert.Contains(card.Windows, window => window.SourceBadge == "Manual");

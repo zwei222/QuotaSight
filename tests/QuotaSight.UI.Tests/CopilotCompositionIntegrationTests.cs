@@ -84,13 +84,13 @@ public sealed class CopilotCompositionIntegrationTests
     {
         var now = DateTimeOffset.UtcNow;
         var store = new InMemoryCredentialStore();
-        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), now), default);
+        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), now), TestContext.Current.CancellationToken);
         var handler = new RefreshRetryHandler();
         using var client = new HttpClient(handler);
         var session = new GitHubUserTokenSession(store, () => "client-id", client);
         var adapter = new DynamicCopilotAdapter(client, store, () => "acme", session);
 
-        var result = await adapter.FetchWithAccountAsync("Copilot", default);
+        var result = await adapter.FetchWithAccountAsync("Copilot", TestContext.Current.CancellationToken);
 
         Assert.True(result.Result.IsSuccess);
         Assert.Equal("acme/new-login", result.ActiveAccount);
@@ -103,13 +103,13 @@ public sealed class CopilotCompositionIntegrationTests
     {
         var clock = new MutableIntegrationTimeProvider(new DateTimeOffset(2026, 10, 31, 23, 59, 59, TimeSpan.Zero));
         var store = new InMemoryCredentialStore();
-        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), clock.GetUtcNow()), default);
+        await store.SetAsync("github", GitHubUserTokens.SerializeBundle("client-id", new("old-access", "old-refresh", 3600, 86400), clock.GetUtcNow()), TestContext.Current.CancellationToken);
         var handler = new BillingRetryAcrossMonthHandler(clock);
         using var client = new HttpClient(handler);
         var session = new GitHubUserTokenSession(store, () => "client-id", client, clock);
         var adapter = new DynamicCopilotAdapter(client, store, () => "new-org", session, clock);
 
-        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", default);
+        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(QuotaSight.Core.FetchStatus.NoData, result.Result.Status);
         Assert.Null(result.Result.Value);
@@ -140,10 +140,10 @@ public sealed class CopilotCompositionIntegrationTests
         var handler = new EmptyPeriodHandler();
         using var client = new HttpClient(handler);
         var store = new InMemoryCredentialStore();
-        await store.SetAsync("github", "synthetic-token", default);
+        await store.SetAsync("github", "synthetic-token", TestContext.Current.CancellationToken);
         var adapter = new DynamicCopilotAdapter(client, store, () => "acme", timeProvider: new IntegrationTimeProvider(now));
 
-        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", default);
+        var result = await adapter.FetchWithAccountAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.Equal(QuotaSight.Core.FetchStatus.NoData, result.Result.Status);
         Assert.Equal("acme/octocat", result.ActiveAccount);
@@ -158,11 +158,11 @@ public sealed class CopilotCompositionIntegrationTests
         const string token = "fallback-token-must-not-leak";
         var fallback = new InMemoryCredentialStore();
         var credentials = new FallbackCredentialStore(new UnavailableCredentialStore(), fallback);
-        await fallback.SetAsync("github", token, default);
+        await fallback.SetAsync("github", token, TestContext.Current.CancellationToken);
         using var client = new HttpClient(new CopilotBillingHandler("acme", "octocat", token));
         var adapter = new DynamicCopilotAdapter(client, credentials, () => "acme");
 
-        var result = await adapter.FetchAsync("GitHub Copilot", default);
+        var result = await adapter.FetchAsync("GitHub Copilot", TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess);
         Assert.Single(result.Value!);
@@ -175,15 +175,15 @@ public sealed class CopilotCompositionIntegrationTests
         const string tokenA = "token-A-must-not-leak";
         const string tokenB = "token-B-must-not-leak";
         var store = new InMemoryCredentialStore();
-        await store.SetAsync("github", tokenA, default);
+        await store.SetAsync("github", tokenA, TestContext.Current.CancellationToken);
         var userStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseUser = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var client = new HttpClient(new TokenBarrierHandler(tokenA, userStarted, releaseUser));
         var adapter = new DynamicCopilotAdapter(client, store, () => "acme");
 
-        var refresh = adapter.FetchAsync("GitHub Copilot", default).AsTask();
-        await userStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await store.SetAsync("github", tokenB, default);
+        var refresh = adapter.FetchAsync("GitHub Copilot", TestContext.Current.CancellationToken).AsTask();
+        await userStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        await store.SetAsync("github", tokenB, TestContext.Current.CancellationToken);
         releaseUser.TrySetResult(true);
         var result = await refresh;
 
@@ -202,8 +202,8 @@ public sealed class CopilotCompositionIntegrationTests
         var authorization = new DeviceAuthorizationStart("device-code", "ABCD-EFGH", new Uri("https://github.com/login/device"), DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.Zero);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => facade.PollGitHubDeviceFlowAsync(authorization, cancellation.Token).AsTask());
-        Assert.Null(await facade.GetStoredOpenCodeKeyAsync(default));
-        Assert.Null(await store.GetAsync("github", default));
+        Assert.Null(await facade.GetStoredOpenCodeKeyAsync(TestContext.Current.CancellationToken));
+        Assert.Null(await store.GetAsync("github", TestContext.Current.CancellationToken));
     }
 
     private sealed class RefreshRetryHandler : HttpMessageHandler
@@ -326,13 +326,13 @@ public sealed class CopilotCompositionIntegrationTests
                 parts.ViewModel.OpenProviderFlow();
                 parts.ViewModel.SelectProvider(ProviderConnectionChoice.Copilot);
                 window.FindControl<Button>("CopilotStartButton")!.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
-                await handler.TokenIssued.Task.WaitAsync(TimeSpan.FromSeconds(30));
-                await handler.UserRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(30));
-                await handler.BillingRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                await handler.TokenIssued.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await handler.UserRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await handler.BillingRequestSeen.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 var cardsPublished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 parts.ViewModel.Cards.CollectionChanged += (_, _) => cardsPublished.TrySetResult(true);
                 handler.BillingRelease.TrySetResult(true);
-                await cardsPublished.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                await cardsPublished.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 Assert.Equal(token, await fallback.GetAsync("github", default));
 
                 var card = Assert.Single(parts.ViewModel.Cards, item => item.Provider == QuotaSight.Core.ProviderKind.Copilot);

@@ -21,9 +21,9 @@ public sealed class CopilotHistoryExportTests
         ]), new ImmediateUiDispatcher());
         using (history)
         {
-            await history.InitializeAsync();
-            var json = await history.ExportJsonAsync();
-            var csv = await history.ExportCsvAsync();
+            await history.InitializeAsync(TestContext.Current.CancellationToken);
+            var json = await history.ExportJsonAsync(TestContext.Current.CancellationToken);
+            var csv = await history.ExportCsvAsync(TestContext.Current.CancellationToken);
 
             Assert.Contains("grossQuantity", json);
             Assert.Contains("discountQuantity", json);
@@ -47,8 +47,8 @@ public sealed class CopilotHistoryExportTests
             ]), new ImmediateUiDispatcher());
             using (history)
             {
-                await history.InitializeAsync();
-                var csv = await history.ExportCsvAsync();
+                await history.InitializeAsync(TestContext.Current.CancellationToken);
+                var csv = await history.ExportCsvAsync(TestContext.Current.CancellationToken);
                 var header = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Split(',');
                 var row = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries)[1].Split(',');
                 Assert.Equal(header.Length, row.Length);

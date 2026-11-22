@@ -761,7 +761,7 @@ public sealed class UsageHttpPortTests
 
         var read = port.ReadDailyAsync(
             new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 1), null, cancellation.Token);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
         var exception = await Record.ExceptionAsync(() => read);

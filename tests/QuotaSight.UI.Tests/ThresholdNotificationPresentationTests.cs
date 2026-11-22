@@ -16,15 +16,15 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Contains("Claude", vm.NotificationBannerText);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
         var backendCalls = backend.Requests.Count;
         failures.Clear();
-        await vm.SetLanguageAsync(UiLanguage.Japanese);
+        await vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
         Assert.Contains("Claude", vm.NotificationBannerText);
         Assert.Contains("失敗", vm.NotificationBannerText);
-        await vm.SetLanguageAsync(UiLanguage.English);
+        await vm.SetLanguageAsync(UiLanguage.English, TestContext.Current.CancellationToken);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, app.Calls);
         Assert.Equal(backendCalls, backend.Requests.Count);
@@ -38,10 +38,10 @@ public sealed class ThresholdNotificationPresentationTests
         var snapshot = Snapshot(50);
         var app = new GatedApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         app.GateNextRefresh();
 
-        var refresh = vm.RefreshAsync();
+        var refresh = vm.RefreshAsync(TestContext.Current.CancellationToken);
         await app.RefreshStarted.Task;
         if (opaque) vm.Notify("History", "new opaque alert");
         else vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, "new localized alert"));
@@ -59,16 +59,16 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         var thresholdBanner = vm.NotificationBannerText;
         Assert.Single(backend.Requests);
 
         app.Result = new QuotaRefreshResult([], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
 
         app.Result = new QuotaRefreshResult([snapshot], [], new HashSet<ProviderKind> { ProviderKind.Copilot }, activeAccounts: new Dictionary<ProviderKind, string> { [ProviderKind.Copilot] = "org/user" }, requestedPeriod: new CopilotRequestedPeriod(2026, 9, "org", "user"));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(thresholdBanner, vm.NotificationBannerText);
         Assert.DoesNotContain("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
@@ -82,13 +82,13 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         var app = new GatedApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         app.Result = new QuotaRefreshResult([snapshot], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
         app.GateNextRefresh();
 
-        var refresh = vm.RefreshAsync();
+        var refresh = vm.RefreshAsync(TestContext.Current.CancellationToken);
         await app.RefreshStarted.Task;
         vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, "new history alert"));
         app.Complete(new QuotaRefreshResult([snapshot], []));
@@ -107,9 +107,9 @@ public sealed class ThresholdNotificationPresentationTests
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
         app.GateNextRefresh();
 
-        var refresh = vm.RefreshAsync();
+        var refresh = vm.RefreshAsync(TestContext.Current.CancellationToken);
         await app.RefreshStarted.Task;
-        await vm.SetLanguageAsync(UiLanguage.Japanese);
+        await vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
         app.Complete(new QuotaRefreshResult([snapshot], []));
         await refresh;
 
@@ -126,17 +126,17 @@ public sealed class ThresholdNotificationPresentationTests
         var bannerChanges = 0;
         vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(vm.NotificationBannerText)) bannerChanges++; };
 
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         var banner = vm.NotificationBannerText;
         Assert.True(vm.IsNotificationVisible);
         Assert.NotEmpty(banner);
 
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Equal(banner, vm.NotificationBannerText);
         Assert.Equal(1, bannerChanges);
 
         app.Result = new QuotaRefreshResult([snapshot with { Used = 90, Window = new(QuotaWindowKind.Weekly, snapshot.Window.Start.AddDays(7), snapshot.Window.End.AddDays(7)) }], []);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Equal(2, bannerChanges);
     }
 
@@ -146,8 +146,8 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         using var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new TestTimeProvider(Snapshot(85).Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
         var snapshot = Snapshot(85) with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
-        await vm.ApplyManualSnapshotAsync(snapshot);
-        await vm.ApplyManualSnapshotAsync(snapshot);
+        await vm.ApplyManualSnapshotAsync(snapshot, TestContext.Current.CancellationToken);
+        await vm.ApplyManualSnapshotAsync(snapshot, TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
         Assert.NotEmpty(vm.NotificationBannerText);
         Assert.Single(backend.Requests);
@@ -160,12 +160,12 @@ public sealed class ThresholdNotificationPresentationTests
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher());
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
         var failureBanner = vm.NotificationBannerText;
 
         app.Result = new QuotaRefreshResult([snapshot], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.NotEqual(failureBanner, vm.NotificationBannerText);
         Assert.NotEmpty(vm.NotificationBannerText);
     }
@@ -178,13 +178,13 @@ public sealed class ThresholdNotificationPresentationTests
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher());
         vm.Settings.NotificationsEnabled = false;
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.True(vm.IsNotificationVisible);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
 
         app.Result = new QuotaRefreshResult([snapshot], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.False(vm.IsNotificationVisible);
     }
 
@@ -197,8 +197,8 @@ public sealed class ThresholdNotificationPresentationTests
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
         vm.Language = UiLanguage.Japanese;
 
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
 
         var notification = Assert.Single(backend.Requests);
         Assert.Contains("ChatGPT", notification.Title);
@@ -217,12 +217,12 @@ public sealed class ThresholdNotificationPresentationTests
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
 
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
         Assert.Single(backend.Requests);
         clock.Advance(TimeSpan.FromMinutes(5));
         backend.Throw = null;
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Equal(2, backend.Requests.Count);
 
         using var cancellation = new CancellationTokenSource();
@@ -255,22 +255,22 @@ public sealed class ThresholdNotificationPresentationTests
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
 
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
         Assert.Single(backend.Requests);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Single(backend.Requests);
 
         clock.Advance(TimeSpan.FromMinutes(4));
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Single(backend.Requests);
         clock.Advance(TimeSpan.FromMinutes(1));
         backend.Result = true;
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Equal(2, backend.Requests.Count);
 
         clock.Advance(TimeSpan.FromMinutes(5));
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.Equal(2, backend.Requests.Count);
         Assert.True(vm.IsNotificationVisible);
     }
@@ -282,12 +282,12 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Single(backend.Requests);
 
-        await vm.SetNotificationsAsync(false);
+        await vm.SetNotificationsAsync(false, TestContext.Current.CancellationToken);
         app.Result = new QuotaRefreshResult([snapshot], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Single(backend.Requests);
         Assert.False(vm.IsNotificationVisible);
@@ -299,11 +299,11 @@ public sealed class ThresholdNotificationPresentationTests
         var snapshot = Snapshot(85);
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: new TestTimeProvider(snapshot.Fetched), uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
 
         app.Result = new QuotaRefreshResult([snapshot with { Used = 70 }], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
     }
@@ -315,12 +315,12 @@ public sealed class ThresholdNotificationPresentationTests
         var clock = new TestTimeProvider(snapshot.Fetched);
         var app = new MutableApplication(new QuotaRefreshResult([snapshot], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
 
         clock.Advance(snapshot.Window.End - clock.GetUtcNow());
         app.Result = new QuotaRefreshResult([snapshot], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
     }
@@ -333,12 +333,12 @@ public sealed class ThresholdNotificationPresentationTests
         var clock = new TestTimeProvider(initial.Fetched);
         var app = new MutableApplication(new QuotaRefreshResult([initial], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
 
         clock.Advance(TimeSpan.FromMinutes(11));
         app.Result = new QuotaRefreshResult([], []);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
     }
@@ -351,12 +351,12 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         var app = new MutableApplication(new QuotaRefreshResult([initial], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
         var banner = vm.NotificationBannerText;
 
         clock.Advance(TimeSpan.FromMinutes(15));
         app.Result = new QuotaRefreshResult([RollingSnapshot(85, clock.GetUtcNow(), initial.Window.ResetAt)], []);
-        await vm.RefreshAsync(RefreshOrigin.Scheduled);
+        await vm.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
 
         Assert.Equal(banner, vm.NotificationBannerText);
         Assert.True(vm.IsNotificationVisible);
@@ -370,12 +370,12 @@ public sealed class ThresholdNotificationPresentationTests
         var clock = new TestTimeProvider(initial.Fetched);
         var app = new MutableApplication(new QuotaRefreshResult([initial], []));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
 
         clock.Advance(TimeSpan.FromMinutes(1));
         app.Result = new QuotaRefreshResult([RollingSnapshot(70, clock.GetUtcNow())], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
     }
@@ -386,11 +386,11 @@ public sealed class ThresholdNotificationPresentationTests
         var initial = Snapshot(85);
         var clock = new TestTimeProvider(initial.Fetched);
         using var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.ApplyProviderSnapshotsAsync([initial]);
+        await vm.ApplyProviderSnapshotsAsync([initial], TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
 
         var manual = initial with { Used = 70, Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
-        await vm.ApplyManualSnapshotAsync(manual);
+        await vm.ApplyManualSnapshotAsync(manual, TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
     }
@@ -402,12 +402,12 @@ public sealed class ThresholdNotificationPresentationTests
         var clock = new TestTimeProvider(initial.Fetched);
         var app = new MutableApplication(new QuotaRefreshResult([initial], [new(ProviderKind.Claude, FetchStatus.TransientFailure)]));
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: app, timeProvider: clock, uiDispatcher: new ImmediateUiDispatcher());
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Contains("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
 
         clock.Advance(TimeSpan.FromMinutes(1));
         app.Result = new QuotaRefreshResult([RollingSnapshot(85, clock.GetUtcNow(), initial.Window.ResetAt)], []);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains("OpenCode", vm.NotificationBannerText);
         Assert.DoesNotContain("incomplete", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
@@ -420,7 +420,7 @@ public sealed class ThresholdNotificationPresentationTests
         var backend = new FakeDesktopNotificationBackend();
         using var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new TestTimeProvider(Snapshot(85).Fetched), uiDispatcher: new ImmediateUiDispatcher(), desktopNotificationBackend: backend);
 
-        await vm.ApplyProviderSnapshotsAsync([snapshot]);
+        await vm.ApplyProviderSnapshotsAsync([snapshot], TestContext.Current.CancellationToken);
 
         Assert.Empty(backend.Requests);
     }

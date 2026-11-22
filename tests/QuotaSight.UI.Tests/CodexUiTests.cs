@@ -21,7 +21,7 @@ public sealed class CodexUiTests
         var manager = CreateManager(client, store);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: manager);
 
-        var result = await facade.StartCodexAsync(default);
+        var result = await facade.StartCodexAsync(TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
         Assert.Equal(CodexAuthorizationState.AwaitingAuthorization, result.State);
@@ -41,24 +41,24 @@ public sealed class CodexUiTests
         using var client = new HttpClient(handler);
         var manager = CreateManager(client, store, clock);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: manager, timeProvider: clock);
-        await facade.StartCodexAsync(default);
+        await facade.StartCodexAsync(TestContext.Current.CancellationToken);
 
-        var pending = await facade.PollCodexAsync(default);
+        var pending = await facade.PollCodexAsync(TestContext.Current.CancellationToken);
         Assert.Equal(CodexAuthorizationState.Pending, pending.State);
         Assert.False(pending.Success);
         Assert.Equal(TimeSpan.FromSeconds(3), pending.RetryAfter);
         Assert.DoesNotContain("secret-response", pending.Message, StringComparison.Ordinal);
 
-        var stillPending = await facade.PollCodexAsync(default);
+        var stillPending = await facade.PollCodexAsync(TestContext.Current.CancellationToken);
         Assert.Equal(CodexAuthorizationState.Pending, stillPending.State);
         Assert.Equal(1, handler.DevicePollCount);
 
         clock.Advance(TimeSpan.FromSeconds(3));
-        var success = await facade.PollCodexAsync(default);
+        var success = await facade.PollCodexAsync(TestContext.Current.CancellationToken);
         Assert.True(success.Success);
         Assert.Equal(CodexAuthorizationState.Connected, success.State);
         Assert.DoesNotContain("access-token", success.Message, StringComparison.Ordinal);
-        Assert.NotNull(await store.GetAsync(CodexOAuthClient.CredentialKey, default));
+        Assert.NotNull(await store.GetAsync(CodexOAuthClient.CredentialKey, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -68,15 +68,15 @@ public sealed class CodexUiTests
         using var client = new HttpClient(new CodexHandler());
         var manager = CreateManager(client, store);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: manager);
-        await facade.StartCodexAsync(default);
-        await facade.PollCodexAsync(default);
+        await facade.StartCodexAsync(TestContext.Current.CancellationToken);
+        await facade.PollCodexAsync(TestContext.Current.CancellationToken);
 
-        var logout = await facade.LogoutCodexAsync(default);
+        var logout = await facade.LogoutCodexAsync(TestContext.Current.CancellationToken);
 
         Assert.True(logout.Success);
         Assert.Equal(CodexAuthorizationState.Disconnected, logout.State);
-        Assert.Null(await store.GetAsync(CodexOAuthClient.CredentialKey, default));
-        Assert.Equal(FetchStatus.Unauthorized, (await manager.FetchAsync(default)).Status);
+        Assert.Null(await store.GetAsync(CodexOAuthClient.CredentialKey, TestContext.Current.CancellationToken));
+        Assert.Equal(FetchStatus.Unauthorized, (await manager.FetchAsync(TestContext.Current.CancellationToken)).Status);
     }
 
     [AvaloniaFact]
@@ -188,7 +188,7 @@ public sealed class CodexUiTests
             Source = QuotaSource.Manual,
             Confidence = QuotaConfidence.Manual
         };
-        await vm.ApplyManualSnapshotAsync(manual);
+        await vm.ApplyManualSnapshotAsync(manual, TestContext.Current.CancellationToken);
 
         var first = Snapshot(42, "codex-account", "Codex", QuotaWindowKind.Rolling) with
         {
@@ -199,8 +199,8 @@ public sealed class CodexUiTests
         };
         var latest = first with { Used = 67, Observed = first.Observed.AddMinutes(1), Fetched = first.Fetched.AddMinutes(1) };
 
-        await vm.ApplyProviderSnapshotsAsync([first]);
-        await vm.ApplyProviderSnapshotsAsync([latest]);
+        await vm.ApplyProviderSnapshotsAsync([first], TestContext.Current.CancellationToken);
+        await vm.ApplyProviderSnapshotsAsync([latest], TestContext.Current.CancellationToken);
 
         var codexCards = vm.Cards.Where(card => card.Provider == ProviderKind.ChatGpt && card.Account == "codex-account").ToList();
         var codexRows = codexCards.SelectMany(card => card.Windows).Where(row => row.Metric == "Codex").ToList();
@@ -223,8 +223,8 @@ public sealed class CodexUiTests
         var latest = first with { Used = 71, Observed = first.Observed.AddMinutes(1), Fetched = first.Fetched.AddMinutes(1) };
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedApplication([first], [latest]));
 
-        await vm.RefreshAsync();
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(vm.Cards, item => item.Provider == ProviderKind.ChatGpt && item.Account == "codex-account");
         var row = Assert.Single(card.Windows);
@@ -237,7 +237,7 @@ public sealed class CodexUiTests
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
             new QuotaRefreshResult([], [new(ProviderKind.ChatGpt, FetchStatus.Unauthorized)])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.True(vm.IsError);
         Assert.Empty(vm.Cards);
@@ -264,7 +264,7 @@ public sealed class CodexUiTests
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
             new QuotaRefreshResult([openCode], [new(ProviderKind.ChatGpt, FetchStatus.RateLimited, TimeSpan.FromMinutes(2))])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.True(vm.IsError);
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
@@ -287,15 +287,15 @@ public sealed class CodexUiTests
             new QuotaRefreshResult([], [new(ProviderKind.ChatGpt, FetchStatus.TransientFailure)]),
             new QuotaRefreshResult([old with { Used = 52, Fetched = clock.GetUtcNow().AddMinutes(3), Observed = clock.GetUtcNow().AddMinutes(3), FreshUntil = clock.GetUtcNow().AddMinutes(4) }], [])), timeProvider: clock);
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         clock.Advance(TimeSpan.FromMinutes(2));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         var staleRow = Assert.Single(Assert.Single(vm.Cards).Windows);
         Assert.Equal("Last observed: 45% used · 55% remaining", staleRow.PercentText);
         Assert.True(staleRow.IsStale);
         Assert.True(vm.IsError);
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Equal(PresentationState.Ready, vm.PresentationState);
         Assert.False(vm.IsNotificationVisible);
         Assert.Equal("52% used · 48% remaining", Assert.Single(Assert.Single(vm.Cards).Windows).PercentText);
@@ -309,7 +309,7 @@ public sealed class CodexUiTests
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.RefreshAsync(cancellation.Token));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, application.Calls);
     }
 
@@ -321,9 +321,9 @@ public sealed class CodexUiTests
         var application = new BlockingRefreshApplication(older, newer);
         using var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
 
-        var firstRefresh = vm.RefreshAsync();
+        var firstRefresh = vm.RefreshAsync(TestContext.Current.CancellationToken);
         await application.FirstEntered.Task;
-        var secondRefresh = vm.RefreshAsync();
+        var secondRefresh = vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(1, application.CallCount);
         Assert.False(application.SecondEntered.Task.IsCompleted);
@@ -359,9 +359,9 @@ public sealed class CodexUiTests
         };
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedApplication([openCode, codex], [codex]), timeProvider: clock);
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         clock.Advance(TimeSpan.FromMinutes(2));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
         Assert.Contains(vm.Cards, card => card.Provider == ProviderKind.ChatGpt);
@@ -396,9 +396,9 @@ public sealed class CodexUiTests
             [openCode, codex],
             [openCode with { Used = 40, Fetched = initialTime.AddMinutes(2), Observed = initialTime.AddMinutes(2), FreshUntil = initialTime.AddMinutes(3) }]), timeProvider: clock);
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         clock.Advance(TimeSpan.FromMinutes(2));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         var openCodeCard = Assert.Single(vm.Cards, card => card.Provider == ProviderKind.OpenCode);
         Assert.Equal("Connected", openCodeCard.StateText);
@@ -428,9 +428,9 @@ public sealed class CodexUiTests
             new QuotaRefreshResult([openCode], [new(ProviderKind.ChatGpt, FetchStatus.TransientFailure)]),
             new QuotaRefreshResult([openCode with { Used = 40 }], [])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         Assert.True(vm.IsNotificationVisible);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsNotificationVisible);
         Assert.Equal(PresentationState.Ready, vm.PresentationState);
@@ -459,10 +459,10 @@ public sealed class CodexUiTests
         };
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedApplication([rolling, weekly], [latestRolling]), timeProvider: clock);
 
-        await vm.RefreshAsync();
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         clock.Advance(TimeSpan.FromMinutes(2));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(vm.Cards, item => item.Account == "codex-account");
         var rows = card.Windows.Where(row => row.Metric == "Codex").ToList();
@@ -492,8 +492,8 @@ public sealed class CodexUiTests
         };
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedApplication([manual, codex], [codex]));
 
-        await vm.RefreshAsync();
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(vm.Cards, card => card.Account == "manual-account");
         Assert.False(vm.IsError);
@@ -514,8 +514,8 @@ public sealed class CodexUiTests
         var history = new SnapshotHistory([oldAutomatic, newerManual]);
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, quotaApplication: new SequencedRefreshApplication(new QuotaRefreshResult([], [])), uiDispatcher: new ImmediateUiDispatcher());
 
-        await vm.InitializeAsync();
-        await vm.RefreshAsync();
+        await vm.InitializeAsync(TestContext.Current.CancellationToken);
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsError);
         Assert.False(vm.IsNotificationVisible);
@@ -528,9 +528,9 @@ public sealed class CodexUiTests
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
             new QuotaRefreshResult([codex], []), new QuotaRefreshResult([], [])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         vm.SetCodexCredentialPresence(false);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.False(vm.IsError);
         Assert.False(vm.IsNotificationVisible);
@@ -550,9 +550,9 @@ public sealed class CodexUiTests
         var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new SequencedRefreshApplication(
             new QuotaRefreshResult([codex], []), new QuotaRefreshResult([openCode], [])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         vm.SetCodexCredentialPresence(true);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.True(vm.IsError);
         Assert.Contains("Codex", vm.NotificationBannerText, StringComparison.Ordinal);
@@ -566,9 +566,9 @@ public sealed class CodexUiTests
             new QuotaRefreshResult([codex], []),
             new QuotaRefreshResult([], [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)])));
 
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
         vm.SetCodexCredentialPresence(false);
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.True(vm.IsError);
         Assert.Contains("OpenCode", vm.NotificationBannerText, StringComparison.OrdinalIgnoreCase);
@@ -578,10 +578,10 @@ public sealed class CodexUiTests
     public async Task Facade_exposes_codex_credential_existence_without_secret_value()
     {
         var store = new InMemoryCredentialStore();
-        await store.SetAsync(CodexOAuthClient.CredentialKey, "private-token", default);
+        await store.SetAsync(CodexOAuthClient.CredentialKey, "private-token", TestContext.Current.CancellationToken);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: CreateManager(new HttpClient(new CodexHandler()), store));
 
-        Assert.True(await facade.HasCodexCredentialAsync(default));
+        Assert.True(await facade.HasCodexCredentialAsync(TestContext.Current.CancellationToken));
         Assert.DoesNotContain("private-token", typeof(IProviderUiService).GetMethods().Select(method => method.Name));
     }
 
@@ -591,17 +591,17 @@ public sealed class CodexUiTests
         var store = new ThrowingReadStore();
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: CreateManager(new HttpClient(new CodexHandler()), store));
 
-        Assert.False(await facade.HasCodexCredentialAsync(default));
+        Assert.False(await facade.HasCodexCredentialAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task Logout_failure_keeps_logout_visibility_and_sets_error_but_success_hides_it()
     {
         var store = new InMemoryCredentialStore();
-        await store.SetAsync(CodexOAuthClient.CredentialKey, "private-token", default);
+        await store.SetAsync(CodexOAuthClient.CredentialKey, "private-token", TestContext.Current.CancellationToken);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: CreateManager(new HttpClient(new CodexHandler()), store));
         var vm = new MainViewModel(new EmptyDashboardSource());
-        vm.SetCodexCredentialPresence(await facade.HasCodexCredentialAsync(default));
+        vm.SetCodexCredentialPresence(await facade.HasCodexCredentialAsync(TestContext.Current.CancellationToken));
 
         Assert.True(vm.IsCodexLogoutVisible);
         vm.SetCodexResult(new(false, CodexAuthorizationState.Error, "Unable to disconnect Codex."));
@@ -652,12 +652,12 @@ public sealed class CodexUiTests
         using var client = new HttpClient(handler);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: CreateManager(client, store));
         var vm = new MainViewModel(new EmptyDashboardSource());
-        vm.SetCodexCredentialPresence(await facade.HasCodexCredentialAsync(default));
-        Assert.True((await facade.StartCodexAsync(default)).Success);
+        vm.SetCodexCredentialPresence(await facade.HasCodexCredentialAsync(TestContext.Current.CancellationToken));
+        Assert.True((await facade.StartCodexAsync(TestContext.Current.CancellationToken)).Success);
 
-        var result = await facade.LogoutCodexAsync(default);
+        var result = await facade.LogoutCodexAsync(TestContext.Current.CancellationToken);
         vm.SetCodexResult(result);
-        var poll = await facade.PollCodexAsync(default);
+        var poll = await facade.PollCodexAsync(TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
         Assert.Equal(CodexAuthorizationState.Error, result.State);
@@ -674,12 +674,12 @@ public sealed class CodexUiTests
         var handler = new CodexHandler();
         using var client = new HttpClient(handler);
         var facade = new UiProviderFacade(credentialStore: store, codexSessionManager: CreateManager(client, store));
-        Assert.True((await facade.StartCodexAsync(default)).Success);
+        Assert.True((await facade.StartCodexAsync(TestContext.Current.CancellationToken)).Success);
 
-        var logoutTask = facade.LogoutCodexAsync(default).AsTask();
+        var logoutTask = facade.LogoutCodexAsync(TestContext.Current.CancellationToken).AsTask();
         await store.RemoveEntered.Task;
 
-        var poll = await facade.PollCodexAsync(default);
+        var poll = await facade.PollCodexAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(CodexAuthorizationState.Disconnected, poll.State);
         Assert.Equal(0, handler.DevicePollCount);

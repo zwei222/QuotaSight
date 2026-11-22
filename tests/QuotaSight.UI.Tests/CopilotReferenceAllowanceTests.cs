@@ -19,8 +19,8 @@ public sealed class CopilotReferenceAllowanceTests
     {
         var expectedPercent = ((decimal)actual * 100m / 1900m).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
         using var vm = new MainViewModel(new EmptyDashboardSource());
-        await vm.SetCopilotReferenceAsync("1900");
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot((decimal)actual)]);
+        await vm.SetCopilotReferenceAsync("1900", TestContext.Current.CancellationToken);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot((decimal)actual)], TestContext.Current.CancellationToken);
         var card = Assert.Single(vm.Cards);
         Assert.Contains($"Usage vs manual reference: {expectedPercent}%", card.CopilotUsagePercentText);
         Assert.Contains("not", card.CopilotUsagePercentText, StringComparison.OrdinalIgnoreCase);
@@ -82,14 +82,14 @@ public sealed class CopilotReferenceAllowanceTests
     public async Task Unknown_usage_has_no_gauge_and_clearing_reference_removes_comparison_while_normal_gauge_is_unchanged()
     {
         using var vm = new MainViewModel(new EmptyDashboardSource());
-        await vm.SetCopilotReferenceAsync("1900");
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)]);
+        await vm.SetCopilotReferenceAsync("1900", TestContext.Current.CancellationToken);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)], TestContext.Current.CancellationToken);
         var card = Assert.Single(vm.Cards);
         Assert.True(card.IsCopilotReferenceVisible);
         Assert.False(card.IsCopilotReferenceGaugeVisible);
         Assert.Contains("unavailable", card.CopilotReferencePercentText, StringComparison.OrdinalIgnoreCase);
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
-        await vm.SetCopilotReferenceAsync("");
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)], TestContext.Current.CancellationToken);
+        await vm.SetCopilotReferenceAsync("", TestContext.Current.CancellationToken);
         card = Assert.Single(vm.Cards);
         Assert.False(card.IsCopilotReferenceGaugeVisible);
         Assert.Empty(card.CopilotReferencePercentText);
@@ -102,14 +102,14 @@ public sealed class CopilotReferenceAllowanceTests
     public async Task Overflowing_reference_percent_hides_gauge_while_measured_zero_remains_visible()
     {
         using var vm = new MainViewModel(new EmptyDashboardSource());
-        await vm.SetCopilotReferenceAsync("0.0000000000000000000000000001");
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(decimal.MaxValue)]);
+        await vm.SetCopilotReferenceAsync("0.0000000000000000000000000001", TestContext.Current.CancellationToken);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(decimal.MaxValue)], TestContext.Current.CancellationToken);
         var overflow = Assert.Single(vm.Cards);
         Assert.Contains("unavailable", overflow.CopilotReferencePercentText, StringComparison.OrdinalIgnoreCase);
         Assert.False(overflow.IsCopilotReferenceGaugeVisible);
         Assert.Equal(0, overflow.CopilotReferenceVisualPercent);
 
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(0m)]);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(0m)], TestContext.Current.CancellationToken);
         var measuredZero = Assert.Single(vm.Cards);
         Assert.Contains("0%", measuredZero.CopilotReferencePercentText);
         Assert.True(measuredZero.IsCopilotReferenceGaugeVisible);
@@ -120,14 +120,14 @@ public sealed class CopilotReferenceAllowanceTests
     public async Task Missing_gross_and_unset_reference_never_invent_a_percent()
     {
         using var vm = new MainViewModel(new EmptyDashboardSource());
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)]);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(null)], TestContext.Current.CancellationToken);
         var card = Assert.Single(vm.Cards);
         Assert.DoesNotContain("%", card.CopilotUsagePercentText);
-        await vm.SetCopilotReferenceAsync("1900");
+        await vm.SetCopilotReferenceAsync("1900", TestContext.Current.CancellationToken);
         Assert.DoesNotContain("%", vm.Cards[0].CopilotUsagePercentText);
-        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
+        await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)], TestContext.Current.CancellationToken);
         Assert.Contains("%", vm.Cards[0].CopilotUsagePercentText);
-        await vm.SetCopilotReferenceAsync("");
+        await vm.SetCopilotReferenceAsync("", TestContext.Current.CancellationToken);
         Assert.DoesNotContain("%", vm.Cards[0].CopilotUsagePercentText);
     }
 
@@ -226,11 +226,11 @@ public sealed class CopilotReferenceAllowanceTests
             var store = new AppSettingsStore(root);
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
             Assert.Null(vm.Settings.CopilotReferenceCredits);
-            Assert.True(await vm.SetCopilotReferenceAsync("1900"));
+            Assert.True(await vm.SetCopilotReferenceAsync("1900", TestContext.Current.CancellationToken));
             var restarted = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
-            await restarted.InitializeAsync();
+            await restarted.InitializeAsync(TestContext.Current.CancellationToken);
             Assert.Equal(1900m, restarted.Settings.CopilotReferenceCredits);
-            Assert.Equal(1900m, (await store.LoadAsync()).CopilotReferenceCredits);
+            Assert.Equal(1900m, (await store.LoadAsync(TestContext.Current.CancellationToken)).CopilotReferenceCredits);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -242,16 +242,16 @@ public sealed class CopilotReferenceAllowanceTests
         try
         {
             var store = new AppSettingsStore(root);
-            await store.SaveAsync(new AppSettingsDto(CopilotReferenceCredits: 1900m));
+            await store.SaveAsync(new AppSettingsDto(CopilotReferenceCredits: 1900m), TestContext.Current.CancellationToken);
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
-            vm.SetSettings(await store.LoadAsync(), persist: false);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
+            vm.SetSettings(await store.LoadAsync(TestContext.Current.CancellationToken), persist: false);
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)], TestContext.Current.CancellationToken);
             using var canceled = new CancellationTokenSource();
             canceled.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vm.SetCopilotReferenceAsync("2000", canceled.Token));
             Assert.Equal(1900m, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(1900m, Assert.Single(vm.Cards).ManualReferenceCredits);
-            Assert.Equal(1900m, (await store.LoadAsync()).CopilotReferenceCredits);
+            Assert.Equal(1900m, (await store.LoadAsync(TestContext.Current.CancellationToken)).CopilotReferenceCredits);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -265,8 +265,8 @@ public sealed class CopilotReferenceAllowanceTests
         {
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(root));
             vm.SetSettings(new AppSettingsDto(CopilotReferenceCredits: 1900m), persist: false);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
-            await Assert.ThrowsAnyAsync<IOException>(() => vm.SetCopilotReferenceAsync("2000"));
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)], TestContext.Current.CancellationToken);
+            await Assert.ThrowsAnyAsync<IOException>(() => vm.SetCopilotReferenceAsync("2000", TestContext.Current.CancellationToken));
             Assert.Equal(1900m, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(1900m, Assert.Single(vm.Cards).ManualReferenceCredits);
             Assert.Equal("not a directory", File.ReadAllText(root));
@@ -282,12 +282,12 @@ public sealed class CopilotReferenceAllowanceTests
         {
             var store = new AppSettingsStore(root);
             using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
-            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)]);
-            var first = vm.SetCopilotReferenceAsync("2000");
-            var second = vm.SetCopilotReferenceAsync("2100");
+            await vm.ApplyProviderSnapshotsAsync([CopilotSnapshot(725m)], TestContext.Current.CancellationToken);
+            var first = vm.SetCopilotReferenceAsync("2000", TestContext.Current.CancellationToken);
+            var second = vm.SetCopilotReferenceAsync("2100", TestContext.Current.CancellationToken);
             Assert.True(await first);
             Assert.True(await second);
-            var persisted = (await store.LoadAsync()).CopilotReferenceCredits;
+            var persisted = (await store.LoadAsync(TestContext.Current.CancellationToken)).CopilotReferenceCredits;
             Assert.Equal(persisted, vm.Settings.CopilotReferenceCredits);
             Assert.Equal(persisted, Assert.Single(vm.Cards).ManualReferenceCredits);
             Assert.Contains(persisted, new decimal?[] { 2000m, 2100m });

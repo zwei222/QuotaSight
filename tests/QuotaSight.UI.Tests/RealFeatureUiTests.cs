@@ -23,7 +23,7 @@ public sealed class RealFeatureTests
         await application.Started.Task;
 
         Dispatcher.UIThread.Post(() => sentinel.TrySetResult());
-        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         application.Release.TrySetResult(true);
         await refresh;
 
@@ -40,7 +40,7 @@ public sealed class RealFeatureTests
         var application = new ThreadRecordingRefreshApplication();
         var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: dispatcher);
 
-        await viewModel.RefreshAsync(RefreshOrigin.Scheduled);
+        await viewModel.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
 
         Assert.False(application.WasCalledOnCapturedContext);
         Assert.True(dispatcher.InvocationCount > 0);
@@ -53,15 +53,15 @@ public sealed class RealFeatureTests
         var store = new InMemoryCredentialStore(); var delivered = new List<QuotaSnapshot>();
         using var client = new HttpClient(new JsonHandler("{\"rollingUsage\":{\"used\":80,\"limit\":100}}"));
         var facade = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key, new Uri("https://example.test/usage"), TimeProvider.System), credentialStore: store, openCodeSuccess: snapshots => { delivered.AddRange(snapshots); return ValueTask.CompletedTask; });
-        var result = await facade.TestOpenCodeAsync("session-key", default);
-        Assert.True(result.Success); Assert.Single(delivered); Assert.Equal("session-key", await store.GetAsync("OpenCode Go", default)); Assert.DoesNotContain("session-key", result.Message);
+        var result = await facade.TestOpenCodeAsync("session-key", TestContext.Current.CancellationToken);
+        Assert.True(result.Success); Assert.Single(delivered); Assert.Equal("session-key", await store.GetAsync("OpenCode Go", TestContext.Current.CancellationToken)); Assert.DoesNotContain("session-key", result.Message);
     }
 
     [Fact]
     public async Task New_alert_replaces_refresh_failure_banner()
     {
         var vm = new MainViewModel(new FixedDashboardSource(Snapshot(40)), quotaApplication: new StubApplication([]));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains("Temporary fetch failure", vm.NotificationBannerText, StringComparison.Ordinal);
         vm.Notify("History", "Export failed.");
@@ -80,7 +80,7 @@ public sealed class RealFeatureTests
         vm.PropertyChanged += (_, args) => changed.Add(args.PropertyName!);
 
         clock.Advance(TimeSpan.FromHours(2));
-        await vm.RefreshAsync();
+        await vm.RefreshAsync(TestContext.Current.CancellationToken);
 
         var card = Assert.Single(vm.Cards);
         Assert.Equal("acct", card.Account);
@@ -100,16 +100,16 @@ public sealed class RealFeatureTests
         {
             using var history = new JsonlQuotaHistory(root);
             var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, uiDispatcher: new RecordingUiDispatcher());
-            await vm.InitializeAsync();
+            await vm.InitializeAsync(TestContext.Current.CancellationToken);
             var manual = Snapshot(25) with { Provider = ProviderKind.ChatGpt, Account = "manual-account", DisplayName = "ChatGPT Plus", Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
-            await vm.ApplyManualSnapshotAsync(manual);
+            await vm.ApplyManualSnapshotAsync(manual, TestContext.Current.CancellationToken);
             Assert.Contains(vm.History.Entries, entry => entry.Account == "manual-account");
-            Assert.Contains("manual-account", await vm.History.ExportJsonAsync(), StringComparison.Ordinal);
+            Assert.Contains("manual-account", await vm.History.ExportJsonAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
 
             var provider = Snapshot(75) with { Account = "provider-account", Source = QuotaSource.Official, Confidence = QuotaConfidence.Official };
-            await vm.ApplyProviderSnapshotsAsync([provider]);
+            await vm.ApplyProviderSnapshotsAsync([provider], TestContext.Current.CancellationToken);
             Assert.Contains(vm.History.Entries, entry => entry.Account == "provider-account");
-            Assert.Contains("provider-account", await vm.History.ExportCsvAsync(), StringComparison.Ordinal);
+            Assert.Contains("provider-account", await vm.History.ExportCsvAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -118,7 +118,7 @@ public sealed class RealFeatureTests
     public async Task Settings_roundtrip_and_client_id_update_are_public_contracts()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        try { var store = new AppSettingsStore(root); var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store); await vm.SetGithubClientIdAsync("client"); await vm.SetRefreshMinutesAsync(15); var loaded = await store.LoadAsync(); Assert.Equal("client", loaded.GithubOAuthClientId); Assert.Equal(15, loaded.RefreshMinutes); }
+        try { var store = new AppSettingsStore(root); var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store); await vm.SetGithubClientIdAsync("client", TestContext.Current.CancellationToken); await vm.SetRefreshMinutesAsync(15, TestContext.Current.CancellationToken); var loaded = await store.LoadAsync(TestContext.Current.CancellationToken); Assert.Equal("client", loaded.GithubOAuthClientId); Assert.Equal(15, loaded.RefreshMinutes); }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
@@ -164,7 +164,7 @@ public sealed class RealFeatureTests
         Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], aggregate.Windows.Select(row => row.WindowKind));
 
         var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedTimeProvider(now));
-        await vm.ApplyProviderSnapshotsAsync([monthly, weekly]);
+        await vm.ApplyProviderSnapshotsAsync([monthly, weekly], TestContext.Current.CancellationToken);
         Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
         vm.Language = UiLanguage.Japanese;
         Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
@@ -197,16 +197,16 @@ public sealed class RealFeatureTests
                 Snapshot(25) with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual },
                 Snapshot(75) with { Source = QuotaSource.Official, Confidence = QuotaConfidence.Official },
                 Snapshot(0) with { Used = null, Limit = null, Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual }
-            ], default);
+            ], TestContext.Current.CancellationToken);
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-            await viewModel.InitializeAsync();
+            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
 
-            using var json = JsonDocument.Parse(await viewModel.History.ExportJsonAsync());
+            using var json = JsonDocument.Parse(await viewModel.History.ExportJsonAsync(TestContext.Current.CancellationToken));
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Manual" && entry.GetProperty("confidence").GetString() == "Manual");
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Official" && entry.GetProperty("confidence").GetString() == "Official");
             Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("usedPercent").ValueKind == JsonValueKind.Null);
 
-            var csv = await viewModel.History.ExportCsvAsync();
+            var csv = await viewModel.History.ExportCsvAsync(TestContext.Current.CancellationToken);
             Assert.StartsWith("Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n", csv, StringComparison.Ordinal);
             Assert.Contains(",Manual,Manual", csv, StringComparison.Ordinal);
             Assert.Contains(",Official,Official", csv, StringComparison.Ordinal);
@@ -222,10 +222,10 @@ public sealed class RealFeatureTests
         try
         {
             using var history = new JsonlQuotaHistory(root);
-            await history.AppendAsync([Snapshot(25)], default);
+            await history.AppendAsync([Snapshot(25)], TestContext.Current.CancellationToken);
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
 
-            await viewModel.InitializeAsync();
+            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
 
             Assert.Single(viewModel.History.Entries);
             var card = Assert.Single(viewModel.Cards);
@@ -243,17 +243,17 @@ public sealed class RealFeatureTests
         try
         {
             using var history = new JsonlQuotaHistory(root, new FixedTimeProvider(now.AddDays(-1)));
-            await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], default);
-            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
+            await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n", TestContext.Current.CancellationToken);
 
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
-            await viewModel.InitializeAsync();
-            await viewModel.InitializeAsync();
+            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
+            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
             Assert.Single(viewModel.History.Entries, entry => entry.Account == "prior-day");
             Assert.Contains(viewModel.Cards, card => card.Account == "prior-day");
-            await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(today, default));
+            await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(today, TestContext.Current.CancellationToken));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -267,9 +267,9 @@ public sealed class RealFeatureTests
         {
             using var history = new JsonlQuotaHistory(root);
             var today = DateOnly.FromDateTime(now.UtcDateTime);
-            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n");
+            await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n", TestContext.Current.CancellationToken);
             var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
-            await vm.InitializeAsync();
+            await vm.InitializeAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal("History: History data is damaged; showing available entries.", vm.NotificationBannerText);
             vm.Language = UiLanguage.Japanese;
@@ -340,11 +340,11 @@ public sealed class RealFeatureTests
         try
         {
             using var history = new JsonlQuotaHistory(root);
-            await history.AppendAsync([Snapshot(25) with { Account = account }], default);
+            await history.AppendAsync([Snapshot(25) with { Account = account }], TestContext.Current.CancellationToken);
             var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-            await viewModel.InitializeAsync();
+            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
 
-            var rows = ParseCsv(await viewModel.History.ExportCsvAsync());
+            var rows = ParseCsv(await viewModel.History.ExportCsvAsync(TestContext.Current.CancellationToken));
 
             Assert.Equal(2, rows.Count);
             Assert.Equal(account, rows[1][1]);
@@ -398,7 +398,7 @@ public sealed class RealFeatureTests
         var application = new BlockingRefreshApplication();
         var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
 
-        var first = viewModel.RefreshAsync();
+        var first = viewModel.RefreshAsync(TestContext.Current.CancellationToken);
         await application.Started.Task;
 
         Assert.True(viewModel.IsQuotaDataBusy);
@@ -407,8 +407,8 @@ public sealed class RealFeatureTests
         viewModel.Language = UiLanguage.Japanese;
         Assert.Equal("利用枠データを更新しています…", viewModel.QuotaStatusText);
 
-        var second = viewModel.RefreshAsync();
-        await Task.Delay(25);
+        var second = viewModel.RefreshAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(25, TestContext.Current.CancellationToken);
         Assert.False(viewModel.CanRefresh);
         Assert.Equal(1, application.Calls);
 
@@ -424,7 +424,7 @@ public sealed class RealFeatureTests
         var history = new BlockingHistory();
         var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
 
-        var initialization = viewModel.InitializeAsync();
+        var initialization = viewModel.InitializeAsync(TestContext.Current.CancellationToken);
         await history.Started.Task;
 
         Assert.True(viewModel.IsQuotaDataBusy);
@@ -490,11 +490,14 @@ public sealed class RealFeatureTests
 
     private sealed class ThreadRecordingRefreshApplication : IQuotaApplication
     {
-        private readonly SynchronizationContext? context = SynchronizationContext.Current;
+        // Fetches must run on a worker thread, never the thread that owns the view model.
+        // (Sync-context identity is not observable in Avalonia 12 headless hosts, which no
+        // longer install a SynchronizationContext on the UI thread.)
+        private readonly Thread creationThread = Thread.CurrentThread;
         public bool WasCalledOnCapturedContext { get; private set; }
         public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
         {
-            WasCalledOnCapturedContext = SynchronizationContext.Current == context;
+            WasCalledOnCapturedContext = Thread.CurrentThread == creationThread;
             return ValueTask.FromResult(new QuotaRefreshResult([], []));
         }
     }
