@@ -5,7 +5,6 @@ using System.Runtime.CompilerServices;
 using Avalonia.Styling;
 
 using Avalonia.Threading;
-using QuotaSight.Core;
 using QuotaSight.Application;
 using QuotaSight.Infrastructure;
 
@@ -90,14 +89,7 @@ public sealed class SettingsState
     public int RefreshMinutes { get; private set; } = 10;
     public bool NotificationsEnabled { get; set; } = true;
     public bool ResidentMode { get; set; }
-    // Quota-era settings the UI no longer edits. They are still read from a loaded file
-    // and written back verbatim, so a settings file written by any build keeps its values.
-    public decimal OverallThreshold { get; set; } = 80;
-    public Dictionary<ProviderKind, decimal> ProviderOverrides { get; } = [];
-    public string GithubOAuthClientId { get; set; } = string.Empty;
-    public string GithubOrganization { get; set; } = string.Empty;
     public string UsageApiEndpoint { get; set; } = string.Empty;
-    public decimal? CopilotReferenceCredits { get; set; }
     /// <summary>Legacy tracked client ids from before provider cards. Read and preserved verbatim; never a card source.</summary>
     public IReadOnlyList<string> TokScaleClients { get; set; } = [];
     /// <summary>Catalog provider ids the user added; their cards are usage-only observations.</summary>
@@ -1221,7 +1213,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    private readonly IQuotaHistory? quotaHistory;
     private readonly AppSettingsStore? settingsStore;
     private readonly TimeProvider timeProvider;
     private readonly InAppNotificationService notificationService;
@@ -1242,9 +1233,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         breakdownRequest?.Cancel(); breakdownRequest?.Dispose(); breakdownRequest = null;
         tokScaleRequest?.Cancel(); tokScaleRequest?.Dispose(); tokScaleRequest = null;
         usageReadPort.Dispose();
-        (quotaHistory as IDisposable)?.Dispose();
     }
-    public MainViewModel(TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null, IQuotaHistory? quotaHistory = null)
+    public MainViewModel(TimeProvider? timeProvider = null, AppSettingsStore? settingsStore = null, IUiDispatcher? uiDispatcher = null, IQuotaWorkScheduler? workScheduler = null, IDesktopNotificationBackend? desktopNotificationBackend = null, IUsageReadPort? usageReadPort = null, ReconfigurableUsageReadPort? usageConnectionPort = null, ICredentialStore? usageCredentialStore = null, Func<HttpClient>? usageHttpClientFactory = null, Func<string, TimeZoneInfo>? timeZoneResolver = null, TimeZoneInfo? localTimeZone = null)
     {
         this.usageReadPort = usageConnectionPort ?? new ReconfigurableUsageReadPort(usageHttpClientFactory?.Invoke());
         if (usageReadPort is not null) this.usageReadPort.Configure(usageReadPort);
@@ -1253,7 +1243,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         this.localTimeZone = localTimeZone ?? TimeZoneInfo.Local;
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.settingsStore = settingsStore;
-        this.quotaHistory = quotaHistory;
         this.uiDispatcher = uiDispatcher ?? new AvaloniaUiDispatcher();
         this.workScheduler = workScheduler ?? new TaskRunQuotaWorkScheduler();
         notificationService = new InAppNotificationService(desktopNotificationBackend);
@@ -1265,34 +1254,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (settingsStore is not null) SetSettings(await workScheduler.RunAsync(() => settingsStore.LoadAsync(cancellationToken).AsTask()), persist: false);
             await RefreshUsageConnectionAsync(cancellationToken);
-            if (quotaHistory is null) return;
-
-            // The prune and the 30-day damage scan are storage work: run them on a worker.
-            // The UI no longer shows quota history; the only surface the history keeps is
-            // the corrupted-history notification, so the scan reads to detect damage and
-            // prunes what has fallen out of the window.
-            var history = quotaHistory;
-            var pruneBefore = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime).AddDays(-30);
-            var corrupted = await workScheduler.RunAsync(async () =>
-            {
-                await history.PruneAsync(pruneBefore, cancellationToken);
-                var damaged = false;
-                var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
-                for (var dayOffset = 0; dayOffset < 30; dayOffset++)
-                {
-                    try { await history.ReadAsync(today.AddDays(-dayOffset), cancellationToken); }
-                    catch (InvalidDataException) { damaged = true; }
-                }
-                return damaged;
-            });
-            if (corrupted) notificationService.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryCorrupt));
         }
         finally
         {
             // The observed-usage section lives on the dashboard, which is the page startup
             // lands on; its interval throttle decides whether a read actually happens.
-            // It runs even when startup ends early (no history store) so the section is
-            // not left hidden until the first navigation.
+            // It runs even when startup ends early so the section is not left hidden until
+            // the first navigation.
             tokScaleLoadTask = RefreshTokScaleAsync(force: false);
         }
     }
@@ -1311,17 +1279,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Settings.TrySetRefreshMinutes(dto.RefreshMinutes);
             Settings.NotificationsEnabled = dto.NotificationsEnabled;
             Settings.ResidentMode = dto.ResidentMode;
-            // Quota-era values are kept as stored data: the UI no longer edits them, but a
-            // save must not rewrite what another build's file carried.
-            if (dto.OverallThreshold is >= 0 and <= 100) Settings.OverallThreshold = dto.OverallThreshold;
-            Settings.ProviderOverrides.Clear();
-            if (dto.ProviderThresholds is not null)
-                foreach (var pair in dto.ProviderThresholds)
-                    if (Enum.TryParse<ProviderKind>(pair.Key, true, out var provider)) Settings.ProviderOverrides[provider] = pair.Value;
-            Settings.GithubOAuthClientId = dto.GithubOAuthClientId;
-            Settings.GithubOrganization = dto.GithubOrganization.Trim();
             Settings.UsageApiEndpoint = (dto.UsageApiEndpoint ?? string.Empty).Trim();
-            Settings.CopilotReferenceCredits = dto.CopilotReferenceCredits is > 0 ? dto.CopilotReferenceCredits : null;
             // Only catalog ids are kept: a stale saved id cannot resurrect as a card. The
             // legacy client list is preserved verbatim — it is the user's saved data — but
             // it is no longer a card source.
@@ -1340,7 +1298,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finally { settingsTransactionGate.Release(); }
     }
     public AppSettingsDto CurrentSettingsForTests => CurrentSettings();
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients], [.. Settings.TokScaleProviders]);
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.NotificationsEnabled, Settings.ResidentMode, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients], [.. Settings.TokScaleProviders]);
     private async Task<T> UpdateSettingsAsync<T>(Func<AppSettingsDto, (AppSettingsDto Candidate, T Result, bool Persist)> buildCandidate, Action publish, CancellationToken cancellationToken)
     {
         await settingsTransactionGate.WaitAsync(cancellationToken);

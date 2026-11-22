@@ -11,7 +11,6 @@ using Avalonia.Layout;
 using System.ComponentModel;
 using System.Globalization;
 using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 
 namespace QuotaSight.UI;

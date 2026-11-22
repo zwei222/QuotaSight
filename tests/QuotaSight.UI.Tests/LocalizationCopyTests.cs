@@ -46,12 +46,8 @@ public sealed class LocalizationCopyTests
         var japanese = new UiCopy(UiLanguage.Japanese);
         var english = new UiCopy(UiLanguage.English);
 
-        Assert.Equal("履歴", japanese.HistoryNotificationTitle);
-        Assert.Equal("履歴データが破損しています。読み込める項目を表示しています。", japanese.HistoryCorrupt);
         Assert.Equal("トレイを利用できません", japanese.TrayUnavailableTitle);
         Assert.Equal("トレイを利用できません。アプリ内で操作してください。", japanese.TrayUnavailable);
-        Assert.Equal("History", english.HistoryNotificationTitle);
-        Assert.Equal("History data is damaged; showing available entries.", english.HistoryCorrupt);
         Assert.Equal("Tray unavailable", english.TrayUnavailableTitle);
         Assert.Equal("Tray unavailable. Use the app window instead.", english.TrayUnavailable);
     }

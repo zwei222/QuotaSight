@@ -1,10 +1,8 @@
 using System.Diagnostics;
 using System.ComponentModel;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using QuotaSight.Application;
-using QuotaSight.Core;
 
 namespace QuotaSight.Infrastructure;
 
@@ -88,7 +86,7 @@ public static class PlatformPaths
         : Path.Combine(Environment.GetEnvironmentVariable("XDG_DATA_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share"), appName);
 }
 
-public sealed record AppSettingsDto(string Theme = "System", string Language = "English", int RefreshMinutes = 10, decimal OverallThreshold = 80, bool NotificationsEnabled = true, string GithubOAuthClientId = "", Dictionary<string, decimal>? ProviderThresholds = null, bool ResidentMode = false, string GithubOrganization = "", decimal? CopilotReferenceCredits = null, string UsageApiEndpoint = "", string[]? TokScaleClients = null, string[]? TokScaleProviders = null);
+public sealed record AppSettingsDto(string Theme = "System", string Language = "English", int RefreshMinutes = 10, bool NotificationsEnabled = true, bool ResidentMode = false, string UsageApiEndpoint = "", string[]? TokScaleClients = null, string[]? TokScaleProviders = null);
 [JsonSerializable(typeof(AppSettingsDto))]
 internal partial class AppSettingsJsonContext : JsonSerializerContext;
 public sealed class JsonSettingsStore
@@ -102,9 +100,4 @@ public sealed class JsonSettingsStore
     }
     public void Save(AppSettingsDto settings) => File.WriteAllText(path, JsonSerializer.Serialize(settings, AppSettingsJsonContext.Default.AppSettingsDto));
     public string Path => path;
-}
-
-public sealed class ManualQuotaService(IQuotaHistory history) : IManualQuotaService
-{
-    public async ValueTask<QuotaSnapshot> SetAsync(QuotaSnapshot snapshot, CancellationToken cancellationToken) { await history.AppendAsync([snapshot], cancellationToken); return snapshot; }
 }

@@ -1,5 +1,4 @@
 <Solution>
-  <Project Path="src/QuotaSight.Core/QuotaSight.Core.csproj" />
   <Project Path="src/QuotaSight.Application/QuotaSight.Application.csproj" />
   <Project Path="src/QuotaSight.Infrastructure/QuotaSight.Infrastructure.csproj" />
   <Project Path="src/QuotaSight.UI/QuotaSight.UI.csproj" />

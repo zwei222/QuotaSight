@@ -20,14 +20,13 @@ public sealed class UsageEndpointSettingsTests
 
         var loaded = await store.LoadAsync();
 
+        // The quota-era keys in this older file are ignored: every setting that remains
+        // keeps its value and the endpoint simply stays at its default.
         Assert.Equal(string.Empty, loaded.UsageApiEndpoint);
         Assert.Equal("Dark", loaded.Theme);
         Assert.Equal("Japanese", loaded.Language);
         Assert.Equal(5, loaded.RefreshMinutes);
-        Assert.Equal(70m, loaded.OverallThreshold);
         Assert.False(loaded.NotificationsEnabled);
-        Assert.Equal("existing-client", loaded.GithubOAuthClientId);
-        Assert.Equal("acme", loaded.GithubOrganization);
         Assert.True(loaded.ResidentMode);
     }
 
@@ -37,12 +36,12 @@ public sealed class UsageEndpointSettingsTests
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var store = new AppSettingsStore(root);
 
-        await store.SaveAsync(new AppSettingsDto(Theme: "Light", GithubOAuthClientId: "existing-client", UsageApiEndpoint: "https://usage.example.test"));
+        await store.SaveAsync(new AppSettingsDto(Theme: "Light", NotificationsEnabled: false, UsageApiEndpoint: "https://usage.example.test"));
         var loaded = await store.LoadAsync();
 
         Assert.Equal("https://usage.example.test", loaded.UsageApiEndpoint);
         Assert.Equal("Light", loaded.Theme);
-        Assert.Equal("existing-client", loaded.GithubOAuthClientId);
+        Assert.False(loaded.NotificationsEnabled);
         var json = await File.ReadAllTextAsync(store.Path);
         Assert.Contains("\"UsageApiEndpoint\":\"https://usage.example.test\"", json, StringComparison.Ordinal);
     }

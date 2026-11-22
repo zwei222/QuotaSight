@@ -3,7 +3,6 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.UI;
 
 namespace QuotaSight.UI.Tests.Support;

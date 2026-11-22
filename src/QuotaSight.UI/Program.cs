@@ -109,8 +109,8 @@ internal static class SmokeTest
         try
         {
             var config = new JsonSettingsStore(Path.Combine(root, "config"));
-            config.Save(new AppSettingsDto(GithubOAuthClientId: "smoke-client"));
-            if (config.Load().GithubOAuthClientId != "smoke-client") return 1;
+            config.Save(new AppSettingsDto(Theme: "Dark"));
+            if (config.Load().Theme != "Dark") return 1;
             if (!Directory.Exists(Path.Combine(root, "config"))) return 2;
             using var viewModel = CompositionRoot.CreateMainViewModel(Path.Combine(root, "view-model-data"));
             return 0;

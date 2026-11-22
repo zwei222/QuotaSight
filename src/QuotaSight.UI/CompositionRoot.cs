@@ -1,5 +1,4 @@
 using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 
 namespace QuotaSight.UI;
@@ -31,9 +30,8 @@ public static class CompositionRoot
     public static MainViewModel CreateMainViewModel(string? dataDirectory = null, HttpClient? httpClient = null, IDesktopNotificationBackend? desktopNotificationBackend = null)
     {
         var client = httpClient ?? new HttpClient();
-        var history = new JsonlQuotaHistory(dataDirectory ?? PlatformPaths.DataDirectory());
         var settings = new AppSettingsStore(dataDirectory);
         var credentials = CreateCredentialStore();
-        return new MainViewModel(settingsStore: settings, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend(), usageConnectionPort: new ReconfigurableUsageReadPort(), usageCredentialStore: credentials, quotaHistory: history);
+        return new MainViewModel(settingsStore: settings, desktopNotificationBackend: desktopNotificationBackend ?? CreateDesktopNotificationBackend(), usageConnectionPort: new ReconfigurableUsageReadPort(), usageCredentialStore: credentials);
     }
 }
