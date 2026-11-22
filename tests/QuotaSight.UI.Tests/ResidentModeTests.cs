@@ -1,16 +1,18 @@
-using System.Text;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
-using QuotaSight.Application;
-using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
 using Xunit;
 
 namespace QuotaSight.UI.Tests;
 
+/// <summary>
+/// Resident mode, tray and lifecycle contracts, independent of the quota UI that used to
+/// sit on the same surfaces: the close policy, the tray menu, the tracked operations and
+/// the settings round-trip all behave the same with the observed-usage dashboard.
+/// </summary>
 public sealed class ResidentModeTests
 {
     [Fact]
@@ -164,107 +166,6 @@ public sealed class ResidentModeTests
         Assert.Equal(1, cleanupCount);
     }
 
-    [AvaloniaFact]
-    public async Task Tracked_codex_poll_blocks_exit_until_poll_finishes()
-    {
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pollStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var provider = new BlockingCodexProvider(pollStarted, release);
-        var vm = new MainViewModel(new EmptyDashboardSource());
-        var window = new MainWindow(vm, provider);
-        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
-        window.OperationRunner = coordinator.Run;
-        window.Show();
-        try
-        {
-            vm.OpenProviderFlow();
-            vm.SelectProvider(ProviderConnectionChoice.Codex);
-            window.FindControl<Button>("CodexStartButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await Task.Yield();
-            window.FindControl<Button>("CodexPollButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await pollStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-            var exit = coordinator.BeginExitAsync();
-            Assert.False(exit.IsCompleted);
-            release.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-        }
-        finally { window.Close(); vm.Dispose(); }
-    }
-
-    [AvaloniaFact]
-    public async Task Tracked_codex_logout_drains_handler_state_continuation_before_cleanup()
-    {
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        CodexAuthorizationState? stateAtCleanup = null;
-        var provider = new BlockingCodexLogoutProvider(release);
-        var vm = new MainViewModel(new EmptyDashboardSource());
-        var window = new MainWindow(vm, provider);
-        var cleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var allowCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var coordinator = new AppLifecycleCoordinator(async () =>
-        {
-            stateAtCleanup = vm.CodexState;
-            cleanupStarted.SetResult();
-            await allowCleanup.Task;
-        });
-        window.OperationRunner = coordinator.Run;
-        window.Show();
-        try
-        {
-            vm.OpenProviderFlow();
-            vm.SelectProvider(ProviderConnectionChoice.Codex);
-            vm.SetCodexResult(new CodexUiResult(true, CodexAuthorizationState.Connected, "connected"));
-            window.FindControl<Button>("CodexLogoutButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-            var exit = coordinator.BeginExitAsync();
-            Assert.False(exit.IsCompleted);
-            release.SetResult();
-            await cleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            Assert.Equal(CodexAuthorizationState.Disconnected, stateAtCleanup);
-            allowCleanup.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-
-        }
-        finally { window.Close(); vm.Dispose(); }
-    }
-
-    private sealed class BlockingCodexProvider(TaskCompletionSource started, TaskCompletionSource release) : IProviderUiService
-    {
-        public ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string key, CancellationToken token) => ValueTask.FromResult(new ProviderConnectionResult(false, "not used"));
-        public ValueTask<string> ProbeGitHubCliAsync(CancellationToken token) => ValueTask.FromResult(string.Empty);
-        public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken token) => ValueTask.FromResult(new FetchResult<DeviceAuthorizationStart>(FetchStatus.Unsupported));
-        public ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new GitHubDeviceFlowResult(false, FetchStatus.Unsupported));
-        public ValueTask<CodexUiResult> StartCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(true, CodexAuthorizationState.AwaitingAuthorization, "started", new("CODE", new Uri("https://example.test"), DateTimeOffset.UtcNow.AddMinutes(5))));
-        public async ValueTask<CodexUiResult> PollCodexAsync(CancellationToken token)
-        {
-            started.SetResult();
-            await release.Task;
-            return new CodexUiResult(false, CodexAuthorizationState.Pending, "pending");
-        }
-        public ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(true, CodexAuthorizationState.Disconnected, "logged out"));
-        public ValueTask<bool> HasCodexCredentialAsync(CancellationToken token) => ValueTask.FromResult(false);
-    }
-
-    private sealed class BlockingCodexLogoutProvider(TaskCompletionSource release) : IProviderUiService
-    {
-        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ValueTask<ProviderConnectionResult> TestOpenCodeAsync(string key, CancellationToken token) => ValueTask.FromResult(new ProviderConnectionResult(false, "not used"));
-        public ValueTask<string> ProbeGitHubCliAsync(CancellationToken token) => ValueTask.FromResult(string.Empty);
-        public ValueTask<FetchResult<DeviceAuthorizationStart>> StartGitHubDeviceFlowAsync(CancellationToken token) => ValueTask.FromResult(new FetchResult<DeviceAuthorizationStart>(FetchStatus.Unsupported));
-        public ValueTask<GitHubDeviceFlowResult> PollGitHubDeviceFlowAsync(DeviceAuthorizationStart authorization, CancellationToken token) => ValueTask.FromResult(new GitHubDeviceFlowResult(false, FetchStatus.Unsupported));
-        public ValueTask<CodexUiResult> StartCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(false, CodexAuthorizationState.Disconnected, "not used"));
-        public ValueTask<CodexUiResult> PollCodexAsync(CancellationToken token) => ValueTask.FromResult(new CodexUiResult(false, CodexAuthorizationState.Disconnected, "not used"));
-        public async ValueTask<CodexUiResult> LogoutCodexAsync(CancellationToken token)
-        {
-            Started.SetResult();
-            await release.Task.ConfigureAwait(false);
-            return new CodexUiResult(true, CodexAuthorizationState.Disconnected, "logged out");
-        }
-        public ValueTask<bool> HasCodexCredentialAsync(CancellationToken token) => ValueTask.FromResult(true);
-    }
     [Fact]
     public void Resident_mode_defaults_off_and_legacy_settings_remain_off()
     {
@@ -299,7 +200,7 @@ public sealed class ResidentModeTests
     [Fact]
     public async Task Settings_state_applies_and_persists_resident_mode()
     {
-        var vm = new MainViewModel(new EmptyDashboardSource());
+        var vm = new MainViewModel();
         vm.SetSettings(new AppSettingsDto(ResidentMode: true), persist: false);
         Assert.True(vm.Settings.ResidentMode);
         Assert.True(vm.CurrentSettingsForTests.ResidentMode);
@@ -328,91 +229,10 @@ public sealed class ResidentModeTests
     }
 
     [AvaloniaFact]
-    public async Task History_delete_cancellation_from_real_button_is_not_unhandled_or_reported_as_failure()
-    {
-        var history = new BlockingDeleteHistory();
-        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
-        await vm.History.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-        vm.Navigate(AppPage.History);
-        var window = new MainWindow(vm);
-        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
-        window.OperationRunner = coordinator.Run;
-        var unhandled = new List<Exception>();
-        void OnUnhandled(object? sender, Avalonia.Threading.DispatcherUnhandledExceptionEventArgs args)
-        {
-            unhandled.Add(args.Exception);
-            args.Handled = true;
-        }
-        Avalonia.Threading.Dispatcher.UIThread.UnhandledException += OnUnhandled;
-        window.Show();
-        try
-        {
-            var deleteButton = window.GetVisualDescendants().OfType<Button>().Single(button =>
-                Avalonia.Automation.AutomationProperties.GetName(button) == "Delete history entry");
-            deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-            var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            await Task.Delay(100);
-
-            Assert.Empty(unhandled);
-            Assert.DoesNotContain(vm.CopyText.HistoryDeleteFailure, vm.NotificationBannerText, StringComparison.Ordinal);
-            Assert.DoesNotContain(vm.CopyText.HistoryDeleteAllFailure, vm.NotificationBannerText, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Avalonia.Threading.Dispatcher.UIThread.UnhandledException -= OnUnhandled;
-            window.Close();
-            vm.Dispose();
-        }
-    }
-
-    [AvaloniaFact]
-    public async Task History_delete_all_cancellation_from_real_button_is_not_unhandled_or_reported_as_failure()
-    {
-        var history = new BlockingDeleteHistory();
-        var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history);
-        vm.Navigate(AppPage.History);
-        var window = new MainWindow(vm);
-        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
-        window.OperationRunner = coordinator.Run;
-        var unhandled = new List<Exception>();
-        void OnUnhandled(object? sender, Avalonia.Threading.DispatcherUnhandledExceptionEventArgs args)
-        {
-            unhandled.Add(args.Exception);
-            args.Handled = true;
-        }
-        Avalonia.Threading.Dispatcher.UIThread.UnhandledException += OnUnhandled;
-        window.Show();
-        try
-        {
-            var deleteButton = window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>().Single(button =>
-                Avalonia.Automation.AutomationProperties.GetName(button) == "Delete all history");
-            deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await history.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-            var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            await Task.Delay(100);
-
-            Assert.Empty(unhandled);
-            Assert.DoesNotContain(vm.CopyText.HistoryDeleteFailure, vm.NotificationBannerText, StringComparison.Ordinal);
-            Assert.DoesNotContain(vm.CopyText.HistoryDeleteAllFailure, vm.NotificationBannerText, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Avalonia.Threading.Dispatcher.UIThread.UnhandledException -= OnUnhandled;
-            window.Close();
-            vm.Dispose();
-        }
-    }
-
-    [AvaloniaFact]
     public async Task Refresh_button_operation_is_drained_before_cleanup()
     {
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var vm = new MainViewModel(new EmptyDashboardSource(), quotaApplication: new BlockedRefreshApplication(release));
+        var vm = new MainViewModel(usageReadPort: new BlockingBreakdownPort(release));
         var window = new MainWindow(vm);
         var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
         window.OperationRunner = coordinator.Run;
@@ -430,189 +250,21 @@ public sealed class ResidentModeTests
     }
 
     [AvaloniaFact]
-    public async Task History_export_write_respects_exit_cancellation()
+    public async Task Compact_window_shares_vm_renders_usage_cards_busy_state_and_hides_on_close()
     {
-        var destination = new BlockingExportDestination("text/csv");
-        var vm = new MainViewModel(new EmptyDashboardSource());
-        vm.Navigate(AppPage.History);
-        var window = new MainWindow(vm, new UiProviderFacade(), null, destination);
-        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
-        window.OperationRunner = coordinator.Run;
-        var unhandled = new List<Exception>();
-        void OnUnhandled(object? sender, Avalonia.Threading.DispatcherUnhandledExceptionEventArgs args)
-        {
-            unhandled.Add(args.Exception);
-            args.Handled = true;
-        }
-        Avalonia.Threading.Dispatcher.UIThread.UnhandledException += OnUnhandled;
-        window.Show();
-        try
-        {
-            window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>()
-                .Single(button => Avalonia.Automation.AutomationProperties.GetName(button) == "Export history CSV")
-                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-
-            var exit = coordinator.BeginExitAsync();
-            await exit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-            Assert.True(exit.IsCompletedSuccessfully);
-            Assert.Empty(unhandled);
-        }
-        finally
-        {
-            Avalonia.Threading.Dispatcher.UIThread.UnhandledException -= OnUnhandled;
-            window.Close();
-            vm.Dispose();
-        }
-    }
-
-    [AvaloniaTheory]
-    [InlineData("Export CSV", "text/csv")]
-    [InlineData("Export JSON", "application/json")]
-    public async Task History_export_button_tracks_write_and_async_dispose_until_exit(string buttonName, string contentType)
-    {
-        var destination = new BlockingExportDestination(contentType);
-        var vm = new MainViewModel(new EmptyDashboardSource());
-        vm.Navigate(AppPage.History);
-        var window = new MainWindow(vm, new UiProviderFacade(), null, destination);
-        var coordinator = new AppLifecycleCoordinator(() => ValueTask.CompletedTask);
-        window.OperationRunner = coordinator.Run;
-        window.Show();
-        try
-        {
-            window.FindControl<WrapPanel>("HistoryActions")!.GetVisualDescendants().OfType<Button>()
-                .Single(button => Avalonia.Automation.AutomationProperties.GetName(button) == (buttonName == "Export CSV" ? "Export history CSV" : "Export history JSON"))
-                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await destination.Opened.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            // Complete the write before exit so the tracked task is not cancelled.
-            destination.AllowWrite.SetResult();
-            await destination.Written.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            // Now begin exit — the tracked task is blocked on DisposeAsync (AllowDispose).
-            var exit = coordinator.BeginExitAsync();
-            Assert.False(exit.IsCompleted);
-            destination.AllowDispose.SetResult();
-            await exit.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-            Assert.Equal(contentType, destination.ContentType);
-            Assert.Contains(contentType == "text/csv" ? "Provider,Account,Window" : "\"provider\"", destination.Content);
-        }
-        finally { window.Close(); vm.Dispose(); }
-    }
-
-    private sealed class BlockingExportDestination : IHistoryExportDestination
-    {
-        private readonly string contentType;
-        public BlockingExportDestination(string contentType) { this.contentType = contentType; ContentType = contentType; }
-        public TaskCompletionSource Opened { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource AllowWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Written { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource AllowDispose { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public string Content { get; private set; } = string.Empty;
-        public string ContentType { get; }
-        public Task<IHistoryExportFile?> PickAsync(string suggestedName, string requestedContentType)
-        {
-            Assert.Equal(contentType, requestedContentType);
-            return Task.FromResult<IHistoryExportFile?>(new BlockingExportFile(this));
-        }
-        private sealed class BlockingExportFile(BlockingExportDestination owner) : IHistoryExportFile
-        {
-            public Task<Stream> OpenWriteAsync()
-            {
-                owner.Opened.SetResult();
-                return Task.FromResult<Stream>(new BlockingExportStream(owner));
-            }
-        }
-        private sealed class BlockingExportStream(BlockingExportDestination owner) : MemoryStream
-        {
-            private bool writeCancelled;
-            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-                => WriteCoreAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-                => WriteCoreAsync(buffer, cancellationToken);
-            public override Task FlushAsync(CancellationToken cancellationToken)
-                => FlushCoreAsync(cancellationToken).AsTask();
-            private async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
-            {
-                try
-                {
-                    await owner.AllowWrite.Task.WaitAsync(cancellationToken);
-                    await base.WriteAsync(buffer, cancellationToken);
-                    owner.Content = Encoding.UTF8.GetString(ToArray());
-                    owner.Written.TrySetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                    writeCancelled = true;
-                    throw;
-                }
-            }
-            private async ValueTask FlushCoreAsync(CancellationToken cancellationToken)
-            {
-                // During dispose-after-cancel, StreamWriter calls FlushAsync with
-                // CancellationToken.None. Short-circuit to prevent a deadlock when
-                // the tracked operation was already cancelled.
-                if (writeCancelled || cancellationToken.IsCancellationRequested)
-                    return;
-                await owner.AllowWrite.Task.WaitAsync(cancellationToken);
-                await base.FlushAsync(cancellationToken);
-            }
-            public override async ValueTask DisposeAsync()
-            {
-                // In production, disposal completes quickly even after cancellation.
-                // Simulate this by not blocking on AllowDispose when write was cancelled.
-                if (!writeCancelled)
-                    await owner.AllowDispose.Task;
-                await base.DisposeAsync();
-            }
-        }
-    }
-
-    private sealed class BlockingDeleteHistory : IQuotaHistory
-    {
-        private readonly QuotaHistoryEntry seeded = new(Guid.NewGuid(), new QuotaSnapshot(ProviderKind.ChatGpt, "Personal", "Messages", new(QuotaWindowKind.Weekly, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(6)), null, null, 42, "percent", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Manual, QuotaConfidence.Manual, null, "ChatGPT Plus"));
-        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaSnapshot>>([]);
-        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>(day == DateOnly.FromDateTime(DateTime.UtcNow) ? [seeded] : []);
-        public async ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken)
-        {
-            Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        }
-        public ValueTask PruneAsync(DateOnly before, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public async ValueTask DeleteAsync(DateOnly? day, CancellationToken cancellationToken)
-        {
-            Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        }
-        public ValueTask ExportJsonAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-    }
-
-    private sealed class BlockedRefreshApplication(TaskCompletionSource release) : IQuotaApplication
-    {
-        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
-        {
-            await release.Task;
-            return new([], []);
-        }
-    }
-
-    [AvaloniaFact]
-    public async Task Compact_window_shares_vm_renders_cards_busy_state_and_hides_on_close()
-    {
-        var vm = new MainViewModel(new DemoDashboardSource());
+        var vm = new MainViewModel();
+        vm.SetSettings(new AppSettingsDto(TokScaleProviders: ["openai"]), persist: false);
         var window = new CompactQuotaWindow(vm);
         window.Show();
         await Task.Yield();
 
         Assert.Same(vm, window.DataContext);
-        Assert.NotNull(window.FindControl<ItemsControl>("CompactProviderCards"));
+        Assert.NotNull(window.FindControl<ItemsControl>("CompactTokScaleCards"));
         Assert.NotNull(window.FindControl<Button>("CompactRefreshButton"));
         Assert.NotNull(window.FindControl<Button>("CompactOpenFullButton"));
         Assert.NotNull(window.FindControl<ProgressBar>("CompactRefreshProgress"));
-        Assert.True(window.FindControl<ItemsControl>("CompactProviderCards")!.ItemTemplate is not null);
+        Assert.NotNull(window.FindControl<Border>("CompactTokScaleEmptyState"));
+        Assert.True(window.FindControl<ItemsControl>("CompactTokScaleCards")!.ItemTemplate is not null);
 
         window.Close();
         Assert.False(window.IsVisible);
@@ -620,5 +272,17 @@ public sealed class ResidentModeTests
         Assert.Same(vm, window.DataContext);
         window.Hide();
         vm.Dispose();
+    }
+
+    private sealed class BlockingBreakdownPort(TaskCompletionSource release) : IUsageReadPort
+    {
+        public async Task<UsageBreakdown> ReadBreakdownAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken)
+        {
+            await release.Task;
+            return new(from, to, [], [], []);
+        }
+
+        public Task<DailyUsage> ReadDailyAsync(DateOnly from, DateOnly to, string? collectorId, CancellationToken cancellationToken) =>
+            Task.FromResult(new DailyUsage(from, to, [], 0));
     }
 }

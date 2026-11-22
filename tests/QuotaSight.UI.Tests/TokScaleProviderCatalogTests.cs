@@ -68,27 +68,18 @@ public sealed class TokScaleProviderCatalogTests
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
-        // The five existing providers keep their slots at the top, in enum order.
-        var existing = choices.Take(5).ToList();
-        Assert.Equal(
-            (ProviderConnectionChoice[])Enum.GetValues<ProviderConnectionChoice>()[..5],
-            [.. existing.Select(choice => choice.Choice)]);
-        Assert.All(existing, choice => Assert.Equal(string.Empty, choice.TokScaleProviderId));
-
-        var catalog = choices.Skip(5).ToList();
-        Assert.Equal(TokScaleProviderCatalog.Providers.Count, catalog.Count);
-        Assert.All(catalog, choice => Assert.Equal(ProviderConnectionChoice.TokScale, choice.Choice));
-        Assert.All(catalog, choice => Assert.False(string.IsNullOrWhiteSpace(choice.TokScaleProviderId)));
-        // Every catalog provider is offered; the five existing connection kinds are kept
-        // alongside, and no TokScale choice is filtered away to avoid them.
+        // The picker offers the provider catalog only: every catalog provider is
+        // selectable and nothing the user has not picked can appear on the dashboard.
+        Assert.Equal(TokScaleProviderCatalog.Providers.Count, choices.Count);
+        Assert.All(choices, choice => Assert.False(string.IsNullOrWhiteSpace(choice.ProviderId)));
         Assert.Equal(
             TokScaleProviderCatalog.Providers.Select(provider => provider.Id).ToHashSet(StringComparer.Ordinal),
-            catalog.Select(choice => choice.TokScaleProviderId).ToHashSet(StringComparer.Ordinal));
-        Assert.Contains(catalog, choice => choice.TokScaleProviderId == "copilot");
-        Assert.Contains(catalog, choice => choice.TokScaleProviderId == "opencode_go");
+            choices.Select(choice => choice.ProviderId).ToHashSet(StringComparer.Ordinal));
+        Assert.Contains(choices, choice => choice.ProviderId == "copilot");
+        Assert.Contains(choices, choice => choice.ProviderId == "opencode_go");
 
-        // The tail is readable: display name order, case-insensitively.
-        var names = catalog.Select(choice => choice.DisplayName).ToList();
+        // The picker is readable: display name order, case-insensitively.
+        var names = choices.Select(choice => choice.DisplayName).ToList();
         var sorted = names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
         Assert.Equal(sorted, names);
     }
@@ -98,9 +89,7 @@ public sealed class TokScaleProviderCatalogTests
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
-        var identifiers = choices
-            .Select(choice => choice.Choice == ProviderConnectionChoice.TokScale ? choice.TokScaleProviderId : choice.Choice.ToString())
-            .ToList();
+        var identifiers = choices.Select(choice => choice.ProviderId).ToList();
         Assert.Equal(identifiers.ToHashSet(StringComparer.Ordinal).Count, identifiers.Count);
     }
 
@@ -112,7 +101,7 @@ public sealed class TokScaleProviderCatalogTests
             var copy = new UiCopy(language);
 
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleNotObserved));
-            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleMultiProvider));
+            Assert.False(string.IsNullOrWhiteSpace(copy.TokScaleSharedNotice));
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScalePanelDescription));
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScalePanelAdd));
             Assert.False(string.IsNullOrWhiteSpace(copy.TokScalePanelRemove));
@@ -122,13 +111,13 @@ public sealed class TokScaleProviderCatalogTests
     }
 
     [Fact]
-    public void TheMultipleProviderLabelDiffersBetweenLanguages()
+    public void TheSharedAmountNoticeDiffersBetweenLanguages()
     {
         var japanese = new UiCopy(UiLanguage.Japanese);
         var english = new UiCopy(UiLanguage.English);
 
-        Assert.NotEqual(japanese.TokScaleMultiProvider, english.TokScaleMultiProvider, StringComparer.Ordinal);
-        Assert.Contains("プロバイダー", japanese.TokScaleMultiProvider, StringComparison.Ordinal);
-        Assert.Contains("provider", english.TokScaleMultiProvider, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(japanese.TokScaleSharedNotice, english.TokScaleSharedNotice, StringComparer.Ordinal);
+        Assert.Contains("共有", japanese.TokScaleSharedNotice, StringComparison.Ordinal);
+        Assert.Contains("shared", english.TokScaleSharedNotice, StringComparison.OrdinalIgnoreCase);
     }
 }

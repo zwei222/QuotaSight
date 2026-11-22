@@ -283,7 +283,7 @@ public sealed class UsageConnectionCardOverflowTests
         public static Scope Create(out FakeCredentialStore store)
         {
             store = new FakeCredentialStore();
-            var window = new MainWindow(new MainViewModel(new EmptyDashboardSource(), usageCredentialStore: store)) { Width = WindowWidth };
+            var window = new MainWindow(new MainViewModel(usageCredentialStore: store)) { Width = WindowWidth };
             window.ViewModel.Navigate(AppPage.Settings);
             window.Show();
             window.UpdateLayout();

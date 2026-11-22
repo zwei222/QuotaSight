@@ -111,9 +111,7 @@ internal static class SmokeTest
             var config = new JsonSettingsStore(Path.Combine(root, "config"));
             config.Save(new AppSettingsDto(GithubOAuthClientId: "smoke-client"));
             if (config.Load().GithubOAuthClientId != "smoke-client") return 1;
-            var app = CompositionRoot.CreateApplication(Path.Combine(root, "data"));
-            using var appLifetime = app as IDisposable;
-            if (app is null || !Directory.Exists(Path.Combine(root, "config"))) return 2;
+            if (!Directory.Exists(Path.Combine(root, "config"))) return 2;
             using var viewModel = CompositionRoot.CreateMainViewModel(Path.Combine(root, "view-model-data"));
             return 0;
         }

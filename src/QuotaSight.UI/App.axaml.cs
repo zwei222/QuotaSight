@@ -85,12 +85,14 @@ public partial class App : Avalonia.Application
             window.OperationRunner = lifecycle.Run;
             compact.OpenFullRequested = window.ShowFullWindow;
             compact.IsExiting = () => lifecycle.IsExiting;
-            compact.RefreshRequested = token => lifecycle.Run(token => window.ViewModel.RefreshAsync(token));
+            // The tray and the compact window refresh the observed-usage section: the only
+            // data surface left outside the open windows.
+            compact.RefreshRequested = token => lifecycle.Run(token => window.ViewModel.RefreshTokScaleAsync(force: true));
             trayViewModel = window.ViewModel;
             trayLanguageChanged = (_, args) => { if (args.PropertyName == nameof(MainViewModel.Language)) UpdateTrayCopy(); };
             trayViewModel.PropertyChanged += trayLanguageChanged;
             Tray = new TrayController(window.ShowFullWindow, compact.ShowOrActivate,
-                () => lifecycle.Run(() => window.ViewModel.RefreshAsync()),
+                () => lifecycle.Run(() => window.ViewModel.RefreshTokScaleAsync(force: true)),
                 () => _ = RequestExitAsync(desktop),
                 nativeBackendAvailable: false,
                 canPrimary: () => window.EffectiveResidentMode && window.TrayAvailable && !(lifecycle?.IsExiting ?? true));
@@ -138,7 +140,7 @@ public partial class App : Avalonia.Application
                         var detected = await probe;
                         window.SetTrayCapability(LinuxStatusNotifierAvailability.ResolveOverride(TrayFactoryOverride, detected));
                         if (Tray is not null) Tray = new TrayController(window.ShowFullWindow, compact.ShowOrActivate,
-                            () => lifecycle.Run(token => window.ViewModel.RefreshAsync(token)), () => _ = RequestExitAsync(desktop),
+                            () => lifecycle.Run(token => window.ViewModel.RefreshTokScaleAsync(force: true)), () => _ = RequestExitAsync(desktop),
                             nativeBackendAvailable: window.TrayAvailable,
                             canPrimary: () => window.EffectiveResidentMode && window.TrayAvailable && !lifecycle.IsExiting);
                         if (nativeTray is not null) nativeTray.IsVisible = window.ViewModel.Settings.ResidentMode && window.TrayAvailable;
@@ -177,7 +179,7 @@ public partial class App : Avalonia.Application
         var currentLifecycle = lifecycle ?? throw new InvalidOperationException("Lifecycle is not initialized.");
         refreshScheduler = new RefreshScheduler(() => TimeSpan.FromMinutes(window.ViewModel.Settings.RefreshMinutes));
         refreshLifetime = AppLifecycleCoordinator.CreateLinkedLifetime(currentLifecycle.CancellationToken);
-        refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshAsync(RefreshOrigin.Scheduled, token)), refreshLifetime.Token).AsTask();
+        refreshTask = refreshScheduler.RunAsync(token => new ValueTask(window.ViewModel.RefreshTokScaleAsync()), refreshLifetime.Token).AsTask();
         currentLifecycle.Track(refreshTask);
     }
 

@@ -133,7 +133,7 @@ public sealed class UsageBreakdownPresentationTests
     [AvaloniaFact]
     public async Task UnconfiguredUsageHidesTheBreakdownSurface()
     {
-        using var viewModel = new MainViewModel(new EmptyDashboardSource());
+        using var viewModel = new MainViewModel();
         viewModel.NavigateToUsage();
         await viewModel.UsageLoadTask;
         await viewModel.BreakdownLoadTask;
@@ -259,7 +259,6 @@ public sealed class UsageBreakdownPresentationTests
     {
         var port = new ScriptedDualReadPort();
         using var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             uiDispatcher: new ImmediateUiDispatcher(),
             usageReadPort: port);
         port.Daily.Enqueue(() => new DailyUsage(From, To, [], 0));
@@ -296,7 +295,6 @@ public sealed class UsageBreakdownPresentationTests
     {
         var port = new ScriptedDualReadPort();
         using var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             uiDispatcher: new ImmediateUiDispatcher(),
             usageReadPort: port);
         port.Daily.Enqueue(() => new DailyUsage(From, To, [], 0));
@@ -327,7 +325,6 @@ public sealed class UsageBreakdownPresentationTests
     private static MainViewModel Create(IUsageReadPort port, UiLanguage language)
     {
         var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             uiDispatcher: new ImmediateUiDispatcher(),
             usageReadPort: port);
         viewModel.Language = language;

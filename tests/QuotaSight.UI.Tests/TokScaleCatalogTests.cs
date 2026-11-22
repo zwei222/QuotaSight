@@ -47,19 +47,12 @@ public sealed class TokScaleCatalogTests
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
-        // The five existing providers keep their slots at the top, in enum order; the
-        // provider catalog follows (see TokScaleProviderCatalogTests for its contract).
-        var existing = choices.Take(5).ToList();
-        Assert.Equal(
-            (ProviderConnectionChoice[])Enum.GetValues<ProviderConnectionChoice>()[..5],
-            [.. existing.Select(choice => choice.Choice)]);
-        Assert.All(existing, choice => Assert.Equal(string.Empty, choice.TokScaleProviderId));
-
-        var catalog = choices.Skip(5).ToList();
-        Assert.Equal(TokScaleProviderCatalog.Providers.Count, catalog.Count);
+        // The picker offers the provider catalog only: a dashboard card is a user
+        // selection, so the five quota-era choices are gone.
+        Assert.Equal(TokScaleProviderCatalog.Providers.Count, choices.Count);
         Assert.Equal(
             TokScaleProviderCatalog.Providers.Select(provider => provider.Id).ToHashSet(StringComparer.Ordinal),
-            catalog.Select(choice => choice.TokScaleProviderId).ToHashSet(StringComparer.Ordinal));
+            choices.Select(choice => choice.ProviderId).ToHashSet(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -67,9 +60,7 @@ public sealed class TokScaleCatalogTests
     {
         var choices = UiSettings.ProviderChoices(UiLanguage.English);
 
-        var identifiers = choices
-            .Select(choice => choice.Choice == ProviderConnectionChoice.TokScale ? choice.TokScaleProviderId : choice.Choice.ToString())
-            .ToList();
+        var identifiers = choices.Select(choice => choice.ProviderId).ToList();
         Assert.Equal(identifiers.ToHashSet(StringComparer.Ordinal).Count, identifiers.Count);
     }
 

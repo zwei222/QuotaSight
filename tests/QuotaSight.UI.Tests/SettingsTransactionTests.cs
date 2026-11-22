@@ -9,9 +9,7 @@ public sealed class SettingsTransactionTests
     [Fact]
     public async Task Failed_language_save_does_not_publish_candidate_settings()
     {
-        using var vm = new MainViewModel(new DemoDashboardSource(), settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
-        var cardsBefore = vm.Cards.ToArray();
-        var historyBefore = vm.History.Entries.ToArray();
+        using var vm = new MainViewModel(settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
         var saveCalls = 0;
         vm.SettingsSaveAsyncForTests = (_, _) =>
         {
@@ -22,16 +20,13 @@ public sealed class SettingsTransactionTests
         await Assert.ThrowsAsync<IOException>(() => vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken));
 
         Assert.Equal(UiLanguage.English, vm.Language);
-        Assert.Equal(cardsBefore, vm.Cards);
-        Assert.Equal(historyBefore, vm.History.Entries);
-        Assert.Equal(UiLanguage.English, vm.History.Language);
         Assert.Equal(1, saveCalls);
     }
 
     [Fact]
     public async Task Pre_cancelled_settings_update_does_not_publish_or_save()
     {
-        using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
+        using var vm = new MainViewModel(settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
         var saveCalls = 0;
         vm.SettingsSaveAsyncForTests = (_, _) =>
         {
@@ -50,7 +45,7 @@ public sealed class SettingsTransactionTests
     [Fact]
     public async Task Queued_update_after_disposal_does_not_save_or_publish()
     {
-        using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
+        using var vm = new MainViewModel(settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
         var firstSaveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var saveCalls = 0;
@@ -79,7 +74,7 @@ public sealed class SettingsTransactionTests
     [Fact]
     public async Task In_flight_update_after_disposal_does_not_publish_candidate()
     {
-        using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
+        using var vm = new MainViewModel(settingsStore: new AppSettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
         var saveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         vm.SettingsSaveAsyncForTests = async (_, cancellationToken) =>
@@ -98,13 +93,13 @@ public sealed class SettingsTransactionTests
     }
 
     [Fact]
-    public async Task Reference_and_language_writes_preserve_both_changes_on_disk_and_live_state()
+    public async Task Theme_and_language_writes_preserve_both_changes_on_disk_and_live_state()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         try
         {
             var store = new AppSettingsStore(root);
-            using var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store);
+            using var vm = new MainViewModel(settingsStore: store);
             var firstSaveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseFirstSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var first = 0;
@@ -118,18 +113,18 @@ public sealed class SettingsTransactionTests
                 await store.SaveAsync(settings, cancellationToken);
             };
 
-            var referenceSave = vm.SetCopilotReferenceAsync("2000", TestContext.Current.CancellationToken);
+            var themeSave = vm.SetThemeAsync(ThemeMode.Dark, TestContext.Current.CancellationToken);
             await firstSaveEntered.Task;
             var languageSave = vm.SetLanguageAsync(UiLanguage.Japanese, TestContext.Current.CancellationToken);
             releaseFirstSave.TrySetResult();
 
-            Assert.True(await referenceSave);
+            await themeSave;
             await languageSave;
 
             var persisted = await store.LoadAsync(TestContext.Current.CancellationToken);
-            Assert.Equal(2000m, persisted.CopilotReferenceCredits);
+            Assert.Equal("Dark", persisted.Theme);
             Assert.Equal("Japanese", persisted.Language);
-            Assert.Equal(2000m, vm.Settings.CopilotReferenceCredits);
+            Assert.Equal(ThemeMode.Dark, vm.Settings.Theme);
             Assert.Equal(UiLanguage.Japanese, vm.Language);
         }
         finally

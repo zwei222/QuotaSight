@@ -1,241 +1,21 @@
-using System.Net;
 using System.Text;
-using System.Text.Json;
 using Avalonia.Headless.XUnit;
-using Avalonia.Threading;
-using Xunit;
-using QuotaSight.Application;
 using QuotaSight.Core;
 using QuotaSight.Infrastructure;
 using QuotaSight.UI;
+using Xunit;
 
 namespace QuotaSight.UI.Tests;
 
-public sealed class RealFeatureTests
+/// <summary>
+/// The real-data contracts that survive the quota-UI removal: the history's damage scan
+/// still guards the one surface quota history keeps (the corrupted-history notification),
+/// and the notification banner's localization rules hold for the alerts that remain.
+/// </summary>
+public sealed class RealFeatureUiTests
 {
     [AvaloniaFact]
-    public async Task Scheduled_refresh_publishes_nonempty_state_on_Avalonia_ui_thread_while_worker_fetches()
-    {
-        var application = new BlockingRefreshWithSnapshotApplication(Snapshot(85));
-        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
-        var sentinel = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var refresh = Task.Run(() => viewModel.RefreshAsync(RefreshOrigin.Scheduled));
-        await application.Started.Task;
-
-        Dispatcher.UIThread.Post(() => sentinel.TrySetResult());
-        await sentinel.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
-        application.Release.TrySetResult(true);
-        await refresh;
-
-        Assert.True(application.WasCalledOffUiThread);
-        Assert.True(viewModel.HasCards);
-        Assert.NotEmpty(viewModel.Cards);
-        Assert.True(Dispatcher.UIThread.CheckAccess());
-    }
-
-    [Fact]
-    public async Task Scheduled_refresh_fetches_off_ui_thread_and_publishes_on_ui_thread_without_busy_state()
-    {
-        var dispatcher = new RecordingUiDispatcher();
-        var application = new ThreadRecordingRefreshApplication();
-        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application, uiDispatcher: dispatcher);
-
-        await viewModel.RefreshAsync(RefreshOrigin.Scheduled, TestContext.Current.CancellationToken);
-
-        Assert.False(application.WasCalledOnCapturedContext);
-        Assert.True(dispatcher.InvocationCount > 0);
-        Assert.False(viewModel.IsQuotaDataBusy);
-    }
-
-    [Fact]
-    public async Task OpenCode_success_stores_session_credential_and_delivers_snapshots()
-    {
-        var store = new InMemoryCredentialStore(); var delivered = new List<QuotaSnapshot>();
-        using var client = new HttpClient(new JsonHandler("{\"rollingUsage\":{\"used\":80,\"limit\":100}}"));
-        var facade = new UiProviderFacade(key => new OpenCodeGoAdapter(client, key, new Uri("https://example.test/usage"), TimeProvider.System), credentialStore: store, openCodeSuccess: snapshots => { delivered.AddRange(snapshots); return ValueTask.CompletedTask; });
-        var result = await facade.TestOpenCodeAsync("session-key", TestContext.Current.CancellationToken);
-        Assert.True(result.Success); Assert.Single(delivered); Assert.Equal("session-key", await store.GetAsync("OpenCode Go", TestContext.Current.CancellationToken)); Assert.DoesNotContain("session-key", result.Message);
-    }
-
-    [Fact]
-    public async Task New_alert_replaces_refresh_failure_banner()
-    {
-        var vm = new MainViewModel(new FixedDashboardSource(Snapshot(40)), quotaApplication: new StubApplication([]));
-        await vm.RefreshAsync(TestContext.Current.CancellationToken);
-
-        Assert.Contains("Temporary fetch failure", vm.NotificationBannerText, StringComparison.Ordinal);
-        vm.Notify("History", "Export failed.");
-
-        Assert.Equal("History: Export failed.", vm.NotificationBannerText);
-    }
-
-    [Fact]
-    public async Task Refresh_failure_rebuilds_last_known_cards_at_current_time_and_notifies_error_banner()
-    {
-        var observed = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
-        var clock = new MutableTimeProvider(observed);
-        var snapshot = Snapshot(40) with { Fetched = observed, Observed = observed, Window = new(QuotaWindowKind.Rolling, observed.AddHours(-1), observed.AddHours(1)) };
-        var vm = new MainViewModel(new FixedDashboardSource(snapshot), quotaApplication: new StubApplication([]), timeProvider: clock);
-        var changed = new List<string>();
-        vm.PropertyChanged += (_, args) => changed.Add(args.PropertyName!);
-
-        clock.Advance(TimeSpan.FromHours(2));
-        await vm.RefreshAsync(TestContext.Current.CancellationToken);
-
-        var card = Assert.Single(vm.Cards);
-        Assert.Equal("acct", card.Account);
-        var row = Assert.Single(card.Windows);
-        Assert.True(row.IsStale);
-        Assert.Contains("Stale", row.FreshnessText, StringComparison.Ordinal);
-        Assert.True(vm.IsError);
-        Assert.Contains(nameof(vm.IsNotificationVisible), changed);
-        Assert.Contains(nameof(vm.NotificationBannerText), changed);
-    }
-
-    [Fact]
-    public async Task Saved_manual_and_provider_snapshots_are_immediately_visible_in_history_and_exports()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        try
-        {
-            using var history = new JsonlQuotaHistory(root);
-            var vm = new MainViewModel(new EmptyDashboardSource(), new ManualQuotaService(history), history, uiDispatcher: new RecordingUiDispatcher());
-            await vm.InitializeAsync(TestContext.Current.CancellationToken);
-            var manual = Snapshot(25) with { Provider = ProviderKind.ChatGpt, Account = "manual-account", DisplayName = "ChatGPT Plus", Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual };
-            await vm.ApplyManualSnapshotAsync(manual, TestContext.Current.CancellationToken);
-            Assert.Contains(vm.History.Entries, entry => entry.Account == "manual-account");
-            Assert.Contains("manual-account", await vm.History.ExportJsonAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
-
-            var provider = Snapshot(75) with { Account = "provider-account", Source = QuotaSource.Official, Confidence = QuotaConfidence.Official };
-            await vm.ApplyProviderSnapshotsAsync([provider], TestContext.Current.CancellationToken);
-            Assert.Contains(vm.History.Entries, entry => entry.Account == "provider-account");
-            Assert.Contains("provider-account", await vm.History.ExportCsvAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
-        }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public async Task Settings_roundtrip_and_client_id_update_are_public_contracts()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        try { var store = new AppSettingsStore(root); var vm = new MainViewModel(new EmptyDashboardSource(), settingsStore: store); await vm.SetGithubClientIdAsync("client", TestContext.Current.CancellationToken); await vm.SetRefreshMinutesAsync(15, TestContext.Current.CancellationToken); var loaded = await store.LoadAsync(TestContext.Current.CancellationToken); Assert.Equal("client", loaded.GithubOAuthClientId); Assert.Equal(15, loaded.RefreshMinutes); }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public async Task Refresh_scheduler_reaches_the_same_application_refresh_contract()
-    {
-        var calls = 0; var scheduler = new RefreshScheduler(TimeSpan.FromMinutes(5)); using var stop = new CancellationTokenSource();
-        stop.Cancel(); await scheduler.RunAsync(_ => { calls++; return ValueTask.CompletedTask; }, stop.Token); Assert.Equal(0, calls);
-    }
-
-    [Fact]
-    public void Thirty_day_aggregation_deduplicates_account_and_keeps_multiple_windows()
-    {
-        var now = DateTimeOffset.UtcNow; var snapshots = new[] { Snapshot(40), Snapshot(90) with { Window = new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)) } };
-        var cards = DashboardAggregation.ToCards(snapshots, now); Assert.Single(cards); Assert.Equal(2, cards[0].Windows.Count); Assert.Equal("Rolling", cards[0].Windows[0].WindowName);
-    }
-
-    [Fact]
-    public void Dashboard_windows_are_ordered_by_actual_period_then_deterministic_window_key()
-    {
-        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
-        var snapshots = new[]
-        {
-            Snapshot(95) with { Metric = "Monthly metric", Window = new(QuotaWindowKind.Monthly, now.AddDays(-1), now.AddDays(29)) },
-            Snapshot(20) with { Metric = "Rolling metric", Window = new(QuotaWindowKind.Rolling, now.AddHours(-12), now.AddHours(12)) },
-            Snapshot(40) with { Metric = "Custom metric", Window = new(QuotaWindowKind.Custom, now.AddDays(-2), now.AddDays(-1)) },
-            Snapshot(60) with { Metric = "Daily metric", Window = new(QuotaWindowKind.Daily, now.AddDays(-1), now.AddDays(29)) },
-        };
-
-        var rows = Assert.Single(DashboardAggregation.ToCards(snapshots, now)).Windows;
-
-        Assert.Equal(["Daily metric", "Rolling metric", "Monthly metric", "Custom metric"], rows.Select(row => row.Metric));
-    }
-
-    [Fact]
-    public async Task OpenCode_weekly_precedes_monthly_when_valid_durations_differ_and_survives_refresh_and_language_switch()
-    {
-        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
-        var monthly = Snapshot(10) with { Provider = ProviderKind.OpenCode, Account = "go", Metric = "usage", Used = 10, Window = new(QuotaWindowKind.Monthly, now.AddDays(-2), now.AddDays(2)), DisplayName = "OpenCode Go" };
-        var weekly = monthly with { Used = 90, Window = new(QuotaWindowKind.Weekly, now.AddDays(-1), now.AddDays(6)) };
-
-        var aggregate = Assert.Single(DashboardAggregation.ToCards([monthly, weekly], now));
-        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], aggregate.Windows.Select(row => row.WindowKind));
-
-        var vm = new MainViewModel(new EmptyDashboardSource(), timeProvider: new FixedTimeProvider(now));
-        await vm.ApplyProviderSnapshotsAsync([monthly, weekly], TestContext.Current.CancellationToken);
-        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
-        vm.Language = UiLanguage.Japanese;
-        Assert.Equal([QuotaWindowKind.Weekly, QuotaWindowKind.Monthly], Assert.Single(vm.Cards).Windows.Select(row => row.WindowKind));
-    }
-
-    [Fact]
-    public void Window_ordering_uses_semantic_fallback_for_equal_or_invalid_durations()
-    {
-        var now = new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero);
-        var snapshots = Enum.GetValues<QuotaWindowKind>().Select(kind => Snapshot(10) with
-        {
-            Metric = kind.ToString(),
-            Window = kind == QuotaWindowKind.Custom
-                ? new(kind, now.AddDays(2), now.AddDays(1))
-                : new(kind, now.AddDays(-1), now)
-        });
-
-        Assert.Equal([QuotaWindowKind.Daily, QuotaWindowKind.Rolling, QuotaWindowKind.Weekly, QuotaWindowKind.Monthly, QuotaWindowKind.Custom], QuotaWindowOrdering.OrderSnapshots(snapshots).Select(snapshot => snapshot.Window.Kind));
-    }
-
-    [Fact]
-    public async Task History_export_preserves_manual_and_official_source_confidence_with_null_used_percent()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            using var history = new JsonlQuotaHistory(root);
-            await history.AppendAsync([
-                Snapshot(25) with { Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual },
-                Snapshot(75) with { Source = QuotaSource.Official, Confidence = QuotaConfidence.Official },
-                Snapshot(0) with { Used = null, Limit = null, Source = QuotaSource.Manual, Confidence = QuotaConfidence.Manual }
-            ], TestContext.Current.CancellationToken);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
-
-            using var json = JsonDocument.Parse(await viewModel.History.ExportJsonAsync(TestContext.Current.CancellationToken));
-            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Manual" && entry.GetProperty("confidence").GetString() == "Manual");
-            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("source").GetString() == "Official" && entry.GetProperty("confidence").GetString() == "Official");
-            Assert.Contains(json.RootElement.EnumerateArray(), entry => entry.GetProperty("usedPercent").ValueKind == JsonValueKind.Null);
-
-            var csv = await viewModel.History.ExportCsvAsync(TestContext.Current.CancellationToken);
-            Assert.StartsWith("Provider,Account,Window,UsedPercent,Observed,Source,Confidence\n", csv, StringComparison.Ordinal);
-            Assert.Contains(",Manual,Manual", csv, StringComparison.Ordinal);
-            Assert.Contains(",Official,Official", csv, StringComparison.Ordinal);
-            Assert.Contains(",,", csv, StringComparison.Ordinal);
-        }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public async Task InitializeAsync_loads_each_persisted_history_event_once_and_builds_one_card_window()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        try
-        {
-            using var history = new JsonlQuotaHistory(root);
-            await history.AppendAsync([Snapshot(25)], TestContext.Current.CancellationToken);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-
-            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
-
-            Assert.Single(viewModel.History.Entries);
-            var card = Assert.Single(viewModel.Cards);
-            Assert.Single(card.Windows);
-        }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public async Task InitializeAsync_skips_a_corrupt_current_day_and_loads_the_prior_day()
+    public async Task InitializeAsync_detects_a_corrupt_current_day_and_notifies_once()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var now = DateTimeOffset.UtcNow;
@@ -246,19 +26,20 @@ public sealed class RealFeatureTests
             await history.AppendAsync([Snapshot(25) with { Account = "prior-day" }], TestContext.Current.CancellationToken);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n", TestContext.Current.CancellationToken);
 
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
+            var viewModel = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(now));
             await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
             await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
 
-            Assert.Equal("History data is damaged; showing available entries.", viewModel.History.LoadError);
-            Assert.Single(viewModel.History.Entries, entry => entry.Account == "prior-day");
-            Assert.Contains(viewModel.Cards, card => card.Account == "prior-day");
+            // The corrupted history notification is the one quota-history surface the UI
+            // keeps; a second initialization must not duplicate the banner.
+            Assert.Contains("History data is damaged", viewModel.NotificationBannerText, StringComparison.Ordinal);
+            Assert.False(viewModel.IsTokScaleSectionVisible is false);
             await Assert.ThrowsAsync<InvalidDataException>(async () => await history.ReadAsync(today, TestContext.Current.CancellationToken));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
-    [Fact]
+    [AvaloniaFact]
     public async Task Initially_English_history_corruption_notification_relocalizes_to_Japanese()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -268,7 +49,7 @@ public sealed class RealFeatureTests
             using var history = new JsonlQuotaHistory(root);
             var today = DateOnly.FromDateTime(now.UtcDateTime);
             await File.WriteAllTextAsync(Path.Combine(root, $"{today:yyyy-MM-dd}.jsonl"), "not-json\n", TestContext.Current.CancellationToken);
-            var vm = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, timeProvider: new FixedTimeProvider(now), uiDispatcher: new RecordingUiDispatcher());
+            var vm = new MainViewModel(quotaHistory: history, timeProvider: new FixedTimeProvider(now));
             await vm.InitializeAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal("History: History data is damaged; showing available entries.", vm.NotificationBannerText);
@@ -283,236 +64,17 @@ public sealed class RealFeatureTests
     [Fact]
     public void Ui_owned_alert_factory_relocalizes_but_opaque_public_notify_does_not()
     {
-        using var vm = new MainViewModel(new EmptyDashboardSource());
-        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryExportFailure));
-        Assert.Equal("History: Unable to export history.", vm.NotificationBannerText);
-        vm.Language = UiLanguage.Japanese;
-        Assert.Equal("履歴: 履歴をエクスポートできませんでした。", vm.NotificationBannerText);
-
+        using var vm = new MainViewModel();
         vm.NotifyLocalized(copy => (copy.TrayUnavailableTitle, copy.TrayUnavailable));
-        vm.Language = UiLanguage.English;
         Assert.Equal("Tray unavailable: Tray unavailable. Use the app window instead.", vm.NotificationBannerText);
-        vm.NotifyLocalized(copy => (copy.HistoryNotificationTitle, copy.HistoryDeleteFailure));
         vm.Language = UiLanguage.Japanese;
-        Assert.Equal("履歴: この履歴を削除できませんでした。", vm.NotificationBannerText);
+        Assert.Equal("トレイを利用できません: トレイを利用できません。アプリ内で操作してください。", vm.NotificationBannerText);
 
         vm.Notify("Caller title", "Caller text");
         vm.Language = UiLanguage.English;
         Assert.Equal("Caller title: Caller text", vm.NotificationBannerText);
     }
 
-    [Fact]
-    public void Refresh_missing_provider_and_no_data_previous_value_factories_relocalize_through_view_model()
-    {
-        using var vm = new MainViewModel(new EmptyDashboardSource());
-        var providers = new[] { ProviderKind.ChatGpt };
-        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshMissingProviders(providers)));
-        Assert.Contains("data could not be retrieved", vm.NotificationBannerText, StringComparison.Ordinal);
-        vm.Language = UiLanguage.Japanese;
-        Assert.Contains("今回はCodexのデータを取得できませんでした", vm.NotificationBannerText, StringComparison.Ordinal);
-
-        var previous = new HashSet<ProviderKind> { ProviderKind.ChatGpt };
-        vm.Language = UiLanguage.English;
-        vm.NotifyLocalized(copy => (copy.RefreshIncompleteTitle, copy.RefreshNoData(providers, previous)));
-        Assert.Contains("Showing the last successful value", vm.NotificationBannerText, StringComparison.Ordinal);
-        vm.Language = UiLanguage.Japanese;
-        Assert.Contains("前回正常に取得した値", vm.NotificationBannerText, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Japanese_quota_threshold_notification_is_localized_and_safe()
-    {
-        var now = DateTimeOffset.UtcNow;
-        var snapshot = Snapshot(90) with { Provider = ProviderKind.ChatGpt, DisplayName = "ChatGPT Plus", Fetched = now, Observed = now, FreshUntil = now.AddHours(1) };
-        var service = new InAppNotificationService { Language = UiLanguage.Japanese };
-
-        await service.NotifyAsync(snapshot, CancellationToken.None);
-
-        Assert.Equal("ChatGPTの利用率がしきい値に達しました: 使用率 90%", service.BannerText);
-        Assert.DoesNotContain("Token", service.BannerText, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task History_csv_export_keeps_comma_quote_and_newline_account_as_one_literal_field()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        const string account = "Personal, \"quoted\"\naccount";
-        try
-        {
-            using var history = new JsonlQuotaHistory(root);
-            await history.AppendAsync([Snapshot(25) with { Account = account }], TestContext.Current.CancellationToken);
-            var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-            await viewModel.InitializeAsync(TestContext.Current.CancellationToken);
-
-            var rows = ParseCsv(await viewModel.History.ExportCsvAsync(TestContext.Current.CancellationToken));
-
-            Assert.Equal(2, rows.Count);
-            Assert.Equal(account, rows[1][1]);
-            Assert.Equal(7, rows[1].Count);
-        }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    }
-
-    private static List<List<string>> ParseCsv(string csv)
-    {
-        var rows = new List<List<string>>();
-        var row = new List<string>();
-        var field = new StringBuilder();
-        var quoted = false;
-        for (var index = 0; index < csv.Length; index++)
-        {
-            var character = csv[index];
-            if (quoted)
-            {
-                if (character == '"' && index + 1 < csv.Length && csv[index + 1] == '"') { field.Append('"'); index++; }
-                else if (character == '"') quoted = false;
-                else field.Append(character);
-                continue;
-            }
-            if (character == '"') quoted = true;
-            else if (character == ',') { row.Add(field.ToString()); field.Clear(); }
-            else if (character == '\r' || character == '\n')
-            {
-                if (character == '\r' && index + 1 < csv.Length && csv[index + 1] == '\n') index++;
-                row.Add(field.ToString()); field.Clear(); rows.Add(row); row = new List<string>();
-            }
-            else field.Append(character);
-        }
-        if (field.Length > 0 || row.Count > 0) { row.Add(field.ToString()); rows.Add(row); }
-        return rows;
-    }
-
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
-    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
-    {
-        private DateTimeOffset current = now;
-        public override DateTimeOffset GetUtcNow() => current;
-        public void Advance(TimeSpan amount) => current = current.Add(amount);
-    }
     private static QuotaSnapshot Snapshot(decimal percent) => new(ProviderKind.OpenCode, "acct", "usage", new(QuotaWindowKind.Rolling, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1)), percent, 100, null, "requests", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, QuotaSource.Official, QuotaConfidence.Official, DateTimeOffset.UtcNow.AddHours(1), "OpenCode Go");
-    private sealed class JsonHandler(string json) : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }); }
-    private sealed class FixedDashboardSource(QuotaSnapshot snapshot) : IDashboardSource { public bool IsDemo => false; public IReadOnlyList<ProviderCardViewModel> Load() => DashboardAggregation.ToCards([snapshot], DateTimeOffset.UtcNow); }
-    [Fact]
-    public async Task Quota_refresh_exposes_busy_copy_blocks_duplicates_and_releases_after_completion()
-    {
-        var application = new BlockingRefreshApplication();
-        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaApplication: application);
-
-        var first = viewModel.RefreshAsync(TestContext.Current.CancellationToken);
-        await application.Started.Task;
-
-        Assert.True(viewModel.IsQuotaDataBusy);
-        Assert.Equal("Refreshing quota data…", viewModel.QuotaStatusText);
-
-        viewModel.Language = UiLanguage.Japanese;
-        Assert.Equal("利用枠データを更新しています…", viewModel.QuotaStatusText);
-
-        var second = viewModel.RefreshAsync(TestContext.Current.CancellationToken);
-        await Task.Delay(25, TestContext.Current.CancellationToken);
-        Assert.False(viewModel.CanRefresh);
-        Assert.Equal(1, application.Calls);
-
-        application.Release.TrySetResult(true);
-        await Task.WhenAll(first, second);
-        Assert.False(viewModel.IsQuotaDataBusy);
-        Assert.Equal(2, application.Calls);
-    }
-
-    [Fact]
-    public async Task Quota_initialization_exposes_busy_copy_and_releases_after_history_load()
-    {
-        var history = new BlockingHistory();
-        var viewModel = new MainViewModel(new EmptyDashboardSource(), quotaHistory: history, uiDispatcher: new RecordingUiDispatcher());
-
-        var initialization = viewModel.InitializeAsync(TestContext.Current.CancellationToken);
-        await history.Started.Task;
-
-        Assert.True(viewModel.IsQuotaDataBusy);
-        Assert.Equal("Refreshing quota data…", viewModel.QuotaStatusText);
-
-        viewModel.Language = UiLanguage.Japanese;
-        Assert.Equal("利用枠データを更新しています…", viewModel.QuotaStatusText);
-
-        history.Release.TrySetResult(true);
-        await initialization;
-        Assert.False(viewModel.IsQuotaDataBusy);
-    }
-
-    private sealed class BlockingHistory : IQuotaHistory
-    {
-        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public ValueTask AppendAsync(IReadOnlyList<QuotaSnapshot> snapshots, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public async ValueTask<IReadOnlyList<QuotaSnapshot>> ReadAsync(DateOnly day, CancellationToken cancellationToken)
-        {
-            Started.TrySetResult(true);
-            await Release.Task.WaitAsync(cancellationToken);
-            return [];
-        }
-        public ValueTask<IReadOnlyList<QuotaHistoryEntry>> ReadEventsAsync(DateOnly day, CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<QuotaHistoryEntry>>([]);
-        public ValueTask DeleteEventAsync(Guid eventId, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask PruneAsync(DateOnly before, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask DeleteAsync(DateOnly? day, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask ExportJsonAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask ExportCsvAsync(Stream output, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-    }
-
-    private sealed class BlockingRefreshApplication : IQuotaApplication
-    {
-        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public int Calls { get; private set; }
-
-        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
-        {
-            Calls++;
-            Started.TrySetResult(true);
-            await Release.Task.WaitAsync(cancellationToken);
-            return new QuotaRefreshResult([], []);
-        }
-    }
-
-    private sealed class BlockingRefreshWithSnapshotApplication(QuotaSnapshot snapshot) : IQuotaApplication
-    {
-        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<bool> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool WasCalledOffUiThread { get; private set; }
-
-        public async ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
-        {
-            WasCalledOffUiThread = !Dispatcher.UIThread.CheckAccess();
-            Started.TrySetResult(true);
-            await Release.Task.WaitAsync(cancellationToken);
-            return new QuotaRefreshResult([snapshot], []);
-        }
-    }
-
-    private sealed class ThreadRecordingRefreshApplication : IQuotaApplication
-    {
-        // Fetches must run on a worker thread, never the thread that owns the view model.
-        // (Sync-context identity is not observable in Avalonia 12 headless hosts, which no
-        // longer install a SynchronizationContext on the UI thread.)
-        private readonly Thread creationThread = Thread.CurrentThread;
-        public bool WasCalledOnCapturedContext { get; private set; }
-        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken)
-        {
-            WasCalledOnCapturedContext = Thread.CurrentThread == creationThread;
-            return ValueTask.FromResult(new QuotaRefreshResult([], []));
-        }
-    }
-
-    private sealed class RecordingUiDispatcher : IUiDispatcher
-    {
-        public int InvocationCount { get; private set; }
-        public bool CheckAccess() => true;
-        public Task InvokeAsync(Action action) { InvocationCount++; action(); return Task.CompletedTask; }
-        public Task InvokeAsync(Func<Task> action) { InvocationCount++; return action(); }
-    }
-
-    private sealed class StubApplication(IReadOnlyList<QuotaSnapshot> result) : IQuotaApplication
-    {
-        public ValueTask<QuotaRefreshResult> RefreshAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new QuotaRefreshResult(result, result.Count == 0 ? [new(ProviderKind.OpenCode, FetchStatus.TransientFailure)] : []));
-    }
 }

@@ -167,12 +167,16 @@ public static class UsageBreakdownAggregation
 
     /// <summary>
     /// Builds the dashboard cards from the two reads the section performs (today and the
-    /// last seven days), keyed by provider. Tokens one provider served are summed across
-    /// clients and models; a row several providers served together is one combination
-    /// card and its tokens go to no single provider's card, so the cards' totals always
-    /// add up to the parts' totals. A provider seen in either read gets exactly one
-    /// card; providers the user added but the breakdown has not attributed anything to
-    /// yet get a card that says so instead of looking like a zero reading. Sorted by the
+    /// last seven days), for the providers the user added and only for them: a provider
+    /// is observed but never auto-carded, so nothing the user did not select appears.
+    /// A card means "usage through that provider": its own rows plus every combination
+    /// row (a comma-joined provider key such as <c>deepseek,opencode_go</c>) it is part
+    /// of. Combination rows therefore feed several cards, and such a card says so with
+    /// the shared-amount notice instead of presenting a total that never overlaps.
+    /// A provider seen in either read gets exactly one card; providers the user added
+    /// but the breakdown has not attributed anything to yet get a card that says so
+    /// instead of looking like a zero reading. An empty provider key is data, not a
+    /// provider: it never becomes a card or a selectable choice. Sorted by the
     /// seven-day total descending, ties by provider key.
     /// </summary>
     public static IReadOnlyList<TokScaleUsageCard> TokScaleCards(
@@ -182,53 +186,76 @@ public static class UsageBreakdownAggregation
         UiLanguage language = UiLanguage.English)
     {
         var copy = new UiCopy(language);
-        var cards = new Dictionary<string, (long Today, long Week)>(StringComparer.Ordinal);
-        foreach (var part in today.Parts)
-        {
-            var key = part.Provider;
-            var seen = cards.TryGetValue(key, out var existing) ? existing : (0L, 0L);
-            cards[key] = (seen.Item1 + part.Total, seen.Item2);
-        }
+        var tracked = new HashSet<string>(trackedProviders ?? [], StringComparer.Ordinal);
+        var totals = new Dictionary<string, (long Today, long Week)>(StringComparer.Ordinal);
+        var shared = new HashSet<string>(StringComparer.Ordinal);
+        AddLane(today.Parts, todayLane: true);
+        AddLane(week.Parts, todayLane: false);
 
-        foreach (var part in week.Parts)
+        void AddLane(IReadOnlyList<UsagePart> parts, bool todayLane)
         {
-            var key = part.Provider;
-            var seen = cards.TryGetValue(key, out var existing) ? existing : (0L, 0L);
-            cards[key] = (seen.Item1, seen.Item2 + part.Total);
+            foreach (var part in parts)
+            {
+                foreach (var provider in ProviderKeysOf(part.Provider))
+                {
+                    if (!tracked.Contains(provider)) continue;
+                    if (!totals.TryGetValue(provider, out var seen)) seen = (Today: 0L, Week: 0L);
+                    totals[provider] = todayLane ? (seen.Today + part.Total, seen.Week) : (seen.Today, seen.Week + part.Total);
+                    if (IsCombination(part.Provider)) shared.Add(provider);
+                }
+            }
         }
 
         // A tracked provider with no attribution on either read is "not observed yet",
         // not a zero-token observation.
-        foreach (var id in trackedProviders)
+        foreach (var id in tracked)
         {
-            if (TokScaleProviderCatalog.Find(id) is not null && !cards.ContainsKey(id)) cards[id] = (0, 0);
+            if (TokScaleProviderCatalog.Find(id) is not null && !totals.ContainsKey(id)) totals[id] = (0, 0);
         }
 
-        return [.. cards
+        return [.. totals
             .Select(pair =>
             {
                 // Presence in either read's parts is the observation; absence is "not
                 // observed yet", even for a tracked provider. A zero-token part is a real
                 // observation, not the not-observed state.
-                var observed = today.Parts.Any(part => part.Provider == pair.Key)
-                    || week.Parts.Any(part => part.Provider == pair.Key);
+                var observed = today.Parts.Any(part => ProviderKeysOf(part.Provider).Contains(pair.Key))
+                    || week.Parts.Any(part => ProviderKeysOf(part.Provider).Contains(pair.Key));
+                var includesShared = shared.Contains(pair.Key);
                 return new TokScaleUsageCard(
                     pair.Key,
-                    TokScaleProviderCatalog.CardDisplayName(pair.Key, copy),
+                    TokScaleProviderCatalog.DisplayNameOf(pair.Key),
                     pair.Value.Today,
                     pair.Value.Week,
                     observed
                         ? $"{copy.TokScaleToday} {pair.Value.Today:N0} · {copy.TokScaleWeek} {pair.Value.Week:N0}"
                         : copy.TokScaleNotObserved,
                     observed,
-                    IsMultiProvider(pair.Key),
-                    IsMultiProvider(pair.Key) ? copy.TokScaleMultiProvider : string.Empty);
+                    includesShared,
+                    includesShared ? copy.TokScaleSharedNotice : string.Empty);
             })
             .OrderByDescending(card => card.WeekTokens)
             .ThenBy(card => card.ProviderKey, StringComparer.Ordinal)];
     }
 
-    private static bool IsMultiProvider(string providerKey) => providerKey.Contains(',');
+    /// <summary>
+    /// How many distinct named providers the two reads observed, whether or not the user
+    /// added them. The empty provider key counts as data, never as a provider, so it is
+    /// excluded; it may only surface as "something was observed" in the empty state.
+    /// </summary>
+    public static int ObservedProviderCount(UsageBreakdown today, UsageBreakdown week)
+    {
+        var providers = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var part in today.Parts) foreach (var provider in ProviderKeysOf(part.Provider)) providers.Add(provider);
+        foreach (var part in week.Parts) foreach (var provider in ProviderKeysOf(part.Provider)) providers.Add(provider);
+        return providers.Count;
+    }
+
+    /// <summary>The providers one part's provider value names: the single id, or every id of a comma-joined combination. The empty key names no provider.</summary>
+    private static IReadOnlyList<string> ProviderKeysOf(string provider) =>
+        provider.Length == 0 ? [] : provider.Split(',');
+
+    private static bool IsCombination(string provider) => provider.Contains(',');
 
     private static string KeyOf(UsagePart part, UsageBreakdownDimension dimension) => dimension switch
     {

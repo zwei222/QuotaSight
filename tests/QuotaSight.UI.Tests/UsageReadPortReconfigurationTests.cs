@@ -103,7 +103,6 @@ public sealed class UsageReadPortReconfigurationTests
     {
         var client = new TrackedClient(new OriginHandler());
         using var viewModel = new MainViewModel(
-            new EmptyDashboardSource(),
             usageCredentialStore: new FakeCredentialStore(),
             usageHttpClientFactory: () => client);
 
