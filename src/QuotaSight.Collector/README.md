@@ -1,6 +1,6 @@
 # QuotaSight.Collector (local candidate normalizer)
 
-A small, dependency-free .NET 10 CLI that reads **one** `tokscale graph --json`
+A small, dependency-free .NET 10 CLI that reads **one** `tokscale graph` JSON
 document from an **explicit stdin** and normalizes it into a **candidate**
 `PUT /v1/collectors/{collectorId}/snapshots/{revision}` body for
 `src/QuotaSight.Usage.Api` (wire v1 by default, wire v2 opt-in — see
@@ -14,6 +14,22 @@ It is a normalizer, not a collector of record:
 - No logging framework and no payload echo on stderr.
 - Never claims the upstream scan was complete.
 - Does not launch another process.
+
+## Installing the released binary
+
+Releases attach `QuotaSight-Collector-<version>-linux-x64.zip`: one self-contained
+Native AOT executable named `QuotaSight.Collector`, with no runtime to install and
+no debug symbols. Unzip it and place the executable on `PATH`:
+
+```bash
+unzip QuotaSight-Collector-<version>-linux-x64.zip
+install -m 0755 QuotaSight-Collector-<version>-linux-x64/QuotaSight.Collector /usr/local/bin/QuotaSight.Collector
+```
+
+The upstream scan it consumes is `tokscale` 4.23.0 — the collector rejects any
+other `meta.version`. The full Linux host setup (TokScale, systemd credentials,
+wrapper, timer, preview before the first send) is in
+[docs/collector-linux-setup.md](../../docs/collector-linux-setup.md).
 
 ## Usage
 
@@ -137,8 +153,9 @@ printed.
 **Input size.** The upstream document is bounded at 512 KiB locally
 (`MaxInputBytes`), not at 64 KiB. Reading `contributions[].clients` as well as the
 daily totals made the document much larger: a real 17-day document is already
-about 34 KiB, and `tokscale graph --days 30` is larger than the old 64 KiB
-ceiling, so that ceiling would have turned a normal month into a rejection. A
+about 34 KiB, and a 30-day window (the `--since` filter 30 days back) is larger
+than the old 64 KiB ceiling, so that ceiling would have turned a normal month
+into a rejection. A
 document above 512 KiB exits `4`. The emitted body stays bounded at 32 KiB
 whatever the input size.
 
@@ -241,9 +258,13 @@ and every path in it are placeholders:
 
 ```sh
 #!/bin/sh
-# placeholders only — replace the upstream command, its period option and the paths
+# placeholders only — replace the endpoint, the ids and the paths
+# tokscale 4.23.0 writes JSON unconditionally: `graph` has neither --json nor --days, so
+# the window is a date filter and --no-spinner keeps the report on stdout clean.
 set -eu
-/usr/local/bin/tokscale graph --json --days 30 \
+npx --yes tokscale@4.23.0 graph \
+    --since "$(date -d '-30 days' +%F)" \
+    --no-spinner \
   | /usr/local/bin/QuotaSight.Collector --send \
       --endpoint https://example.invalid \
       --collector-id collector-id \
@@ -391,6 +412,17 @@ is unsupported and send is refused.
 LoadCredential=access-client-id:/etc/example/access-client-id
 LoadCredential=access-client-secret:/etc/example/access-client-secret
 ```
+
+`LoadCredential=` copies a plaintext file, so that file still sits in cleartext on
+disk. Registering the values with `systemd-creds encrypt` and using
+`LoadCredentialEncrypted=` instead keeps an encrypted copy that systemd decrypts
+into `CREDENTIALS_DIRECTORY` for the unit only; the collector reads the same two
+file names either way. [docs/collector-linux-setup.md](../../docs/collector-linux-setup.md)
+has the `systemd-creds` commands, the user-unit variant and the timer.
+
+A user unit resolves `StateDirectory=` under `~/.local/state/` instead of
+`/var/lib/`. The name still becomes `STATE_DIRECTORY` with mode `0700`, and the
+collector's ownership and mode checks are the same either way.
 
 ### Before sending real data
 

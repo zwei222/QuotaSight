@@ -64,7 +64,7 @@ CodexではQuotaSight自身がdevice OAuthを実行し、Hermes/Codexの認証�
 
 ## 配布
 
-正式にサポートする配布物は、Windows x64またはLinux x64向けの自己完結型.NET 10 Native AOT ZIPです。MSIX、deb、AppImageは現在サポートしていません。
+正式にサポートする配布物は、Windows x64またはLinux x64向けの自己完結型.NET 10 Native AOT ZIPです。MSIX、deb、AppImageは現在サポートしていません。Linux x64のリリースには`QuotaSight-Collector-<version>-linux-x64.zip`も添付します。これはローカルの`tokscale graph`ドキュメントを正規化してUsage APIへ送るCollectorで、ホスト側の設定（バイナリ、TokScale、systemdの資格情報、タイマー）は[LinuxでのCollectorセットアップ](docs/collector-linux-setup.md)にまとめています。
 
 ## ビルドと実行
 

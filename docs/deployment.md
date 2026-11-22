@@ -41,6 +41,12 @@ first, so the Worker's check is defense-in-depth and not the primary gate. That
 ordering was observed on 2026-11-22 — a request with no credential was answered
 by Access with `403` and an HTML error page and never reached the Worker (§8.1).
 
+The sender at the top of that diagram is `QuotaSight.Collector`, a self-contained
+Native AOT Linux x64 executable shipped as `QuotaSight-Collector-<version>-linux-x64.zip`
+alongside the app ZIP. Installing it on a host — TokScale 4.23.0, `systemd-creds`
+credentials, the wrapper, the service and timer, and the preview run before the first
+`--send` — is [collector-linux-setup.md](collector-linux-setup.md).
+
 ## 1. Prerequisites
 
 **Account and zone**

@@ -10,6 +10,12 @@ public sealed class WorkflowContractTests
     private static readonly string Release = File.ReadAllText(Path.Combine(Root, ".github", "workflows", "release.yml"));
     private static readonly string UiProject = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "QuotaSight.UI.csproj"));
     private static readonly string UiProgram = File.ReadAllText(Path.Combine(Root, "src", "QuotaSight.UI", "Program.cs"));
+    // Read lazily so a missing file fails only the tests that assert its content instead of
+    // throwing in the type initializer and failing the whole class.
+    private static readonly string CollectorProject = ReadRepoFile("src", "QuotaSight.Collector", "QuotaSight.Collector.csproj");
+    private static readonly string CollectorReadme = ReadRepoFile("src", "QuotaSight.Collector", "README.md");
+    private static readonly string CollectorSetupGuide = ReadRepoFile("docs", "collector-linux-setup.md");
+    private static readonly string RootReadme = ReadRepoFile("README.md");
 
     [Fact]
     public void Ci_triggers_push_and_pull_request() =>
@@ -331,6 +337,169 @@ public sealed class WorkflowContractTests
         Assert.Contains(
             "src/QuotaSight.Usage.Api/test/fixtures/wire-v2-golden.json text eol=lf",
             attributes);
+    }
+
+    [Fact]
+    public void Collector_project_enables_native_aot_without_suppressing_warnings()
+    {
+        Assert.Contains("<PublishAot>true</PublishAot>", CollectorProject);
+        Assert.DoesNotContain("PublishAot>false", CollectorProject + Release);
+
+        // The collector ships in the same Native AOT release lane as the UI, so it keeps the same
+        // policy: trimming and AOT analysis stay on and their warnings are never silenced.
+        var project = XDocument.Parse(CollectorProject);
+        Assert.Empty(project.Descendants("NoWarn"));
+        foreach (var suppressed in new[]
+                 {
+                     "IL2026", "IL3050", "IL2104", "IL3053", "ILLink",
+                     "<SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>",
+                     "<EnableTrimAnalyzer>false</EnableTrimAnalyzer>",
+                     "<EnableAotAnalyzer>false</EnableAotAnalyzer>",
+                     "<NuGetAudit>false</NuGetAudit>",
+                     "<NuGetAuditMode>all</NuGetAuditMode>",
+                 })
+        {
+            Assert.DoesNotContain(suppressed, CollectorProject);
+        }
+
+        // Warning-free is enforced repository-wide, not relaxed for this project.
+        Assert.Contains(
+            "<TreatWarningsAsErrors>true</TreatWarningsAsErrors>",
+            File.ReadAllText(Path.Combine(Root, "Directory.Build.props")));
+    }
+
+    [Fact]
+    public void Collector_project_stops_generating_debug_symbols_in_release()
+    {
+        Assert.Contains("<DebugType>none</DebugType>", CollectorProject);
+        Assert.Contains("<DebugSymbols>false</DebugSymbols>", CollectorProject);
+        Assert.Contains("<StripSymbols>true</StripSymbols>", CollectorProject);
+        Assert.Contains("<AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>", CollectorProject);
+        Assert.Contains("Condition=\"'$(Configuration)' == 'Release'\"", CollectorProject);
+    }
+
+    [Fact]
+    public void Release_publishes_the_collector_as_a_native_aot_linux_binary()
+    {
+        Assert.Contains(
+            "dotnet publish src/QuotaSight.Collector/QuotaSight.Collector.csproj -c Release -r linux-x64 --self-contained true -p:PublishAot=true -p:Version=$VERSION --no-restore -o publish-collector",
+            Release);
+        Assert.Contains("chmod +x publish-collector/QuotaSight.Collector", Release);
+    }
+
+    [Fact]
+    public void Release_smoke_tests_the_collector_binary_against_the_synthetic_fixture()
+    {
+        Assert.Contains(
+            "publish-collector/QuotaSight.Collector --preview --generation 1 --bucket-time-zone Asia/Tokyo",
+            Release);
+        Assert.Contains("tests/QuotaSight.Collector.Tests/Fixtures/graph-4.23.0-positive.json", Release);
+    }
+
+    [Fact]
+    public void Release_attaches_a_versioned_collector_archive()
+    {
+        Assert.Contains("collector_folder=\"QuotaSight-Collector-$VERSION-linux-x64\"", Release);
+        Assert.Contains("collector_zip=\"$collector_folder.zip\"", Release);
+        Assert.Contains("zip -r \"$collector_zip\" \"$collector_folder\"", Release);
+        Assert.Contains("name: QuotaSight-Collector-${{ env.VERSION }}-linux-x64", Release);
+        Assert.Contains("path: QuotaSight-Collector-${{ env.VERSION }}-linux-x64.zip", Release);
+    }
+
+    [Fact]
+    public void Release_collector_archive_holds_exactly_one_executable_and_no_symbols()
+    {
+        // One file, the executable, under one versioned folder: the same rule the UI archive
+        // follows. Anything else (a stray runtime, a symbol file, a second binary) is refused.
+        Assert.Contains("unzip -Z1 \"$collector_zip\" | grep -v '/$' | wc -l", Release);
+        Assert.Contains("the collector archive must hold exactly one file", Release);
+        Assert.Contains("unzip -Z1 \"$collector_zip\" | grep -v '/$'", Release);
+        Assert.Contains("\"${collector_folder}/QuotaSight.Collector\"", Release);
+        Assert.Contains("debug symbols leaked into $collector_zip", Release);
+    }
+
+    [Fact]
+    public void Ci_publishes_and_smokes_the_collector_native_aot_binary()
+    {
+        Assert.Contains(
+            "dotnet publish src/QuotaSight.Collector/QuotaSight.Collector.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishAot=true --no-restore -o publish-collector",
+            Ci);
+        Assert.Contains(
+            "./publish-collector/QuotaSight.Collector --preview --generation 1 --bucket-time-zone Asia/Tokyo",
+            Ci);
+        Assert.Contains("tests/QuotaSight.Collector.Tests/Fixtures/graph-4.23.0-positive.json", Ci);
+    }
+
+    [Fact]
+    public void Collector_setup_guide_covers_the_release_artifact_credentials_and_timer()
+    {
+        Assert.NotEmpty(CollectorSetupGuide);
+
+        foreach (var required in new[]
+                 {
+                     "QuotaSight-Collector-<version>-linux-x64.zip",
+                     "/usr/local/bin/QuotaSight.Collector",
+                     "4.23.0",
+                     "npx --yes tokscale@4.23.0",
+                     "systemd-creds",
+                     "LoadCredentialEncrypted=",
+                     "CREDENTIALS_DIRECTORY",
+                     "LoadCredential=",
+                     "--user",
+                     "--preview",
+                     "--send",
+                     "journalctl",
+                     "example.invalid",
+                 })
+        {
+            Assert.Contains(required, CollectorSetupGuide);
+        }
+
+        // tokscale 4.23.0 `graph` has neither --json (it always writes JSON) nor --days; the
+        // window is a date filter, and the pinned version is what the adapter accepts.
+        Assert.Contains("--since \"$(date -d '-30 days' +%F)\"", CollectorSetupGuide);
+        Assert.Contains("--no-spinner", CollectorSetupGuide);
+        Assert.DoesNotContain("--days 30", CollectorSetupGuide);
+        Assert.DoesNotContain("tokscale graph --json", CollectorSetupGuide);
+
+        // User units are the default, and the system-wide path is declared as an alternative.
+        Assert.Contains("systemctl --user enable --now", CollectorSetupGuide);
+        Assert.Contains("/etc/systemd/system", CollectorSetupGuide);
+        Assert.Contains("WantedBy=default.target", CollectorSetupGuide);
+        Assert.Contains("WantedBy=timers.target", CollectorSetupGuide);
+        Assert.Contains("StateDirectoryMode=0700", CollectorSetupGuide);
+        Assert.Contains("loginctl enable-linger", CollectorSetupGuide);
+
+        // A state command needs STATE_DIRECTORY, which only the unit provides, so the first-run
+        // floor is taken inside the same transient unit environment the timer uses.
+        Assert.Contains("systemd-run --user --wait --pipe --collect", CollectorSetupGuide);
+        Assert.Contains("-p StateDirectory=example-collector -p StateDirectoryMode=0700", CollectorSetupGuide);
+        Assert.Contains("state_initialized: next revision 1", CollectorSetupGuide);
+    }
+
+    [Fact]
+    public void Collector_setup_guide_keeps_operator_values_out_of_the_public_repository()
+    {
+        foreach (var forbidden in new[] { "/home/", "her" + "mes", "quota-sight.example", "cf-access" })
+        {
+            Assert.DoesNotContain(forbidden, CollectorSetupGuide, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void Collector_readme_points_at_the_release_artifact_and_the_setup_guide()
+    {
+        Assert.Contains("QuotaSight-Collector-<version>-linux-x64.zip", CollectorReadme);
+        Assert.Contains("docs/collector-linux-setup.md", CollectorReadme);
+        Assert.Contains("systemd-creds", CollectorReadme);
+        Assert.DoesNotContain("/home/" + "her" + "mes", CollectorReadme);
+        Assert.Contains("docs/collector-linux-setup.md", RootReadme);
+    }
+
+    private static string ReadRepoFile(params string[] relative)
+    {
+        var path = Path.Combine([Root, .. relative]);
+        return File.Exists(path) ? File.ReadAllText(path) : string.Empty;
     }
 
     private static string FindRoot()

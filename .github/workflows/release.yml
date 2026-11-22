@@ -92,6 +92,51 @@ jobs:
           chmod +x "$folder/QuotaSight.UI"
           test -x "$folder/QuotaSight.UI"
           zip -r "$folder.zip" "$folder"
+      - name: Publish the Collector NativeAOT (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          dotnet publish src/QuotaSight.Collector/QuotaSight.Collector.csproj -c Release -r linux-x64 --self-contained true -p:PublishAot=true -p:Version=$VERSION --no-restore -o publish-collector
+          chmod +x publish-collector/QuotaSight.Collector
+          # Preview only: the synthetic fixture is piped in, so the binary runs end to end without a
+          # socket, without a state directory and without sending anything.
+          publish-collector/QuotaSight.Collector --preview --generation 1 --bucket-time-zone Asia/Tokyo \
+            < tests/QuotaSight.Collector.Tests/Fixtures/graph-4.23.0-positive.json > /dev/null
+          echo "collector executable: $(stat -c %s publish-collector/QuotaSight.Collector) bytes"
+          collector_folder="QuotaSight-Collector-$VERSION-linux-x64"
+          # Release ships no debug symbols: the project stops generating them, this removes any
+          # stale copy an incremental publish could still have laid down.
+          find publish-collector -type f \( -name '*.pdb' -o -name '*.dbg' \) -delete
+          rm -rf "$collector_folder"
+          mv publish-collector "$collector_folder"
+          chmod +x "$collector_folder/QuotaSight.Collector"
+          test -x "$collector_folder/QuotaSight.Collector"
+          collector_zip="$collector_folder.zip"
+          zip -r "$collector_zip" "$collector_folder"
+      - name: Check the Collector archive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          collector_folder="QuotaSight-Collector-$VERSION-linux-x64"
+          collector_zip="$collector_folder.zip"
+          if unzip -Z1 "$collector_zip" | grep -Eq '\.(pdb|dbg)$'; then
+            echo "debug symbols leaked into $collector_zip" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$collector_zip" | grep -Evq "^$collector_folder/"; then
+            echo "every entry must live under $collector_folder/" >&2
+            exit 1
+          fi
+          count=$(unzip -Z1 "$collector_zip" | grep -v '/$' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "the collector archive must hold exactly one file but holds $count" >&2
+            exit 1
+          fi
+          if [ "$(unzip -Z1 "$collector_zip" | grep -v '/$')" != "${collector_folder}/QuotaSight.Collector" ]; then
+            echo "the collector archive must hold exactly ${collector_folder}/QuotaSight.Collector" >&2
+            exit 1
+          fi
+          unzip -l "$collector_zip"
       - name: Publish NativeAOT (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -153,6 +198,13 @@ jobs:
         with:
           name: QuotaSight-${{ env.VERSION }}-${{ matrix.rid }}
           path: QuotaSight-${{ env.VERSION }}-${{ matrix.rid }}.zip
+          if-no-files-found: error
+      - name: Upload the Collector artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuotaSight-Collector-${{ env.VERSION }}-linux-x64
+          path: QuotaSight-Collector-${{ env.VERSION }}-linux-x64.zip
           if-no-files-found: error
 
   release:
