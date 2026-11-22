@@ -373,6 +373,14 @@ public partial class MainWindow : Window
         if (isInitializing || isConfiguringLists) return;
         if (sender is ComboBox { SelectedItem: ProviderChoiceViewModel choice })
         {
+            // A catalog client is not a connection: picking it opens the usage-only panel
+            // where the card is added or removed.
+            if (choice.IsTokScaleClient)
+            {
+                ViewModel.SelectTokScaleClient(choice.TokScaleClientId);
+                return;
+            }
+
             ViewModel.SelectProvider(choice.Choice);
             if (choice.Choice is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude)
             {
@@ -380,6 +388,18 @@ public partial class MainWindow : Window
                 this.FindControl<ComboBox>("ManualProviderBox")!.SelectedItem = UiSettings.ManualProviderChoices(ViewModel.Language).Single(item => item.Value == provider);
             }
         }
+    }
+    private async void TokScaleAddClick(object? sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedTokScaleClient is not { } client) return;
+        try { await RunTrackedAsync(token => ViewModel.AddTokScaleClientAsync(client.Id, token)); }
+        catch (OperationCanceledException) { }
+    }
+    private async void TokScaleRemoveClick(object? sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedTokScaleClient is not { } client) return;
+        try { await RunTrackedAsync(token => ViewModel.RemoveTokScaleClientAsync(client.Id, token)); }
+        catch (OperationCanceledException) { }
     }
     private async void CodexCopyClick(object? sender, RoutedEventArgs e) => await CopyCodexCodeAsync();
 

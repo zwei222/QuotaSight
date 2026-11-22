@@ -19,15 +19,16 @@ public enum ThemeMode { System, Light, Dark }
 public enum UiLanguage { English, Japanese }
 public enum PresentationState { Ready, Loading, Error, Offline, Empty }
 public enum CodexAuthorizationState { Disconnected, AwaitingAuthorization, Pending, Connected, Error }
-public enum ProviderConnectionChoice { ChatGpt, Claude, Codex, OpenCode, Copilot }
+public enum ProviderConnectionChoice { ChatGpt, Claude, Codex, OpenCode, Copilot, TokScale }
 public enum CopilotUiState { Idle, Started, Pending, Completed, Denied, Expired, ConfigurationError, DeviceFlowDisabled, Unsupported, Failed, GhProbe }
 public enum UsageBand { Normal, Attention, Danger, OverLimit }
 public sealed record LocalizedChoice<T>(T Value, string DisplayName)
 {
     public override string ToString() => DisplayName;
 }
-public sealed record ProviderChoiceViewModel(ProviderConnectionChoice Choice, string DisplayName)
+public sealed record ProviderChoiceViewModel(ProviderConnectionChoice Choice, string DisplayName, string TokScaleClientId = "")
 {
+    public bool IsTokScaleClient => Choice == ProviderConnectionChoice.TokScale;
     public override string ToString() => DisplayName;
 }
 public sealed record CodexAuthorizationPrompt(string UserCode, Uri VerificationUri, DateTimeOffset ExpiresAt);
@@ -521,6 +522,8 @@ public sealed class SettingsState
     public string GithubOrganization { get; set; } = string.Empty;
     public string UsageApiEndpoint { get; set; } = string.Empty;
     public decimal? CopilotReferenceCredits { get; set; }
+    /// <summary>Catalog client ids the user added; their cards are usage-only observations.</summary>
+    public IReadOnlyList<string> TokScaleClients { get; set; } = [];
     public bool TrySetCopilotReference(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) { CopilotReferenceCredits = null; return true; }
@@ -2149,6 +2152,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string tokScaleState = "Hidden";
     private IReadOnlyList<TokScaleClientCard> tokScaleCards = [];
+    private IReadOnlyList<string> trackedTokScaleClients = [];
     private bool hasTokScaleValues;
     private UsageBreakdown? tokScaleTodayBreakdown;
     private UsageBreakdown? tokScaleWeekBreakdown;
@@ -2295,7 +2299,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var weekRead = await usageReadPort.ReadBreakdownAsync(today.AddDays(-6), today, null, token);
             if (token.IsCancellationRequested || id != Volatile.Read(ref tokScaleRequestId)) return;
 
-            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(todayRead, weekRead, Language);
+            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(todayRead, weekRead, trackedTokScaleClients, Language);
             tokScaleTodayBreakdown = todayRead;
             tokScaleWeekBreakdown = weekRead;
             tokScaleCollectors = weekRead.Collectors;
@@ -2335,7 +2339,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (hasTokScaleValues && tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
         {
-            tokScaleCards = UsageBreakdownAggregation.TokScaleCards(today, week, Language);
+            RebuildTokScaleCards(today, week);
+        }
+    }
+
+    /// <summary>Rebuilds the stored cards over the same two reads with the current
+    /// tracked list and language, then keeps the section state honest about the count.</summary>
+    private void RebuildTokScaleCards(UsageBreakdown today, UsageBreakdown week)
+    {
+        tokScaleCards = UsageBreakdownAggregation.TokScaleCards(today, week, trackedTokScaleClients, Language);
+        if (tokScaleState is "Ready" or "Empty")
+        {
+            tokScaleState = tokScaleCards.Count == 0 ? "Empty" : "Ready";
         }
     }
 
@@ -2714,16 +2729,72 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void SetCodexBrowserStatus(bool opened) { SetCodexResult(codexResult with { Message = opened ? CopyText.CodexBrowserOpened : CopyText.CodexBrowserFailed }); }
     public bool IsProviderFlowOpen { get; private set; }
     public ProviderConnectionChoice SelectedProvider { get; private set; } = ProviderConnectionChoice.ChatGpt;
-    public bool IsManualProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude;
+    public bool IsManualProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleClient is null && SelectedProvider is ProviderConnectionChoice.ChatGpt or ProviderConnectionChoice.Claude;
     public bool IsCodexProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Codex;
     public bool IsOpenCodeProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.OpenCode;
     public bool IsCopilotProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedProvider == ProviderConnectionChoice.Copilot;
-    public void OpenProviderFlow() { IsProviderFlowOpen = true; providerSelectionMade = false; NotifyProviderFlow(); }
-    public void CloseProviderFlow() { IsProviderFlowOpen = false; providerSelectionMade = false; NotifyProviderFlow(); }
-    public void SelectProvider(ProviderConnectionChoice provider) { SelectedProvider = provider; providerSelectionMade = true; IsProviderFlowOpen = true; NotifyProviderFlow(); }
+    public TokScaleClientInfo? SelectedTokScaleClient { get; private set; }
+    public bool IsTokScaleProviderPanelVisible => IsProviderFlowOpen && providerSelectionMade && SelectedTokScaleClient is not null;
+    public string TokScaleFlowTitleText => SelectedTokScaleClient?.DisplayName ?? string.Empty;
+    public string TokScaleFlowDescriptionText => CopyText.TokScalePanelDescription;
+    public string TokScaleFlowStatusText => SelectedTokScaleClient is { } client
+        ? IsTokScaleClientTracked ? CopyText.TokScalePanelTracked : CopyText.TokScalePanelNotTracked
+        : string.Empty;
+    public bool IsTokScaleClientTracked => SelectedTokScaleClient is { } client
+        && trackedTokScaleClients.Contains(client.Id, StringComparer.Ordinal);
+    public void OpenProviderFlow() { SelectedTokScaleClient = null; IsProviderFlowOpen = true; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void CloseProviderFlow() { SelectedTokScaleClient = null; IsProviderFlowOpen = false; providerSelectionMade = false; NotifyProviderFlow(); }
+    public void SelectProvider(ProviderConnectionChoice provider) { SelectedTokScaleClient = null; SelectedProvider = provider; providerSelectionMade = true; IsProviderFlowOpen = true; NotifyProviderFlow(); }
+    public void SelectTokScaleClient(string clientId)
+    {
+        SelectedTokScaleClient = TokScaleClientCatalog.Find(clientId);
+        if (SelectedTokScaleClient is null) return;
+        providerSelectionMade = true;
+        IsProviderFlowOpen = true;
+        NotifyProviderFlow();
+    }
+    public Task AddTokScaleClientAsync(string clientId, CancellationToken cancellationToken = default) => SetTokScaleClientTrackedAsync(clientId, track: true, cancellationToken);
+    public Task RemoveTokScaleClientAsync(string clientId, CancellationToken cancellationToken = default) => SetTokScaleClientTrackedAsync(clientId, track: false, cancellationToken);
+    private Task SetTokScaleClientTrackedAsync(string clientId, bool track, CancellationToken cancellationToken)
+    {
+        if (TokScaleClientCatalog.Find(clientId) is null || IsDisposed) return Task.CompletedTask;
+        return UpdateSettingsAsync(
+            settings =>
+            {
+                var next = TokScaleTrackedList(settings.TokScaleClients, clientId, track);
+                return (settings with { TokScaleClients = next }, true, true);
+            },
+            () => PublishTokScaleTrackedList(track, clientId),
+            cancellationToken);
+    }
+    private static string[] TokScaleTrackedList(IEnumerable<string>? current, string clientId, bool track)
+    {
+        // Add keeps the existing order and appends only when absent: re-adding the same
+        // client must not reshuffle the saved list.
+        if (track && (current ?? []).Contains(clientId, StringComparer.Ordinal))
+        {
+            return [.. current!];
+        }
+
+        var kept = (current ?? []).Where(id => !string.Equals(id, clientId, StringComparison.Ordinal)).ToList();
+        if (track) kept.Add(clientId);
+        return [.. kept];
+    }
+    private void PublishTokScaleTrackedList(bool track, string clientId)
+    {
+        trackedTokScaleClients = TokScaleTrackedList(trackedTokScaleClients, clientId, track);
+        Settings.TokScaleClients = trackedTokScaleClients;
+        if (hasTokScaleValues && tokScaleTodayBreakdown is { } today && tokScaleWeekBreakdown is { } week)
+        {
+            RebuildTokScaleCards(today, week);
+        }
+
+        NotifyTokScaleSurface();
+        NotifyProviderFlow();
+    }
     private void NotifyProviderFlow()
     {
-        foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsManualProviderPanelVisible), nameof(IsCodexProviderPanelVisible), nameof(IsOpenCodeProviderPanelVisible), nameof(IsCopilotProviderPanelVisible), nameof(IsTokScaleProviderPanelVisible), nameof(TokScaleFlowTitleText), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(IsTokScaleClientTracked) }) OnPropertyChanged(name);
     }
     public AppPage CurrentPage { get => currentPage; private set { if (currentPage == value) return; var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value)) { if (value == AppPage.Usage && !wasUsage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } else if (value == AppPage.Dashboard && !wasUsage) { _ = RefreshTokScaleAsync(); } } } }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; History.SetLanguage(value); RelocalizeCards(); RelocalizeTokScale(); NotifyLocalizedProperties(); NotifyBreakdownSurface(); NotifyTokScaleSurface(); } } }
@@ -2845,6 +2916,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Settings.GithubOrganization = dto.GithubOrganization.Trim();
             Settings.UsageApiEndpoint = (dto.UsageApiEndpoint ?? string.Empty).Trim();
             Settings.CopilotReferenceCredits = dto.CopilotReferenceCredits is > 0 ? dto.CopilotReferenceCredits : null;
+            // Only catalog ids are kept: a stale saved id cannot resurrect as a card.
+            Settings.TokScaleClients = dto.TokScaleClients is null
+                ? []
+                : [.. dto.TokScaleClients.Where(id => TokScaleClientCatalog.Find(id) is not null).Distinct(StringComparer.Ordinal)];
+            trackedTokScaleClients = Settings.TokScaleClients;
             Language = dto.Language == "Japanese" ? UiLanguage.Japanese : UiLanguage.English;
             Settings.Theme = Enum.TryParse<ThemeMode>(dto.Theme, true, out var theme) ? theme : ThemeMode.System;
             UiSettings.ApplyTheme(Settings.Theme);
@@ -2854,7 +2930,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally { settingsTransactionGate.Release(); }
     }
-    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint);
+    private AppSettingsDto CurrentSettings() => new(Settings.Theme.ToString(), Language == UiLanguage.Japanese ? "Japanese" : "English", Settings.RefreshMinutes, Settings.OverallThreshold, Settings.NotificationsEnabled, Settings.GithubOAuthClientId, Settings.ProviderOverrides.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value), Settings.ResidentMode, Settings.GithubOrganization, Settings.CopilotReferenceCredits, Settings.UsageApiEndpoint, [.. Settings.TokScaleClients]);
     public async Task<bool> SetCopilotReferenceAsync(string? value, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -3332,7 +3408,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void NotifyLocalizedProperties()
     {
-        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText), nameof(UsageFailureText), nameof(UsageFreshnessText), nameof(IsUsageFreshnessVisible), nameof(UsageDelayedText), nameof(IsUsageDelayed) }) OnPropertyChanged(name);
+        foreach (var name in new[] { nameof(CopyText), nameof(NavDashboardText), nameof(NavUsageText), nameof(NavHistoryText), nameof(NavSettingsText), nameof(UsageStatusText), nameof(RefreshText), nameof(QuotaStatusText), nameof(HeaderTitle), nameof(SubtitleText), nameof(EmptyStateText), nameof(EmptyStateDescription), nameof(HistoryDeleteText), nameof(DemoBanner), nameof(NotificationBannerText), nameof(OpenCodeCredentialNotice), nameof(CopilotNotice), nameof(CopilotQuotaNotice), nameof(CopilotFlowWaitingText), nameof(CopilotDeviceResult), nameof(CodexStatusText), nameof(CodexExpiresText), nameof(ProviderChoices), nameof(UsageConnectionStatusText), nameof(UsageConnectionErrorText), nameof(UsageCredentialStatusText), nameof(UsageFailureText), nameof(UsageFreshnessText), nameof(IsUsageFreshnessVisible), nameof(UsageDelayedText), nameof(IsUsageDelayed), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText) }) OnPropertyChanged(name);
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; OnPropertyChanged(name); if (name == nameof(CurrentPage)) { OnPropertyChanged(nameof(IsDashboardVisible)); OnPropertyChanged(nameof(IsUsageVisible)); OnPropertyChanged(nameof(IsHistoryVisible)); OnPropertyChanged(nameof(IsSettingsVisible)); OnPropertyChanged(nameof(HeaderTitle)); } return true; }
     private void OnPropertyChanged(string? name)
@@ -3345,7 +3421,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 public static class UiSettings
 {
     public static IReadOnlyList<string> SupportedLanguages { get; } = ["English", "日本語"];
-    public static IReadOnlyList<ProviderChoiceViewModel> ProviderChoices(UiLanguage language) => Enum.GetValues<ProviderConnectionChoice>().Select(choice => new ProviderChoiceViewModel(choice, ProviderDisplayName(choice, language))).ToList();
+    public static IReadOnlyList<ProviderChoiceViewModel> ProviderChoices(UiLanguage language)
+    {
+        // The five existing providers stay at the top in enum order; the TokScale client
+        // catalog follows in display-name order so a list this long stays scannable.
+        var existing = Enum.GetValues<ProviderConnectionChoice>()
+            .Where(choice => choice != ProviderConnectionChoice.TokScale)
+            .Select(choice => new ProviderChoiceViewModel(choice, ProviderDisplayName(choice, language)));
+        var catalog = TokScaleClientCatalog.PickerClients
+            .Select(client => new ProviderChoiceViewModel(ProviderConnectionChoice.TokScale, client.DisplayName, client.Id));
+        return [.. existing, .. catalog];
+    }
     private static string ProviderDisplayName(ProviderConnectionChoice choice, UiLanguage language) => choice switch
     {
         ProviderConnectionChoice.ChatGpt => "ChatGPT",

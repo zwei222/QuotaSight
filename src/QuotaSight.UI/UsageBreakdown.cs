@@ -41,13 +41,18 @@ public sealed record BreakdownGroup(
         : Math.Clamp(Total * 100d / RangeTotal, 0d, 100d).ToString("0.#", CultureInfo.InvariantCulture);
 }
 
-/// <summary>One small dashboard card: a detected TokScale client with its observed totals.</summary>
+/// <summary>
+/// One small dashboard card: a detected TokScale client with its observed totals, or a
+/// client the user added whose tokens the breakdown has not attributed yet. It is an
+/// observation surface only — no limit, no ring and no threshold belongs on it.
+/// </summary>
 public sealed record TokScaleClientCard(
     string ClientId,
     string DisplayName,
     long TodayTokens,
     long WeekTokens,
-    string SummaryText)
+    string SummaryText,
+    bool Observed = true)
 {
     /// <summary>Today's tokens, formatted with grouping and never rounded.</summary>
     public string TodayText => TodayTokens.ToString("N0", CultureInfo.InvariantCulture);
@@ -158,10 +163,16 @@ public static class UsageBreakdownAggregation
 
     /// <summary>
     /// Builds the dashboard cards from the two reads the section performs (today and the
-    /// last seven days). A client seen in either read gets exactly one card, sorted by
-    /// the seven-day total descending, ties by client id.
+    /// last seven days). A client seen in either read gets exactly one card; clients the
+    /// user added but the breakdown has not attributed anything to yet get a card that
+    /// says so instead of looking like a zero reading. Sorted by the seven-day total
+    /// descending, ties by client id.
     /// </summary>
-    public static IReadOnlyList<TokScaleClientCard> TokScaleCards(UsageBreakdown today, UsageBreakdown week, UiLanguage language = UiLanguage.English)
+    public static IReadOnlyList<TokScaleClientCard> TokScaleCards(
+        UsageBreakdown today,
+        UsageBreakdown week,
+        IReadOnlyList<string> trackedClients,
+        UiLanguage language = UiLanguage.English)
     {
         var copy = new UiCopy(language);
         var cards = new Dictionary<string, (long Today, long Week)>(StringComparer.Ordinal);
@@ -179,13 +190,31 @@ public static class UsageBreakdownAggregation
             cards[key] = (seen.Item1, seen.Item2 + part.Total);
         }
 
+        // A tracked client with no attribution on either read is "not observed yet",
+        // not a zero-token observation.
+        foreach (var id in trackedClients)
+        {
+            if (TokScaleClientCatalog.Find(id) is not null && !cards.ContainsKey(id)) cards[id] = (0, 0);
+        }
+
         return [.. cards
-            .Select(pair => new TokScaleClientCard(
-                pair.Key,
-                DisplayName(pair.Key, UsageBreakdownDimension.Client, copy),
-                pair.Value.Today,
-                pair.Value.Week,
-                $"{copy.TokScaleToday} {pair.Value.Today:N0} · {copy.TokScaleWeek} {pair.Value.Week:N0}"))
+            .Select(pair =>
+            {
+                // Presence in either read's parts is the observation; absence is "not
+                // observed yet", even for a tracked client. A zero-token part is a real
+                // observation, not the not-observed state.
+                var observed = today.Parts.Any(part => part.Client == pair.Key)
+                    || week.Parts.Any(part => part.Client == pair.Key);
+                return new TokScaleClientCard(
+                    pair.Key,
+                    DisplayName(pair.Key, UsageBreakdownDimension.Client, copy),
+                    pair.Value.Today,
+                    pair.Value.Week,
+                    observed
+                        ? $"{copy.TokScaleToday} {pair.Value.Today:N0} · {copy.TokScaleWeek} {pair.Value.Week:N0}"
+                        : copy.TokScaleNotObserved,
+                    observed);
+            })
             .OrderByDescending(card => card.WeekTokens)
             .ThenBy(card => card.ClientId, StringComparer.Ordinal)];
     }

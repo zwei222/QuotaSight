@@ -120,40 +120,44 @@ public sealed class UiCopy
         : $"{date}: the breakdown exceeds the day total ({breakdown:N0} > {total:N0})";
 
     /// <summary>
-    /// Display name of a TokScale client id. Product names are stable and identical in
-    /// both languages; an unknown id is shown as-is rather than invented.
+    /// Display name of a TokScale client id. The versioned catalog is the source of
+    /// truth; ids outside it keep their known names, and an unknown id is shown as-is
+    /// rather than invented. Product names are stable and identical in both languages.
     /// </summary>
-    public string TokScaleClientName(string id) => id switch
+    public string TokScaleClientName(string id)
     {
-        "claude" => "Claude Code",
-        "codex" => "Codex CLI",
-        "gemini" => "Gemini CLI",
-        "opencode" => "OpenCode",
-        "cursor" => "Cursor",
-        "copilot" => "GitHub Copilot",
-        "kimi" => "Kimi CLI",
-        "qwen" => "Qwen Code",
-        "goose" => "goose",
-        "zed" => "Zed",
-        "kiro" => "Kiro",
-        "grok" => "Grok CLI",
-        "aider" => "Aider",
-        "cline" => "Cline",
-        "amp" => "Amp",
-        "crush" => "Crush",
-        "droid" => "Droid",
-        "iflow" => "iFlow CLI",
-        _ => id
-    };
+        if (TokScaleClientCatalog.Find(id) is { } client) return client.DisplayName;
+        return id switch
+        {
+            "aider" => "Aider",
+            "iflow" => "iFlow CLI",
+            _ => id
+        };
+    }
 
     // The dashboard's observed-usage section. It is deliberately named as an observation:
     // TokScale has no quota, so no ring, no gauge and no threshold ever appears here.
     public string TokScaleSectionTitle => IsJapanese ? "観測使用量（TokScale）" : "Observed usage (TokScale)";
     public string TokScaleBadge => IsJapanese
-        ? "観測値・推定・他端末分は含まない"
-        : "Observed · no estimates · other devices excluded";
+        ? "観測値・上限なし・推定・他端末分は含まない"
+        : "Observed · no limit · no estimates · other devices excluded";
     public string TokScaleToday => IsJapanese ? "今日" : "Today";
     public string TokScaleWeek => IsJapanese ? "7日" : "7 days";
+    /// <summary>A tracked client the breakdown has not attributed anything to yet.</summary>
+    public string TokScaleNotObserved => IsJapanese ? "まだ観測されていません" : "Not observed yet";
+    // The add-provider panel for a catalog client: a usage-only card, never a quota.
+    public string TokScalePanelTitle => IsJapanese ? "使用量のみのカード" : "Usage-only card";
+    public string TokScalePanelDescription => IsJapanese
+        ? "このクライアントのカードを観測使用量セクションに追加します。カードは使用量のみを表示し、上限やリングはありません。利用量 API に接続しているときに観測されます。"
+        : "Adds this client's card to the observed usage section. The card shows usage only — no limit and no ring. Observations require a usage API connection.";
+    public string TokScalePanelAdd => IsJapanese ? "カードを追加" : "Add card";
+    public string TokScalePanelRemove => IsJapanese ? "カードを削除" : "Remove card";
+    public string TokScalePanelTracked => IsJapanese
+        ? "このクライアントのカードは追加済みです。"
+        : "This client's card is added.";
+    public string TokScalePanelNotTracked => IsJapanese
+        ? "このクライアントのカードはまだ追加されていません。"
+        : "This client's card is not added yet.";
     public string TokScaleState(string state) => (state, IsJapanese) switch
     {
         ("Loading", true) => "観測使用量を読み込み中…",
