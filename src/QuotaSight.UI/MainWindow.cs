@@ -8,6 +8,7 @@ using Avalonia.Threading;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
+using Avalonia.VisualTree;
 using System.ComponentModel;
 using System.Globalization;
 using QuotaSight.Application;
@@ -37,7 +38,7 @@ public partial class MainWindow : Window
         ViewModel = viewModel;
         InitializeComponent();
         DataContext = ViewModel;
-        SizeChanged += (_, _) => ApplyResponsiveLayout();
+        SizeChanged += (_, _) => { ApplyResponsiveLayout(); ApplyManagePanelLayout(); };
         ApplyResponsiveLayout();
         Closing += OnClosing;
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
@@ -292,24 +293,85 @@ public partial class MainWindow : Window
         }
     }
 
+    // "Manage services": opened from the header button (or the empty state), closed by × / the header button / Esc.
+    // Focus goes into the panel on open and back to the header button on close; both lists update immediately.
+    private Border QuotaPanel => this.FindControl<Border>("QuotaManagePanel")!;
+    private IEnumerable<Button> PanelButtons(string name) => QuotaPanel.GetVisualDescendants().OfType<Button>().Where(button => button.Name == name && button.IsVisible).ToArray();
+
     private void QuotaManageClick(object? sender, RoutedEventArgs e)
     {
+        if (QuotaPanel.IsVisible) CloseQuotaPanel(); else OpenQuotaPanel(toAdd: false);
+    }
+    private void QuotaManageCloseClick(object? sender, RoutedEventArgs e) => CloseQuotaPanel();
+    private void QuotaEmptyAddClick(object? sender, RoutedEventArgs e) => OpenQuotaPanel(toAdd: true);
+
+    private void OpenQuotaPanel(bool toAdd)
+    {
+        var panel = QuotaPanel;
+        panel.IsVisible = true;
+        ApplyManagePanelLayout();
+        panel.UpdateLayout();
+        FocusFirst(toAdd ? "QuotaAddButton" : "QuotaRemoveButton");
+    }
+    private void CloseQuotaPanel()
+    {
+        QuotaPanel.IsVisible = false;
+        this.FindControl<Button>("QuotaManageButton")!.Focus(NavigationMethod.Tab);
+    }
+    private void FocusFirst(string name)
+    {
+        var target = PanelButtons(name).FirstOrDefault() ?? PanelButtons("QuotaAddButton").FirstOrDefault() ?? PanelButtons("QuotaRemoveButton").FirstOrDefault() ?? this.FindControl<Button>("QuotaManageCloseButton");
+        target?.Focus(NavigationMethod.Tab);
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && !e.Handled && QuotaPanel.IsVisible) { e.Handled = true; CloseQuotaPanel(); return; }
+        base.OnKeyDown(e);
+    }
+    /// <summary>Panel is at most 720px wide; its two lists sit side by side only when both fit at 290px (mock: auto-fit, min 290).</summary>
+    private void ApplyManagePanelLayout()
+    {
         var panel = this.FindControl<Border>("QuotaManagePanel");
-        if (panel is not null) panel.IsVisible = !panel.IsVisible;
+        var surface = this.FindControl<StackPanel>("ContentSurface");
+        var columns = this.FindControl<Grid>("QuotaManageColumns");
+        if (panel is null || surface is null || columns is null) return;
+        var available = Math.Max(0, surface.Bounds.Width - surface.Margin.Left - surface.Margin.Right);
+        if (available <= 0) available = Math.Max(0, Width - 32 - (appliedCompactLayout == true ? 0 : 220));
+        panel.Width = Math.Min(720, available);
+        if (this.FindControl<Border>("QuotaEmptyState") is { } emptyState) emptyState.Width = Math.Min(560, available);
+        var inner = panel.Width - 34;
+        var shown = this.FindControl<StackPanel>("QuotaShownColumn")!; var addable = this.FindControl<StackPanel>("QuotaAddableColumn")!;
+        var sideBySide = inner >= 2 * 290 + 24;
+        columns.ColumnDefinitions = sideBySide ? new ColumnDefinitions("*,*") : new ColumnDefinitions("*");
+        columns.RowDefinitions = sideBySide ? new RowDefinitions("Auto") : new RowDefinitions("Auto,Auto");
+        columns.ColumnSpacing = sideBySide ? 24 : 0; columns.RowSpacing = 8;
+        Grid.SetColumn(shown, 0); Grid.SetRow(shown, 0);
+        Grid.SetColumn(addable, sideBySide ? 1 : 0); Grid.SetRow(addable, sideBySide ? 0 : 1);
     }
 
-    private async void QuotaAddSelected(object? sender, SelectionChangedEventArgs e)
+    private async void QuotaAddClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is not ComboBox combo || combo.SelectedItem is not ComboBoxItem { Tag: string id }) return;
-        try { await ViewModel.AddQuotaProviderAsync(id); } finally { combo.SelectedItem = null; }
+        if (sender is not Button { DataContext: QuotaServiceItem item }) return;
+        var index = PanelButtons("QuotaAddButton").ToList().IndexOf((Button)sender);
+        await ViewModel.AddQuotaProviderAsync(item.Id);
+        Dispatcher.UIThread.Post(() =>
+        {
+            QuotaPanel.UpdateLayout();
+            var rest = PanelButtons("QuotaAddButton").ToList();
+            (rest.Count > 0 ? rest[Math.Min(Math.Max(index, 0), rest.Count - 1)] : PanelButtons("QuotaRemoveButton").LastOrDefault() ?? this.FindControl<Button>("QuotaManageCloseButton"))?.Focus(NavigationMethod.Tab);
+        }, DispatcherPriority.Loaded);
     }
     private async void QuotaRemoveClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: QuotaProviderCard card })
+        if (sender is not Button { DataContext: QuotaServiceItem item }) return;
+        var index = PanelButtons("QuotaRemoveButton").ToList().IndexOf((Button)sender);
+        await ViewModel.RemoveQuotaProviderAsync(item.Id);
+        Dispatcher.UIThread.Post(() =>
         {
-            var id = card.Provider switch { QuotaProvider.Claude => "claude", QuotaProvider.Codex => "codex", QuotaProvider.OpenCodeGo => "opencode-go", QuotaProvider.AntigravityGemini or QuotaProvider.AntigravityClaudeGpt => "antigravity", QuotaProvider.GrokBuild => "grok-build", _ => "copilot" };
-            await ViewModel.RemoveQuotaProviderAsync(id);
-        }
+            QuotaPanel.UpdateLayout();
+            var rest = PanelButtons("QuotaRemoveButton").ToList();
+            (rest.Count > 0 ? rest[Math.Min(Math.Max(index, 0), rest.Count - 1)] : PanelButtons("QuotaAddButton").FirstOrDefault() ?? this.FindControl<Button>("QuotaManageCloseButton"))?.Focus(NavigationMethod.Tab);
+        }, DispatcherPriority.Loaded);
     }
     private void AddProviderClick(object? sender, RoutedEventArgs e)
     {
@@ -594,6 +656,13 @@ public partial class MainWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+    }
+    /// <summary>Opens the full window on the dashboard with the "manage services" panel open on its add list (compact empty state).</summary>
+    public void ShowFullWindowWithManagePanel()
+    {
+        ShowFullWindow();
+        ViewModel.Navigate(AppPage.Dashboard);
+        OpenQuotaPanel(toAdd: true);
     }
     public void ShowFallbackWindow()
     {

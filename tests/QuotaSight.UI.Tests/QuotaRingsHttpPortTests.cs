@@ -9,6 +9,45 @@ public sealed class QuotaRingsHttpPortTests
     private static readonly DateTimeOffset Fixed = DateTimeOffset.Parse("2026-11-22T01:30:00Z");
 
     [Fact]
+    public void CenterAndHighlightUseTheSmallestValidFiniteWindow()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:04:00Z");
+        var quota = new LatestQuota(now, [new QuotaProviderValue(QuotaProvider.OpenCodeGo, QuotaProviderStatus.Available, QuotaFreshness.Cached, now.AddMinutes(-18), [
+            new(QuotaWindow.Rolling, 10000, now.AddHours(1)),
+            new(QuotaWindow.Weekly, 0, now.AddHours(2)),
+            new(QuotaWindow.Monthly, 4300, now.AddDays(11))])]);
+
+        var card = Assert.Single(QuotaCardProjection.Project(quota, japanese: true, now));
+
+        Assert.Equal("0%", card.CenterText);
+        Assert.Equal("週", card.CenterPeriodText);
+        Assert.Equal("キャッシュ · 18分前", card.FreshnessText);
+        Assert.Equal("↻ " + now.AddHours(2).ToLocalTime().ToString("M/d HH:mm", System.Globalization.CultureInfo.InvariantCulture), card.Windows.Single(window => window.Window == QuotaWindow.Weekly).ResetText);
+    }
+
+    [Fact]
+    public void UnlimitedOnlyCenterHasNoQuotaAndFiniteZeroRemainsDistinctFromUnknown()
+    {
+        var now = DateTimeOffset.Parse("2026-11-23T00:04:00Z");
+        var copilot = new LatestQuota(now, [new QuotaProviderValue(QuotaProvider.Copilot, QuotaProviderStatus.Available, QuotaFreshness.Unknown, null, [
+            new(QuotaWindow.Premium, null, null, true), new(QuotaWindow.Chat, null, null, true), new(QuotaWindow.Completions, null, null, true)])]);
+        var card = Assert.Single(QuotaCardProjection.Project(copilot, japanese: true, now));
+        Assert.Equal("無制限", card.CenterText);
+        Assert.True(card.IsUnlimitedOnly);
+        Assert.Equal("取得時刻不明", card.FreshnessText);
+        Assert.All(card.Windows, window => Assert.Equal(string.Empty, window.ResetText));
+
+        var zeroUnknown = new LatestQuota(now, [new QuotaProviderValue(QuotaProvider.Codex, QuotaProviderStatus.Available, QuotaFreshness.Fresh, now, [
+            new(QuotaWindow.Session, 0, now.AddHours(1)), new(QuotaWindow.Weekly, null, null)])]);
+        var codex = Assert.Single(QuotaCardProjection.Project(zeroUnknown, japanese: true, now));
+        Assert.Equal("0%", codex.CenterText);
+        Assert.Equal(0, codex.RingValues[0]);
+        Assert.Null(codex.RingValues[1]);
+        Assert.Equal("0%", codex.Windows[0].RemainingText);
+        Assert.Equal("—", codex.Windows[1].RemainingText);
+    }
+
+    [Fact]
     public void ProviderProjectionCreatesOneCardWithShortAndLongQuotaWindows()
     {
         var quota = new LatestQuota(DateTimeOffset.Parse("2026-11-22T01:00:00Z"), [
@@ -124,7 +163,7 @@ public sealed class QuotaRingsHttpPortTests
         var quota = new LatestQuota(now, [new QuotaProviderValue(QuotaProvider.Claude, QuotaProviderStatus.Available, QuotaFreshness.Fresh, now, [
             new(QuotaWindow.Session, 4000, now.AddMinutes(-1)), new(QuotaWindow.Weekly, 7000, now.AddDays(1))])]);
         var card = Assert.Single(QuotaCardProjection.Project(quota, false, now));
-        Assert.Equal("—", card.CenterText);
+        Assert.Equal("70%", card.CenterText); // the expired window is skipped; the smallest VALID window is shown
         Assert.Equal("—", card.Windows[0].RemainingText);
         Assert.Null(card.RingValues[0]);
         Assert.Equal("Past reset · awaiting refresh", card.Windows[0].FreshnessText);
