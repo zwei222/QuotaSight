@@ -86,7 +86,7 @@ public static class PlatformPaths
         : Path.Combine(Environment.GetEnvironmentVariable("XDG_DATA_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share"), appName);
 }
 
-public sealed record AppSettingsDto(string Theme = "System", string Language = "English", int RefreshMinutes = 10, bool NotificationsEnabled = true, bool ResidentMode = false, string UsageApiEndpoint = "", string[]? TokScaleClients = null, string[]? TokScaleProviders = null);
+public sealed record AppSettingsDto(string Theme = "System", string Language = "English", int RefreshMinutes = 10, bool NotificationsEnabled = true, bool ResidentMode = false, string UsageApiEndpoint = "", string[]? TokScaleClients = null, string[]? TokScaleProviders = null, string[]? QuotaProviders = null);
 [JsonSerializable(typeof(AppSettingsDto))]
 internal partial class AppSettingsJsonContext : JsonSerializerContext;
 public sealed class JsonSettingsStore

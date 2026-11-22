@@ -49,6 +49,7 @@ public sealed class SettingsCompatibilityTests
             [
                 "Language:String",
                 "NotificationsEnabled:Boolean",
+                "QuotaProviders:String[]",
                 "RefreshMinutes:Int32",
                 "ResidentMode:Boolean",
                 "Theme:String",

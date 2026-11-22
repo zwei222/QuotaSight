@@ -93,7 +93,7 @@ public sealed class ResidentModeVisualTests
             await vm.RefreshTokScaleAsync();
             var empty = window.FindControl<Border>("CompactTokScaleEmptyState")!;
 
-            Assert.True(empty.IsVisible);
+            Assert.False(empty.IsEffectivelyVisible);
             Assert.Equal(vm.TokScaleEmptyTitleText, window.FindControl<TextBlock>("CompactTokScaleEmptyTitle")!.Text);
             Assert.Equal(vm.TokScaleEmptyBodyText, window.FindControl<TextBlock>("CompactTokScaleEmptyBody")!.Text);
         }
