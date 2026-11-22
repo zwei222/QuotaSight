@@ -10,8 +10,8 @@ using Xunit;
 namespace QuotaSight.UI.Tests;
 
 /// <summary>
-/// The dashboard's "observed usage (TokScale)" section: small per-client cards fed by the
-/// breakdown read port, visible even without a usage connection (an empty state with a
+/// The dashboard's "observed usage (TokScale)" section: small per-provider cards fed by
+/// the breakdown read port, visible even without a usage connection (an empty state with a
 /// settings shortcut takes its place), refreshed on a longer interval than the usage page,
 /// and never dressed up as a remaining-quota gauge.
 /// </summary>
@@ -50,13 +50,13 @@ public sealed class TokScaleDashboardTests
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
 
-        await viewModel.AddTokScaleClientAsync("cursor");
+        await viewModel.AddTokScaleProviderAsync("openai");
         await viewModel.TokScaleLoadTask;
 
         Assert.True(viewModel.IsTokScaleSectionVisible);
         Assert.Equal("Unconfigured", viewModel.TokScaleState);
         var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("cursor", card.ClientId);
+        Assert.Equal("openai", card.ProviderKey);
         Assert.False(card.Observed);
         Assert.Contains("Not observed yet", card.SummaryText, StringComparison.Ordinal);
         // The cards do not hide that the connection is missing: the status line stays.
@@ -68,12 +68,12 @@ public sealed class TokScaleDashboardTests
     public async Task RemovingTheConnectionDropsTheObservedDataButKeepsTheSectionAndTrackedCards()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 60, 0, 0, 0, 0)], [Cov(60, 60)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 60, 0, 0, 0, 0)], [Cov(60, 60)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
-        await viewModel.AddTokScaleClientAsync("cursor");
+        await viewModel.AddTokScaleProviderAsync("openai");
         Assert.True(viewModel.IsTokScaleSectionVisible);
         Assert.Equal(2, viewModel.TokScaleCards.Count);
 
@@ -84,7 +84,7 @@ public sealed class TokScaleDashboardTests
         // The observed data card is gone with the credential it was read with; the added
         // card survives as a "not observed yet" card and the section itself stays put.
         var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("cursor", card.ClientId);
+        Assert.Equal("openai", card.ProviderKey);
         Assert.False(card.Observed);
     }
 
@@ -95,11 +95,11 @@ public sealed class TokScaleDashboardTests
     {
         var port = new ScriptedDualReadPort();
         port.Breakdown.Enqueue(() => Breakdown(
-            [Part("claude", "", "", 10, 0, 0, 0, 0), Part("codex", "", "", 4, 0, 0, 0, 0)],
+            [Part("claude", "anthropic", "", 10, 0, 0, 0, 0), Part("codex", "openai", "", 4, 0, 0, 0, 0)],
             [Cov(14, 14)],
             [Col("col-a", 1, Now.AddHours(-1))]));
         port.Breakdown.Enqueue(() => Breakdown(
-            [Part("codex", "", "", 120, 0, 0, 0, 0), Part("claude", "", "", 80, 0, 0, 0, 0)],
+            [Part("codex", "openai", "", 120, 0, 0, 0, 0), Part("claude", "anthropic", "", 80, 0, 0, 0, 0)],
             [Cov(200, 200), Cov(0, 0, "2026-11-16")],
             [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
@@ -108,10 +108,10 @@ public sealed class TokScaleDashboardTests
 
         Assert.Equal(2, viewModel.TokScaleCards.Count);
         // Sorted by the week's total, descending.
-        Assert.Equal("codex", viewModel.TokScaleCards[0].ClientId);
+        Assert.Equal("openai", viewModel.TokScaleCards[0].ProviderKey);
         Assert.Equal("120", viewModel.TokScaleCards[0].WeekText);
         Assert.Equal("4", viewModel.TokScaleCards[0].TodayText);
-        Assert.Equal("Claude Code", viewModel.TokScaleCards[1].DisplayName);
+        Assert.Equal("Anthropic", viewModel.TokScaleCards[1].DisplayName);
         Assert.Equal("80", viewModel.TokScaleCards[1].WeekText);
         Assert.Equal("10", viewModel.TokScaleCards[1].TodayText);
     }
@@ -120,8 +120,8 @@ public sealed class TokScaleDashboardTests
     public async Task TheSectionCarriesTheObservationBadgeAndFreshness()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-2))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-2))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-2))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-2))]));
         using var viewModel = Create(port);
         viewModel.Language = UiLanguage.Japanese;
         await viewModel.InitializeAsync();
@@ -161,8 +161,8 @@ public sealed class TokScaleDashboardTests
     public async Task NavigatingBackWithinTheIntervalDoesNotReadAgain()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
@@ -181,8 +181,8 @@ public sealed class TokScaleDashboardTests
         port.Clock.Advance(MainViewModel.TokScaleRefreshInterval + TimeSpan.FromMinutes(1));
         viewModel.NavigateToUsage();
         await viewModel.BreakdownLoadTask;
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 3, 0, 0, 0, 0)], [Cov(3, 3)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 3, 0, 0, 0, 0)], [Cov(3, 3)], [Col("col-a", 1, Now.AddHours(-1))]));
         viewModel.Navigate(AppPage.Settings);
         viewModel.Navigate(AppPage.Dashboard);
         await viewModel.TokScaleLoadTask;
@@ -194,8 +194,8 @@ public sealed class TokScaleDashboardTests
     public async Task AFailedRefreshKeepsThePreviousCardsAndMarksThemStale()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 1, 0, 0, 0, 0)], [Cov(1, 1)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 2, 0, 0, 0, 0)], [Cov(2, 2)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
@@ -218,8 +218,8 @@ public sealed class TokScaleDashboardTests
     public async Task TheSectionRendersPerClientCardsWithTheBadgeOnTheWindow()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
         viewModel.Language = UiLanguage.Japanese;
         var window = new MainWindow(viewModel);
@@ -247,8 +247,8 @@ public sealed class TokScaleDashboardTests
     public async Task TheSectionRelocalizesOnTheWindowWhenTheLanguageChanges()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port);
         var window = new MainWindow(viewModel);
         try
@@ -267,7 +267,7 @@ public sealed class TokScaleDashboardTests
             await viewModel.SetLanguageAsync(UiLanguage.Japanese);
             window.UpdateLayout();
 
-            // Title, badge and the stored per-client cards all follow the switch; the
+            // Title, badge and the stored per-provider cards all follow the switch; the
             // stored numbers never change, only their labels do.
             Assert.Contains("観測使用量（TokScale）", title.Text, StringComparison.Ordinal);
             Assert.Contains("他端末", badge.Text, StringComparison.Ordinal);
@@ -310,13 +310,13 @@ public sealed class TokScaleDashboardTests
         using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
 
-        await viewModel.AddTokScaleClientAsync("cursor");
+        await viewModel.AddTokScaleProviderAsync("openai");
         await viewModel.TokScaleLoadTask;
 
         Assert.True(viewModel.IsTokScaleSectionVisible);
         var card = Assert.Single(viewModel.TokScaleCards);
-        Assert.Equal("cursor", card.ClientId);
-        Assert.Equal("Cursor IDE", card.DisplayName);
+        Assert.Equal("openai", card.ProviderKey);
+        Assert.Equal("OpenAI", card.DisplayName);
         Assert.False(card.Observed);
         Assert.Equal("0", card.TodayText);
         Assert.Equal("0", card.WeekText);
@@ -326,19 +326,19 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task TheTrackedClientListPersistsThroughTheSettingsStore()
+    public async Task TheTrackedProviderListPersistsThroughTheSettingsStore()
     {
         var store = TemporarySettingsStore();
         var port = new ScriptedDualReadPort();
         using var viewModel = Create(port, store);
         await viewModel.InitializeAsync();
 
-        await viewModel.AddTokScaleClientAsync("cursor");
-        await viewModel.AddTokScaleClientAsync("kiro");
-        await viewModel.AddTokScaleClientAsync("cursor"); // Adding twice stores it once.
+        await viewModel.AddTokScaleProviderAsync("openai");
+        await viewModel.AddTokScaleProviderAsync("deepseek");
+        await viewModel.AddTokScaleProviderAsync("openai"); // Adding twice stores it once.
 
         var saved = await store.LoadAsync();
-        Assert.Equal(["cursor", "kiro"], saved.TokScaleClients ?? []);
+        Assert.Equal(["openai", "deepseek"], saved.TokScaleProviders ?? []);
 
         // A fresh session over the same store rebuilds the tracked cards.
         port.Breakdown.Enqueue(() => Breakdown([], [Cov(0, 0)], [Col("col-a", 1, null)]));
@@ -352,48 +352,99 @@ public sealed class TokScaleDashboardTests
     }
 
     [AvaloniaFact]
-    public async Task RemovingTheTrackedClientDropsItsCardAgain()
+    public async Task ATrackedProviderWithoutAttributionGetsItsNotObservedCard()
+    {
+        var port = new ScriptedDualReadPort();
+        using var viewModel = Create(port, TemporarySettingsStore());
+        await viewModel.InitializeAsync();
+
+        await viewModel.AddTokScaleProviderAsync("deepseek");
+        await viewModel.TokScaleLoadTask;
+
+        Assert.True(viewModel.IsTokScaleSectionVisible);
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("deepseek", card.ProviderKey);
+        Assert.Equal("DeepSeek", card.DisplayName);
+        Assert.False(card.Observed);
+        Assert.Equal("0", card.TodayText);
+        Assert.Equal("0", card.WeekText);
+        Assert.Contains("Not observed yet", card.SummaryText, StringComparison.Ordinal);
+        // The card is an observation surface, never a quota: the state stays Ready.
+        Assert.Equal("Ready", viewModel.TokScaleState);
+    }
+
+    [AvaloniaFact]
+    public async Task RemovingTheTrackedProviderDropsItsCardAgain()
     {
         var port = new ScriptedDualReadPort();
         var store = TemporarySettingsStore();
         using var viewModel = Create(port, store);
         await viewModel.InitializeAsync();
 
-        await viewModel.AddTokScaleClientAsync("cursor");
+        await viewModel.AddTokScaleProviderAsync("openai");
         await viewModel.TokScaleLoadTask;
         Assert.Single(viewModel.TokScaleCards);
 
-        await viewModel.RemoveTokScaleClientAsync("cursor");
+        await viewModel.RemoveTokScaleProviderAsync("openai");
 
         Assert.Empty(viewModel.TokScaleCards);
         var saved = await store.LoadAsync();
-        Assert.Equal([], saved.TokScaleClients ?? []);
+        Assert.Equal([], saved.TokScaleProviders ?? []);
     }
 
     [AvaloniaFact]
-    public async Task ObservedClientsKeepTheirDataCardsNextToTheTrackedOnes()
+    public async Task ObservedProvidersKeepTheirDataCardsNextToTheTrackedOnes()
     {
         var port = new ScriptedDualReadPort();
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
-        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
         using var viewModel = Create(port, TemporarySettingsStore());
         await viewModel.InitializeAsync();
         await viewModel.TokScaleLoadTask;
 
-        await viewModel.AddTokScaleClientAsync("amp");
+        await viewModel.AddTokScaleProviderAsync("nous");
 
         Assert.Equal(2, viewModel.TokScaleCards.Count);
         var observed = viewModel.TokScaleCards.Single(card => card.Observed);
-        Assert.Equal("claude", observed.ClientId);
+        Assert.Equal("anthropic", observed.ProviderKey);
         Assert.Equal("80", observed.WeekText);
         var tracked = viewModel.TokScaleCards.Single(card => !card.Observed);
-        Assert.Equal("amp", tracked.ClientId);
+        Assert.Equal("nous", tracked.ProviderKey);
+    }
+
+    // ---------- settings compatibility ----------
+
+    [AvaloniaFact]
+    public async Task AStoredClientListIsKeptInSettingsButNeverBecomesCards()
+    {
+        // A settings file written before provider cards carries tracked client ids. They
+        // are read and preserved verbatim — destroying a user's saved list would be
+        // data loss — but clients are no longer a card source, and an observed provider
+        // becomes a card without any list entry.
+        var store = TemporarySettingsStore();
+        await store.SaveAsync(new AppSettingsDto(TokScaleClients: ["antigravity-cli", "grok"]));
+        var port = new ScriptedDualReadPort();
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 10, 0, 0, 0, 0)], [Cov(10, 10)], [Col("col-a", 1, Now.AddHours(-1))]));
+        port.Breakdown.Enqueue(() => Breakdown([Part("claude", "anthropic", "", 80, 0, 0, 0, 0)], [Cov(80, 80)], [Col("col-a", 1, Now.AddHours(-1))]));
+        using var viewModel = Create(port, store);
+        await viewModel.InitializeAsync();
+        await viewModel.TokScaleLoadTask;
+
+        // The legacy ids never turn into cards, and nothing else was added.
+        var card = Assert.Single(viewModel.TokScaleCards);
+        Assert.Equal("anthropic", card.ProviderKey);
+
+        // A later save keeps the legacy list untouched next to the new field.
+        await viewModel.AddTokScaleProviderAsync("openai");
+        var saved = await store.LoadAsync();
+        Assert.Equal(["antigravity-cli", "grok"], saved.TokScaleClients ?? []);
+        Assert.Equal(["openai"], saved.TokScaleProviders ?? []);
     }
 
     // ---------- the add-provider flow on the real window ----------
 
     [AvaloniaFact]
-    public async Task PickingACatalogClientOpensTheUsageOnlyPanelAndAddingShowsTheRemoveAction()
+    public async Task PickingACatalogProviderOpensTheUsageOnlyPanelAndAddingShowsTheRemoveAction()
     {
         var port = new ScriptedDualReadPort();
         using var viewModel = Create(port, TemporarySettingsStore());
@@ -406,7 +457,7 @@ public sealed class TokScaleDashboardTests
 
             viewModel.OpenProviderFlow();
             window.FindControl<ComboBox>("ProviderPicker")!.SelectedItem =
-                viewModel.ProviderChoices.Single(choice => choice.TokScaleClientId == "cursor");
+                viewModel.ProviderChoices.Single(choice => choice.TokScaleProviderId == "openai");
             window.UpdateLayout();
 
             Assert.True(viewModel.IsTokScaleProviderPanelVisible);
@@ -414,15 +465,15 @@ public sealed class TokScaleDashboardTests
             Assert.False(viewModel.IsCodexProviderPanelVisible);
             var panel = window.FindControl<Border>("TokScalePanel")!;
             Assert.True(panel.IsVisible);
-            Assert.Contains("Cursor IDE", viewModel.TokScaleFlowTitleText, StringComparison.Ordinal);
-            Assert.False(viewModel.IsTokScaleClientTracked);
+            Assert.Contains("OpenAI", viewModel.TokScaleFlowTitleText, StringComparison.Ordinal);
+            Assert.False(viewModel.IsTokScaleProviderTracked);
             Assert.True(window.FindControl<Button>("TokScaleAddButton")!.IsVisible);
             Assert.False(window.FindControl<Button>("TokScaleRemoveButton")!.IsVisible);
 
-            await viewModel.AddTokScaleClientAsync("cursor");
+            await viewModel.AddTokScaleProviderAsync("openai");
             window.UpdateLayout();
 
-            Assert.True(viewModel.IsTokScaleClientTracked);
+            Assert.True(viewModel.IsTokScaleProviderTracked);
             Assert.True(window.FindControl<Button>("TokScaleRemoveButton")!.IsVisible);
             Assert.False(window.FindControl<Button>("TokScaleAddButton")!.IsVisible);
         }
