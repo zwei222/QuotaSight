@@ -343,3 +343,128 @@ sent to a database without it fails server-side and consumes the revision. Previ
 first (`--preview --wire-schema 2`) and compare `keys`/`parts` against what should have
 been counted: identifiers are normalized, so the upstream spelling can differ, and a
 path-shaped model id arrives as `""`.
+
+## 9. Optional: send the contract quota
+
+Besides usage snapshots, the Collector can send the **remaining contract quota** that
+`tokscale usage --json` reports (`PUT /v1/collectors/{id}/quota`). This is a separate
+send path with its own wrapper, service and timer; it never touches the graph unit from
+§4-§6. Nothing below is run for you: the unit invokes the TokScale 4.23.0 scan you pin, and
+the Collector only reads its JSON from stdin.
+
+What to know before enabling it:
+
+- **Grok Build.** TokScale does not record whether a Grok row came from the first-party
+  provider or a custom proxy. `--grok-build-first-party` is therefore the **operator's
+  assertion**, not an automatic check; pass it only if you know the host uses the first-party
+  provider. Without it the Grok Build rows are not treated as first-party quota.
+- **Antigravity.** Its quota comes from a local language server that TokScale itself
+  queries when `tokscale usage --json` runs. Nothing in this guide starts, configures or
+  verifies that server; if it is not running when the timer fires, TokScale reports what it
+  can and the Collector sends that.
+- The state (`--state-init`, §5) must already exist for the same collector id and
+  generation. A quota send reads it and checks that the pair matches and is not blocked; it
+  does not allocate a revision and it does not advance anything.
+- The body is small and bounded (4 KiB), input is bounded as well, and anything that does
+  not match the pinned shape exits non-zero with nothing sent.
+
+### 9.1 Preview first (no write, no send)
+
+`--quota-preview` opens no socket, reads no credentials, touches no state and prints the
+body that `--quota-send` would transmit. It takes no `--endpoint` or `--collector-id`:
+
+```bash
+npx --yes tokscale@4.23.0 usage --json \
+  | QuotaSight.Collector --quota-preview --generation 1
+```
+
+Read the JSON before the first send: `generation` is the registered one, each provider has
+the `status` and `freshness` you expect, and `remainingBasisPoints` / `resetsAt` per window
+are plausible. A non-zero exit prints one fixed `quota_input: ...` line and no body.
+
+### 9.2 The wrapper
+
+`/usr/local/bin/example-collector-quota-run` (root-owned, mode `0755`). It never reads or
+prints the credentials (the Collector reads them from `CREDENTIALS_DIRECTORY`); on failure
+it logs one fixed reason code to stderr, and so to the journal, and exits non-zero:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+# Placeholders only — replace the endpoint, the collector id and the generation.
+readonly ENDPOINT="https://example.invalid"
+readonly COLLECTOR_ID="collector-id"
+readonly GENERATION="1"
+
+fail() { printf 'quota_run: %s\n' "$1" >&2; exit "$2"; }
+
+# Capture first so a failed scan is reported as such instead of as an empty send.
+usage_json="$(npx --yes tokscale@4.23.0 usage --json)" || fail "tokscale_failed" 70
+
+# The Collector's own stderr line (a fixed reason class) goes to the journal as well.
+printf '%s' "$usage_json" \
+  | /usr/local/bin/QuotaSight.Collector --quota-send \
+      --endpoint "$ENDPOINT" \
+      --collector-id "$COLLECTOR_ID" \
+      --generation "$GENERATION" \
+  || fail "collector_failed" 71
+```
+
+Add `--grok-build-first-party` to the Collector command only on the operator's assertion
+described above. A failed run exits `70` (scan) or `71` (Collector, after its own typed
+`quota_input` / `quota_send` / `state_*` / `credential_unavailable` line); `systemctl`
+shows the unit as failed and nothing else is recorded. The Collector retries a `5xx` or a
+timeout itself (3 attempts), so the timer does not need a retry loop.
+
+### 9.3 service and timer
+
+`~/.config/systemd/user/example-collector-quota.service`, a separate unit from the graph one
+but with the same state directory and credentials:
+
+```ini
+[Unit]
+Description=QuotaSight collector quota send (example)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+StateDirectory=example-collector
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/example-collector-quota-run
+LoadCredentialEncrypted=access-client-id:%h/.config/example/credentials/access-client-id
+LoadCredentialEncrypted=access-client-secret:%h/.config/example/credentials/access-client-secret
+
+[Install]
+WantedBy=default.target
+```
+
+`~/.config/systemd/user/example-collector-quota.timer`, every 15 minutes by default:
+
+```ini
+[Unit]
+Description=Send the QuotaSight contract quota every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
+```
+
+Run one send by hand first, then enable the timer:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user start example-collector-quota.service
+journalctl --user -u example-collector-quota.service -n 30 --no-pager
+systemctl --user enable --now example-collector-quota.timer
+```
+
+A successful send prints nothing and exits `0`. A system-wide variant follows §6.2 (copy
+to `/etc/systemd/system/`, add `User=`/`Group=`, system-scoped credentials).
+
+Both services share the state directory, which is locked per run; if a graph run holds
+the lock at the moment a quota run starts, that quota run reports `state_unavailable` and
+the next 15-minute run is the retry.
