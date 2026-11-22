@@ -1155,6 +1155,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _ = RefreshQuotaAsync();
     }
 
+    private Task? quotaRefreshInFlight;
+
+    /// <summary>
+    /// Refreshes the quota cards first, then the observed-usage section. Each part
+    /// fails on its own without stopping the other, overlapping calls share the
+    /// quota read already in flight, and nothing happens without a quota read port.
+    /// </summary>
+    public async Task RefreshDashboardAsync(bool force = false)
+    {
+        if (quotaReadPort is not null)
+        {
+            var running = quotaRefreshInFlight;
+            if (running is null || running.IsCompleted) running = quotaRefreshInFlight = RefreshQuotaAsync();
+            try { await running.ConfigureAwait(false); }
+            catch (Exception) { }
+        }
+
+        try { await RefreshTokScaleAsync(force).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception) { }
+    }
+
     public async Task RefreshQuotaAsync(CancellationToken cancellationToken = default)
     {
         var port = quotaReadPort;
@@ -1298,7 +1320,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var name in new[] { nameof(IsProviderFlowOpen), nameof(IsTokScaleProviderPanelVisible), nameof(TokScaleFlowTitleText), nameof(TokScaleFlowDescriptionText), nameof(TokScaleFlowStatusText), nameof(IsTokScaleProviderTracked) }) OnPropertyChanged(name);
     }
-    public AppPage CurrentPage { get => currentPage; private set { var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value)) { if (value == AppPage.Usage && !wasUsage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } else if (value == AppPage.Dashboard && !wasUsage) { _ = RefreshTokScaleAsync(); } } } }
+    public AppPage CurrentPage { get => currentPage; private set { var wasUsage = currentPage == AppPage.Usage; if (wasUsage) { Interlocked.Increment(ref usageRequestId); usageRequest?.Cancel(); } if (Set(ref currentPage, value)) { if (value == AppPage.Usage && !wasUsage) { usageLoadTask = LoadUsageAsync(); breakdownLoadTask = LoadBreakdownAsync(); } else if (value == AppPage.Dashboard && !wasUsage) { _ = RefreshDashboardAsync(); } } } }
     public UiLanguage Language { get => language; set { if (Set(ref language, value)) { notificationService.Language = value; RelocalizeTokScale(); NotifyLocalizedProperties(); NotifyBreakdownSurface(); NotifyTokScaleSurface(); } } }
     public string LanguageCode => Language == UiLanguage.Japanese ? "日本語" : "English";
 
