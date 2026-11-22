@@ -60,6 +60,13 @@
       <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
       <Setter Property="CornerRadius" Value="9"/>
     </Style>
+    <!-- Avalonia 12 moves the TextBox placeholder color to its own PlaceholderForeground
+         property, so the global TextBlock foreground style no longer reaches the placeholder
+         text and it renders dimmer than on Avalonia 11. Keep the previous look by pointing the
+         property at the same primary text brush; the template still applies its 50% opacity. -->
+    <Style Selector="TextBox">
+      <Setter Property="PlaceholderForeground" Value="{DynamicResource TextPrimaryBrush}"/>
+    </Style>
     <Style Selector="Button">
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
       <Setter Property="CornerRadius" Value="9"/>
