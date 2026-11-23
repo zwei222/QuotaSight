@@ -20,18 +20,21 @@ import {
   isJsonMediaType,
   parseCollectorId,
   parseDailyQuery,
+  parseQuotaReadQuery,
   parseRevision,
   parseSnapshotBody,
   sha256Hex,
   sumTokensSafely,
 } from './schema';
 import {
+  applyQuota,
   applySnapshot,
   applySnapshotV2,
   loadOwnedCollector,
   readBreakdown,
   readCollectorFreshness,
   readDaily,
+  readQuotaV2,
 } from './store';
 
 export interface AppOptions {
@@ -162,18 +165,24 @@ export function createApp(options: AppOptions) {
     const collector = await loadOwnedCollector(c.env.DB, collectorId, principal.ownerId);
     if (collector === null) throw new ApiError(404, 'collector_not_found', 'No such collector.');
     if (snapshot.generation !== collector.activeGeneration) throw new ApiError(409, 'generation_inactive', 'The snapshot generation is not active.');
-    const body = JSON.stringify({ collectedAt: snapshot.collectedAt, providers: snapshot.providers });
-    await c.env.DB.prepare(`INSERT INTO quota_snapshot (collector_id, owner_id, generation, collected_at, payload_json)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(collector_id, generation) DO UPDATE SET
-      owner_id = excluded.owner_id, collected_at = excluded.collected_at, payload_json = excluded.payload_json
-      WHERE excluded.collected_at > quota_snapshot.collected_at`)
-      .bind(collector.id, collector.ownerId, snapshot.generation, snapshot.collectedAt, body).run();
+    // One transaction: the retention row per provider and the newest snapshot.
+    // The route's body, bounds, authentication and response are unchanged; only
+    // what is stored alongside the snapshot is new.
+    await applyQuota(c.env.DB, collector, snapshot);
     return c.json({ status: 'accepted' });
   });
 
   app.get('/v1/quota/latest', async (c) => {
     const principal = c.get('principal');
     if (!hasScope(principal, 'usage:read') || principal.collectorId !== null) throw new ApiError(403, 'forbidden_scope', 'This credential cannot read owner-wide usage.');
+
+    // The path is shared: without the selector this is exactly the v1 body a
+    // deployed client already parses, and `?schema=2` adds the last successful
+    // value next to each group's current status.
+    if (parseQuotaReadQuery(new URL(c.req.url)) === 2) {
+      return c.json(await readQuotaV2(c.env.DB, principal.ownerId));
+    }
+
     const rows = await c.env.DB.prepare(`SELECT q.collected_at, q.payload_json FROM quota_snapshot q
       JOIN collectors c ON c.id = q.collector_id AND c.owner_id = q.owner_id AND c.active_generation = q.generation
       WHERE q.owner_id = ? ORDER BY q.collected_at DESC LIMIT 65`).bind(principal.ownerId).all<{ collected_at: string; payload_json: string }>();
