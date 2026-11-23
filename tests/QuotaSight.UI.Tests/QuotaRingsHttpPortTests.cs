@@ -169,6 +169,72 @@ public sealed class QuotaRingsHttpPortTests
     }
 
     [Fact]
+    public async Task MissingNullPlaceholdersFromOtherCollectorsAreNotCountedAsSources()
+    {
+        // quota.test.ts "isolates the retained value by owner and by collector": two
+        // collectors publish two snapshots. A collector that does not serve a provider
+        // marks it missing with no value; such a marker is not a reading and must never
+        // turn the provider into "multiple sources". A provider read by both collectors
+        // still is one, and a provider seen by neither read still gets its own card.
+        const string json = """
+            {"schemaVersion":2,"snapshots":[
+              {"collectedAt":"2026-11-22T02:00:00Z","providers":[
+                {"provider":"claude","latestStatus":"missing","value":null},
+                {"provider":"codex","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T01:59:00Z","observedAt":"2026-11-22T01:58:00Z","freshness":"fresh","windows":[{"window":"weekly","remainingBasisPoints":7000,"resetsAt":"2026-11-22T09:00:00Z"}]}},
+                {"provider":"opencode-go","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T01:59:00Z","observedAt":"2026-11-22T01:58:00Z","freshness":"fresh","windows":[{"window":"rolling","remainingBasisPoints":9000,"resetsAt":null}]}},
+                {"provider":"antigravity-gemini","latestStatus":"missing","value":null},
+                {"provider":"antigravity-claude-gpt","latestStatus":"missing","value":null},
+                {"provider":"grok-build","latestStatus":"missing","value":null},
+                {"provider":"copilot","latestStatus":"missing","value":null}]},
+              {"collectedAt":"2026-11-22T01:00:00Z","providers":[
+                {"provider":"claude","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T00:59:00Z","observedAt":"2026-11-22T00:58:00Z","freshness":"fresh","windows":[{"window":"session","remainingBasisPoints":5000,"resetsAt":"2026-11-22T06:00:00Z"}]}},
+                {"provider":"codex","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T00:59:00Z","observedAt":"2026-11-22T00:58:00Z","freshness":"fresh","windows":[{"window":"weekly","remainingBasisPoints":7500,"resetsAt":"2026-11-22T09:00:00Z"}]}},
+                {"provider":"opencode-go","latestStatus":"missing","value":null},
+                {"provider":"antigravity-gemini","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T00:59:00Z","observedAt":"2026-11-22T00:58:00Z","freshness":"fresh","windows":[{"window":"five-hour","remainingBasisPoints":7500,"resetsAt":"2026-11-22T06:00:00Z"},{"window":"weekly","remainingBasisPoints":6000,"resetsAt":"2026-11-29T00:00:00Z"}]}},
+                {"provider":"antigravity-claude-gpt","latestStatus":"missing","value":null},
+                {"provider":"grok-build","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T00:59:00Z","observedAt":"2026-11-22T00:58:00Z","freshness":"fresh","windows":[{"window":"weekly","remainingBasisPoints":4000,"resetsAt":"2026-11-29T00:00:00Z"},{"window":"monthly","remainingBasisPoints":8500,"resetsAt":"2026-12-01T00:00:00Z"}]}},
+                {"provider":"copilot","latestStatus":"available","value":{"source":"latest","collectedAt":"2026-11-22T00:59:00Z","observedAt":"2026-11-22T00:58:00Z","freshness":"fresh","windows":[{"window":"premium","remainingBasisPoints":null,"unlimited":true,"resetsAt":null},{"window":"chat","remainingBasisPoints":5000,"resetsAt":"2026-11-23T00:00:00Z"},{"window":"completions","remainingBasisPoints":0,"resetsAt":null}]}}]}
+            ]}
+            """;
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") }));
+        var port = new HttpQuotaReadPort(client, new Uri("https://usage.test"), "owner", new TestCredentialProvider());
+        var result = await port.ReadLatestAsync(CancellationToken.None);
+
+        // Wire: every group keeps one entry, placeholders collapsed onto the real reads.
+        Assert.Equal(7, result.Providers.Count);
+        var claude = result.Providers.Single(p => p.Provider == QuotaProvider.Claude);
+        Assert.False(claude.MultipleSources);
+        var claudeWindow = Assert.Single(claude.Windows);
+        Assert.Equal(5000, claudeWindow.RemainingBasisPoints);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-22T00:59:00Z"), claude.CollectedAt);
+        Assert.True(result.Providers.Single(p => p.Provider == QuotaProvider.Codex).MultipleSources);
+        var neverRead = result.Providers.Single(p => p.Provider == QuotaProvider.AntigravityClaudeGpt);
+        Assert.False(neverRead.MultipleSources);
+        Assert.Equal(QuotaProviderStatus.Missing, neverRead.Status);
+        Assert.Empty(neverRead.Windows);
+
+        var cards = QuotaCardProjection.Project(result, japanese: true, Fixed);
+        Assert.Equal(7, cards.Count);
+        var claudeCard = Assert.Single(cards, c => c.Provider == QuotaProvider.Claude);
+        Assert.False(claudeCard.IsUnavailable);
+        Assert.Equal("50%", claudeCard.CenterText);
+        Assert.NotEqual("複数の送信元", claudeCard.FreshnessText);
+        var codexCard = Assert.Single(cards, c => c.Provider == QuotaProvider.Codex);
+        Assert.True(codexCard.IsUnavailable);
+        Assert.Equal("複数の送信元", codexCard.FreshnessText);
+        Assert.Equal("—", codexCard.CenterText);
+        Assert.False(Assert.Single(cards, c => c.Provider == QuotaProvider.OpenCodeGo).IsUnavailable);
+        Assert.False(Assert.Single(cards, c => c.Provider == QuotaProvider.AntigravityGemini).IsUnavailable);
+        var neverReadCard = Assert.Single(cards, c => c.Provider == QuotaProvider.AntigravityClaudeGpt);
+        Assert.Equal("値をまだ\n取得していません", neverReadCard.UnavailableMessage);
+        Assert.Equal("未取得", neverReadCard.FreshnessText);
+        Assert.False(Assert.Single(cards, c => c.Provider == QuotaProvider.GrokBuild).IsUnavailable);
+        var copilotCard = Assert.Single(cards, c => c.Provider == QuotaProvider.Copilot);
+        Assert.False(copilotCard.IsUnavailable);
+        Assert.Equal("0%", copilotCard.CenterText); // the smallest valid finite window (completions) is the primary
+    }
+
+    [Fact]
     public async Task UnlimitedFlagIsRejectedForProvidersOtherThanCopilot()
     {
         const string json = """{"snapshots":[{"collectedAt":"2026-11-22T01:00:00Z","providers":[{"provider":"claude","status":"available","freshness":"fresh","observedAt":null,"windows":[{"window":"session","remainingBasisPoints":null,"unlimited":true,"resetsAt":null}]}]}]}""";
@@ -183,7 +249,7 @@ public sealed class QuotaRingsHttpPortTests
         const string json = """{"snapshots":[{"collectedAt":"2026-11-22T01:00:00Z","providers":[{"provider":"claude","status":"available","freshness":"fresh","observedAt":"2026-11-22T00:59:00Z","windows":[{"window":"session","remainingBasisPoints":0,"resetsAt":"2026-11-22T06:00:00Z"},{"window":"weekly","remainingBasisPoints":null,"resetsAt":null}]}]}]}""";
         var handler = new StubHandler(request =>
         {
-            Assert.Equal("https://usage.test/v1/quota/latest", request.RequestUri!.AbsoluteUri);
+            Assert.Equal("https://usage.test/v1/quota/latest?schema=2", request.RequestUri!.AbsoluteUri);
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         });
         using var client = new HttpClient(handler);

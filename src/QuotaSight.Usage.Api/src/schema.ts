@@ -941,6 +941,28 @@ export function sumTokensSafely(values: readonly number[]): number {
 }
 
 /**
+ * Read schema selector for the shared `GET /v1/quota/latest` path.
+ *
+ * The path is shared on purpose: a client that predates the retention read keeps
+ * asking the same URL and receives exactly the v1 body it always received. Only
+ * `?schema=2` selects the retention body, and any other value of the selector is
+ * refused rather than silently answered with v1 — a caller that asked for a
+ * schema must not receive a different one. Other query parameters keep their v1
+ * behaviour (ignored), so adding the selector cannot change an existing request.
+ */
+export function parseQuotaReadQuery(url: URL): 1 | 2 {
+  const values = url.searchParams.getAll('schema');
+  if (values.length === 0) return 1;
+  if (values.length > 1) {
+    throw queryError('schema', 'duplicate_parameter', 'Query parameter schema must be provided at most once.');
+  }
+  if (values[0] !== '2') {
+    throw queryError('schema', 'unsupported_schema', 'schema must be 2 when it is provided.');
+  }
+  return 2;
+}
+
+/**
  * Parses the shared `from`/`to`/`collector` query.
  *
  * `maxSpanDays` is the only thing the two read routes decide differently: the

@@ -15,6 +15,8 @@ import {
   MAX_COLLECTORS_PER_READ,
   MAX_DAILY_ROWS,
 } from './schema';
+import { QUOTA_PROVIDERS, isEffectiveQuotaProvider, shouldRetainQuotaValue } from './quota';
+import type { QuotaPayload, QuotaProviderEntry, QuotaWindow } from './quota';
 
 export interface CollectorRecord {
   readonly id: string;
@@ -1002,4 +1004,343 @@ export async function readBreakdown(
       attributedTokens: safeAggregate(row['attributed_tokens']),
     })),
   };
+}
+
+/*
+ * Subscription-quota retention.
+ *
+ * Two tables, one write. `quota_snapshot` keeps the newest collection exactly as
+ * before; `quota_effective` (0006) keeps, per provider, the newest value that was
+ * a successful observation, so a later partial or empty collection cannot erase
+ * what was known. Both statements run in one `batch()` — one transaction — and
+ * the retention statement is ordered *first* on purpose: its guard reads the
+ * snapshot row this batch has not replaced yet, which is the same "strictly
+ * newer" comparison the snapshot upsert applies. An equal or older collection
+ * therefore changes neither table, instead of updating the side table for a
+ * snapshot write that was refused.
+ *
+ * The per-provider recency rules are inside the statement, against the row that
+ * is already stored, so two overlapping writes cannot both decide from the same
+ * stale read. The instant a value is compared by is `observedAt ?? collectedAt`:
+ *   * an explicitly older effective time never rewinds a stored value, whether
+ *     the stored value carries an observation time or only the collection time
+ *     that adopted it;
+ *   * a value whose effective time equals the stored one is not made newer
+ *     unless it is `fresh` (the observation did not change, the collection did),
+ *     so a re-collected `cached` observation keeps the collection time it was
+ *     first adopted with;
+ *   * an undated `unknown` value — Codex, OpenCode Go, Grok and Copilot on the
+ *     real wire — therefore moves forward by its collection time and keeps
+ *     `observed_at = NULL`. No observation time is invented for it.
+ * `observedAt` is the wire's second-precision instant (`YYYY-MM-DDTHH:MM:SSZ`)
+ * and `collected_at` is the millisecond snapshot instant, so the two are
+ * compared by `julianday()` — the parsed instant, not its text. As text,
+ * `...:00Z` sorts *after* `...:00.500Z` while describing half a second earlier,
+ * and `...:00.000Z` and `...:00Z` are the same instant with different text.
+ * Malformed input cannot reach this statement because `parseQuota` refuses it
+ * first.
+ */
+
+/** Snapshots one v2 quota read may return, matching the v1 read. */
+export const MAX_QUOTA_SNAPSHOTS = 64;
+
+/** Byte bound on one v2 quota response, matching the v1 read. */
+export const MAX_QUOTA_RESPONSE_BYTES = 256 * 1024;
+
+/** Provider groups per snapshot: the seven fixed wire providers. */
+export const MAX_QUOTA_PROVIDERS = QUOTA_PROVIDERS.length;
+
+/**
+ * Snapshot upsert, unchanged from the route that shipped it: `newer-only`, an
+ * equal collection time keeps the first payload.
+ */
+export const UPSERT_QUOTA_SNAPSHOT_SQL = `
+  INSERT INTO quota_snapshot (collector_id, owner_id, generation, collected_at, payload_json)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(collector_id, generation) DO UPDATE SET
+    owner_id = excluded.owner_id,
+    collected_at = excluded.collected_at,
+    payload_json = excluded.payload_json
+  WHERE excluded.collected_at > quota_snapshot.collected_at
+`;
+
+/**
+ * Upserts the retention rows of one collection.
+ *
+ * Bind order: collectorId, ownerId, generation, collectedAt, providers JSON,
+ * collectorId, generation, collectedAt (snapshot-newer guard),
+ * collectedAt (same guard on the conflict path).
+ *
+ * `providers JSON` is the already-filtered list of `{provider, freshness,
+ * observedAt, windows}` entries; the payload-only decisions (effective value,
+ * refusal of an undated `cached` value, refusal of an observation dated after
+ * its own collection) are made by {@link shouldRetainQuotaValue} before the
+ * statement, and everything that depends on stored state is decided here.
+ * Because the entry filter runs first, the recency comparison below never sees
+ * a claim that would outrank every later observation.
+ */
+export const UPSERT_QUOTA_EFFECTIVE_SQL = `
+  INSERT INTO quota_effective
+    (collector_id, owner_id, generation, provider, collected_at, observed_at,
+     freshness, payload_json)
+  SELECT ?, ?, ?, json_extract(p.value, '$.provider'), ?,
+         json_extract(p.value, '$.observedAt'),
+         json_extract(p.value, '$.freshness'),
+         json_extract(p.value, '$.windows')
+  FROM json_each(?) AS p
+  WHERE NOT EXISTS (
+    SELECT 1 FROM quota_snapshot s
+    WHERE s.collector_id = ?
+      AND s.generation = ?
+      AND s.collected_at >= ?
+  )
+  ON CONFLICT(collector_id, generation, provider) DO UPDATE SET
+    collected_at = excluded.collected_at,
+    observed_at = excluded.observed_at,
+    freshness = excluded.freshness,
+    payload_json = excluded.payload_json
+  WHERE NOT EXISTS (
+      SELECT 1 FROM quota_snapshot s
+      WHERE s.collector_id = quota_effective.collector_id
+        AND s.generation = quota_effective.generation
+        AND s.collected_at >= ?
+    )
+    AND NOT (
+      julianday(COALESCE(excluded.observed_at, excluded.collected_at))
+        < julianday(COALESCE(quota_effective.observed_at, quota_effective.collected_at))
+    )
+    AND NOT (
+      julianday(COALESCE(excluded.observed_at, excluded.collected_at))
+        = julianday(COALESCE(quota_effective.observed_at, quota_effective.collected_at))
+      AND excluded.freshness <> 'fresh'
+    )
+`;
+
+/**
+ * Stores one accepted collection: the retention rows and the snapshot row in a
+ * single transaction. Nothing is returned; a failed statement rolls both back.
+ *
+ * An entry that is not a success (an `unavailable` or value-less group, an
+ * undated `cached` value, an observation dated after its own collection) is left
+ * out of the retention rows but still stored in the snapshot exactly as the
+ * collector sent it — the write contract, the v1 read and its HTTP response are
+ * unchanged.
+ */
+export async function applyQuota(
+  db: D1Database,
+  collector: CollectorRecord,
+  snapshot: QuotaPayload,
+): Promise<void> {
+  const retainable = snapshot.providers
+    .filter((entry) => shouldRetainQuotaValue(entry, snapshot.collectedAt))
+    .map((entry) => ({
+      provider: entry.provider,
+      freshness: entry.freshness,
+      observedAt: entry.observedAt,
+      windows: entry.windows,
+    }));
+  const snapshotJson = JSON.stringify({
+    collectedAt: snapshot.collectedAt,
+    providers: snapshot.providers,
+  });
+
+  await db.batch([
+    db
+      .prepare(UPSERT_QUOTA_EFFECTIVE_SQL)
+      .bind(
+        collector.id,
+        collector.ownerId,
+        snapshot.generation,
+        snapshot.collectedAt,
+        JSON.stringify(retainable),
+        collector.id,
+        snapshot.generation,
+        snapshot.collectedAt,
+        snapshot.collectedAt,
+      ),
+    db
+      .prepare(UPSERT_QUOTA_SNAPSHOT_SQL)
+      .bind(
+        collector.id,
+        collector.ownerId,
+        snapshot.generation,
+        snapshot.collectedAt,
+        snapshotJson,
+      ),
+  ]);
+}
+
+interface QuotaV2Row {
+  readonly collector_id: string;
+  readonly generation: number;
+  readonly snapshot_collected_at: string;
+  readonly snapshot_payload_json: string;
+  readonly provider: string | null;
+  readonly effective_collected_at: string | null;
+  readonly effective_observed_at: string | null;
+  readonly effective_freshness: QuotaProviderEntry['freshness'] | null;
+  readonly effective_payload_json: string | null;
+}
+
+/**
+ * One read for a whole v2 response.
+ *
+ * The snapshot set is the same owner-scoped, active-generation set the v1 read
+ * returns (one row per collector, newest first, one row beyond the bound so a
+ * truncated result is detected). Each snapshot is left-joined to its retention
+ * rows in the *same statement*, so a value can never come from a different
+ * point in time than the snapshot it is attached to. The join is bounded by the
+ * seven-provider primary key, so the statement reads at most 7 rows per
+ * snapshot; the collector id is only a grouping key and never reaches the wire.
+ *
+ * Bind order: ownerId. Both LIMITs are derived from the documented bounds.
+ */
+export const QUOTA_V2_READ_SQL = `
+  SELECT s.collector_id AS collector_id,
+         s.generation AS generation,
+         s.collected_at AS snapshot_collected_at,
+         s.payload_json AS snapshot_payload_json,
+         e.provider AS provider,
+         e.collected_at AS effective_collected_at,
+         e.observed_at AS effective_observed_at,
+         e.freshness AS effective_freshness,
+         e.payload_json AS effective_payload_json
+  FROM (
+    SELECT q.collector_id, q.owner_id, q.generation, q.collected_at, q.payload_json
+    FROM quota_snapshot q
+    JOIN collectors c
+      ON c.id = q.collector_id
+     AND c.owner_id = q.owner_id
+     AND c.active_generation = q.generation
+    WHERE q.owner_id = ?
+    ORDER BY q.collected_at DESC
+    LIMIT ${MAX_QUOTA_SNAPSHOTS + 1}
+  ) AS s
+  LEFT JOIN quota_effective e
+    ON e.collector_id = s.collector_id
+   AND e.generation = s.generation
+   AND e.owner_id = s.owner_id
+  ORDER BY s.collected_at DESC, s.collector_id ASC, e.provider ASC
+  LIMIT ${(MAX_QUOTA_SNAPSHOTS + 1) * MAX_QUOTA_PROVIDERS + 1}
+`;
+
+export type QuotaLatestStatus = 'available' | 'unavailable' | 'missing';
+
+export interface QuotaRetainedValue {
+  /** `latest` only when this snapshot's own entry was the value that was kept. */
+  readonly source: 'latest' | 'previous';
+  /** Collection time of the snapshot that adopted this value. */
+  readonly collectedAt: string;
+  /**
+   * The collector's own observation time, or `null` when the group reports none
+   * (Codex, OpenCode Go, Grok and Copilot on the real wire) — then
+   * `collectedAt` is the only time the value has.
+   */
+  readonly observedAt: string | null;
+  readonly freshness: QuotaProviderEntry['freshness'];
+  /** The stored wire windows, including values whose reset time has passed. */
+  readonly windows: readonly QuotaWindow[];
+}
+
+export interface QuotaV2Provider {
+  readonly provider: string;
+  readonly latestStatus: QuotaLatestStatus;
+  readonly value: QuotaRetainedValue | null;
+}
+
+export interface QuotaV2Snapshot {
+  readonly collectedAt: string;
+  readonly providers: readonly QuotaV2Provider[];
+}
+
+export interface QuotaV2Body {
+  readonly schemaVersion: 2;
+  readonly snapshots: readonly QuotaV2Snapshot[];
+}
+
+/**
+ * Reads the v2 quota body: each snapshot's own provider status next to the last
+ * successful value known for that collector and provider.
+ *
+ * `latestStatus` describes what this collection reported — an effective
+ * `available` entry, an availability with no usable window (reported as
+ * `unavailable`), an explicit `unavailable`, or no entry at all (`missing`).
+ * `value` is the retained value and is independent of that status: it survives a
+ * partial or empty collection, and its `source` says whether it was adopted by
+ * this collection or comes from an earlier one. Nothing is inferred: a group
+ * with no retained value is `null`, not zero and not the snapshot's own payload.
+ */
+export async function readQuotaV2(db: D1Database, ownerId: string): Promise<QuotaV2Body> {
+  const result = await db.prepare(QUOTA_V2_READ_SQL).bind(ownerId).all<QuotaV2Row>();
+  const rows = result.results ?? [];
+
+  interface Group {
+    readonly collectedAt: string;
+    readonly payload: { readonly providers?: readonly QuotaProviderEntry[] };
+    readonly effective: Map<string, QuotaV2Row>;
+  }
+
+  const groups = new Map<string, Group>();
+  for (const row of rows) {
+    const key = `${row.collector_id}\u0000${row.generation}`;
+    let group = groups.get(key);
+    if (group === undefined) {
+      group = {
+        collectedAt: row.snapshot_collected_at,
+        payload: JSON.parse(row.snapshot_payload_json) as { providers?: readonly QuotaProviderEntry[] },
+        effective: new Map(),
+      };
+      groups.set(key, group);
+    }
+    if (row.provider !== null) group.effective.set(row.provider, row);
+  }
+
+  if (groups.size > MAX_QUOTA_SNAPSHOTS || rows.length > MAX_QUOTA_SNAPSHOTS * MAX_QUOTA_PROVIDERS) {
+    throw new ApiError(
+      422,
+      'result_too_large',
+      'The quota response exceeds its row limit.',
+      { reason: 'too_many_rows', limitRows: MAX_QUOTA_SNAPSHOTS },
+    );
+  }
+
+  const snapshots: QuotaV2Snapshot[] = [];
+  for (const group of groups.values()) {
+    const entries = new Map<string, QuotaProviderEntry>();
+    for (const entry of group.payload.providers ?? []) entries.set(entry.provider, entry);
+
+    const providers = QUOTA_PROVIDERS.map((provider): QuotaV2Provider => {
+      const entry = entries.get(provider);
+      const retained = group.effective.get(provider);
+      const latestStatus: QuotaLatestStatus =
+        entry === undefined ? 'missing' : isEffectiveQuotaProvider(entry) ? 'available' : 'unavailable';
+      // A stored row is adopted by *this* collection only when the collection it
+      // was written with is this snapshot's own: the write stamps the row with
+      // the snapshot's `collected_at`, and a refused or older write leaves the
+      // earlier stamp in place.
+      const adopted = entry !== undefined && isEffectiveQuotaProvider(entry) &&
+        retained !== undefined && retained.effective_collected_at === group.collectedAt;
+      const value: QuotaRetainedValue | null = retained === undefined
+        ? null
+        : {
+            source: adopted ? 'latest' : 'previous',
+            collectedAt: retained.effective_collected_at as string,
+            observedAt: retained.effective_observed_at,
+            freshness: retained.effective_freshness as QuotaProviderEntry['freshness'],
+            windows: JSON.parse(retained.effective_payload_json as string) as readonly QuotaWindow[],
+          };
+      return { provider, latestStatus, value };
+    });
+
+    snapshots.push({ collectedAt: group.collectedAt, providers });
+  }
+
+  const body: QuotaV2Body = { schemaVersion: 2, snapshots };
+  if (new TextEncoder().encode(JSON.stringify(body)).byteLength > MAX_QUOTA_RESPONSE_BYTES) {
+    throw new ApiError(422, 'result_too_large', 'The quota response exceeds its byte limit.', {
+      reason: 'response_too_large',
+      limitBytes: MAX_QUOTA_RESPONSE_BYTES,
+    });
+  }
+  return body;
 }

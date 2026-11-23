@@ -525,7 +525,16 @@ public sealed class QuotaProviderTileVisualTests
             var cards = window.GetVisualDescendants().OfType<Border>().Where(border => border.DataContext is QuotaProviderCard && border.Classes.Contains(compact ? "tokscale" : "tile")).ToArray();
             Assert.Equal(providers.Length, cards.Length);
             Assert.All(cards, card => { Assert.True(card.Bounds.Width <= panel.Bounds.Width + 1); Assert.True(card.Bounds.Width >= (compact ? 250 : 260) - 1); });
-            Assert.All(window.GetVisualDescendants().OfType<TextBlock>().Where(t => t.DataContext is QuotaProviderCard && t.IsEffectivelyVisible && t.Text == ((QuotaProviderCard)t.DataContext!).ProviderText), t => Assert.True(t.Bounds.Width > 80, $"{t.Text} collapsed"));
+            var host = (Panel)window.Content!;
+            Assert.All(window.GetVisualDescendants().OfType<TextBlock>().Where(t => t.DataContext is QuotaProviderCard && t.IsEffectivelyVisible && t.Text == ((QuotaProviderCard)t.DataContext!).ProviderText).ToArray(), t =>
+            {
+                var twin = new TextBlock { Text = t.Text, FontSize = t.FontSize, FontWeight = t.FontWeight, FontFamily = t.FontFamily };
+                host.Children.Add(twin);
+                twin.Measure(new Size(10000, 100));
+                var needs = twin.DesiredSize.Width;
+                host.Children.Remove(twin);
+                Assert.True(t.Bounds.Width >= needs - 1, $"{t.Text} collapsed to {t.Bounds.Width}px (needs {needs:0.#}px)");
+            });
             Assert.Equal(width, (int)window.Bounds.Width);
             var dir = Environment.GetEnvironmentVariable("QUOTASIGHT_UI_PNG_DIR");
             if (string.IsNullOrWhiteSpace(dir)) return;

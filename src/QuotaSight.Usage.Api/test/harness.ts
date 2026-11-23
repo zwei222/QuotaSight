@@ -52,6 +52,22 @@ async function migrationFiles(): Promise<string[]> {
 }
 
 /**
+ * Applies one migration file to a live test database.
+ *
+ * A deployment applies migrations separately from the Worker, so a database can
+ * be observed both before and after a single migration. A test that starts on
+ * an older schema and then applies the next file needs exactly this, without a
+ * second harness, so the same database is reused.
+ */
+export async function applyMigrationFile(db: D1Database, name: string): Promise<void> {
+  const path = (await migrationFiles()).find((file) => file.endsWith(name));
+  if (path === undefined) throw new Error(`no migration named ${name}`);
+  for (const statement of splitStatements(await readFile(path, 'utf8'))) {
+    await db.prepare(statement).run();
+  }
+}
+
+/**
  * D1's `exec()` is line oriented, so the harness splits the migration itself
  * while keeping trigger bodies (`BEGIN ... END;`) together.
  *
@@ -188,6 +204,8 @@ export interface Harness {
   getBreakdown(search: string, token?: string | null, headers?: Record<string, string>): Promise<Response>;
   putQuota(body: unknown, token?: string): Promise<Response>;
   getQuota(token?: string): Promise<Response>;
+  /** The same route as `getQuota`, with `?schema=2`. */
+  getQuotaV2(token?: string): Promise<Response>;
   dispose(): Promise<void>;
 }
 
@@ -292,6 +310,9 @@ export async function createHarness(entry = 'test/worker.ts', options: HarnessOp
     },
     async getQuota(token = 'read-a1') {
       return request('/v1/quota/latest', { headers: { authorization: `Bearer ${token}` } });
+    },
+    async getQuotaV2(token = 'read-a1') {
+      return request('/v1/quota/latest?schema=2', { headers: { authorization: `Bearer ${token}` } });
     },
     async dispose() {
       await mf.dispose();

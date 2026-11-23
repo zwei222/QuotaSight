@@ -359,6 +359,118 @@ GET /v1/usage/breakdown?from=YYYY-MM-DD&to=YYYY-MM-DD[&collector=collectorId]
   `test/storage-v2.test.ts` asserts both plans against the production SQL, so a
   change to either is a test failure rather than a silent scan.
 
+## Subscription-quota read and the last successful value
+
+```http
+PUT  /v1/collectors/{collectorId}/quota
+GET  /v1/quota/latest            # schema v1, unchanged
+GET  /v1/quota/latest?schema=2   # the same snapshots, with the last successful value
+```
+
+`PUT` takes the collector's contract quota (`schemaVersion: 1`, at most seven
+provider groups) and answers `{ "status": "accepted" }`. Its body, 4 KiB bound,
+`usage:write` check, collector binding, active-generation check and response are
+the same as before; only what is stored next to the snapshot is new.
+
+Two tables hold it, written together:
+
+- **`quota_snapshot`** — the newest collection per collector, exactly as it
+  always was. The v1 read returns this payload verbatim.
+- **`quota_effective`** — one row per `(collector, generation, provider)`: the
+  newest value that was a successful observation. This is what a partial or
+  empty collection cannot erase, and it is not a history — a newer effective
+  value replaces the row.
+
+The write is one `batch()` (one transaction). The retention statement is emitted
+first so its guard reads the snapshot row the batch has not replaced yet, and the
+guard is the exact complement of the snapshot upsert's `newer-only` rule
+(`stored collected_at >= incoming`). An equal or older collection therefore
+changes **neither** table, and a snapshot write that is refused cannot move a
+retained value on its own.
+
+### `?schema=2`
+
+```json
+{
+  "schemaVersion": 2,
+  "snapshots": [
+    {
+      "collectedAt": "2026-11-20T04:00:00Z",
+      "providers": [
+        {
+          "provider": "claude",
+          "latestStatus": "available",
+          "value": {
+            "source": "latest",
+            "collectedAt": "2026-11-20T04:00:00Z",
+            "observedAt": "2026-11-20T03:58:00Z",
+            "freshness": "fresh",
+            "windows": [{ "window": "session", "remainingBasisPoints": 6000, "resetsAt": null }]
+          }
+        },
+        { "provider": "codex", "latestStatus": "missing", "value": null }
+      ]
+    }
+  ]
+}
+```
+
+- **Every snapshot lists the seven fixed providers**, in the wire provider order
+  (`claude`, `codex`, `opencode-go`, `antigravity-gemini`,
+  `antigravity-claude-gpt`, `grok-build`, `copilot`), so a group the collector did
+  not report is still a group the reader can render.
+- **`latestStatus` is what this collection reported.** `available` only when the
+  entry is `available` *and* carries at least one usable window (a finite
+  `remainingBasisPoints` or a proven `unlimited`); an `available` entry with no
+  such window is reported as `unavailable`; an explicit `unavailable` is
+  `unavailable`; an absent entry is `missing`.
+- **`value` is the last successful value**, independent of `latestStatus`: it
+  survives a partial or empty collection. `value.windows` is the stored wire
+  array unchanged, so an expired numeric value stays visible as history — the
+  reader, not this API, decides whether a window is still current.
+- **`value.source`** is `latest` only when this collection's own entry was the
+  value that was kept, and `previous` when the value comes from an earlier
+  collection. It is derived from the stored stamp, not from the payload: a write
+  that was refused (equal or older collection, older observation) leaves the
+  earlier stamp in place.
+- **What may be retained.** A value must be effective (above). Two refused
+  groups: a `cached` entry with no `observedAt`, which cannot be shown to be
+  newer than what is stored (and a first cached value must not be presented as a
+  confirmed success), and an entry whose `observedAt` is more than five minutes
+  after the `collectedAt` that carried it — a group cannot observe its quota
+  after its own collection, so such a claim is clock skew, not a success. Both
+  are still accepted by the write and returned by the v1 read exactly as sent;
+  they are only kept out of the retention rows. A `fresh` entry without an
+  observation time is kept, as it always was. An `unknown` entry without one is
+  kept too — that is how the real collector reports Codex, OpenCode Go, Grok and
+  Copilot — with `observedAt: null` and the collection time as the only time the
+  value carries; no observation time is invented for it. A group with no
+  effective value reads `value: null` — the availability is reported, the value
+  is not invented.
+- **Recency is enforced against the stored row**, inside the statement, and the
+  instant compared is `observedAt ?? collectedAt`, compared as an instant
+  (`julianday()`) rather than as text — `...:00Z` is half a second earlier than
+  `...:00.500Z` despite sorting after it, and `...:00.000Z` is the same instant
+  as `...:00Z`. An explicitly older effective time never rewinds a value, whether
+  the stored value is dated by an observation or only by the collection that
+  adopted it. A value whose effective time equals the stored one is not made
+  newer unless it is `fresh` (the observation did not change, the collection
+  did), so a re-collected `cached` observation keeps the collection time it was
+  first adopted with. An undated `unknown` value moves forward by its collection
+  time and keeps `observedAt: null`.
+- **Bounds.** The snapshot list is the v1 list (≤ 64 snapshots, newest first,
+  over-bound is `422`), every snapshot is exactly seven groups, and the response
+  is ≤ 256 KiB (`422 response_too_large`). The read is one statement: the
+  snapshot rows and their retention rows are joined at read time, so a value can
+  never be paired with a different point in time. Collector ids are only grouping
+  keys and never appear in the body.
+- **Scope.** Same as v1: `usage:read`, owner-wide, active generation only, never
+  a collector-bound credential (`403 forbidden_scope`).
+- **Selector.** `?schema=2` is the only accepted value; `schema=1`, `schema=3`, an
+  empty value or a repeated parameter is `400 invalid_query`
+  (`reason: unsupported_schema` / `duplicate_parameter`). A request without the
+  parameter is byte-for-byte the v1 body a deployed client already parses.
+
 ## Data model
 
 Two tables hold usage, and both are keyed by `(collector_id, generation, …)` so a
@@ -706,6 +818,21 @@ otherwise guarantee to a reader: a direct insert cannot attribute more to a day
 than the day itself reports. Neither trigger fires for a well-formed write: the
 day's rows are deleted before they are re-inserted, so the sum a replaced day
 starts from is zero.
+
+`migrations/0005_quota_snapshots.sql` adds `quota_snapshot` (the newest contract
+quota per collector and generation, with the two active-generation triggers).
+`migrations/0006_quota_effective.sql` adds `quota_effective` (the last effective
+value per provider), its two active-generation triggers, and a backfill from the
+snapshots that already exist — active generations only, and only a provider entry
+that is an effective value the write path would have retained. Neither migration
+touches usage. Both are invisible to a Worker that predates them, so a database
+can be migrated while an older Worker is serving.
+
+The ordering for these two is **migration first, Worker second**: the retention
+read and write need `quota_effective`, and a Worker that has them in front of a
+database without `0006` answers every quota `PUT` with `500` (a missing table is
+a server error, not a 4xx). The reverse cannot happen — an older Worker never
+names the new table.
 
 ## No exposure
 
